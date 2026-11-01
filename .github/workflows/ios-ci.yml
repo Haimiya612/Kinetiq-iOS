@@ -1,0 +1,93 @@
+name: iOS CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test Kinetiq
+    runs-on: macos-15
+
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      PROJECT: Kinetiq.xcodeproj
+      SCHEME: Kinetiq
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project "$PROJECT"
+
+      - name: Run simulator tests
+        run: |
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -derivedDataPath "$RUNNER_TEMP/Kinetiq-Test-Build" \
+            -resultBundlePath "$RUNNER_TEMP/KinetiqTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build unsigned iOS app
+        run: |
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/Kinetiq-Device-Build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$RUNNER_TEMP/Kinetiq-Device-Build/Build/Products/Release-iphoneos/Kinetiq.app"
+          PACKAGE_PATH="$RUNNER_TEMP/ipa-package"
+
+          test -d "$APP_PATH"
+
+          mkdir -p "$PACKAGE_PATH/Payload"
+          ditto "$APP_PATH" "$PACKAGE_PATH/Payload/Kinetiq.app"
+
+          cd "$PACKAGE_PATH"
+          ditto -c -k --sequesterRsrc --keepParent \
+            Payload \
+            "$GITHUB_WORKSPACE/Kinetiq-unsigned.ipa"
+
+          cd "$GITHUB_WORKSPACE"
+          ls -lh Kinetiq-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kinetiq-iOS-Unsigned-IPA
+          path: Kinetiq-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kinetiq-iOS-Test-Results
+          path: ${{ runner.temp }}/KinetiqTests.xcresult
+          if-no-files-found: warn
+          retention-days: 7
