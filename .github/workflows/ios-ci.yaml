@@ -16,7 +16,7 @@ on:
         description: "Choose the macOS runner"
         required: true
         type: choice
-        default: macos-26
+        default: macos-26-intel
         options:
           - macos-26
           - macos-26-intel
