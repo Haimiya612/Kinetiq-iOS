@@ -37,6 +37,8 @@ private struct PickedMovie: Transferable {
 // MARK: - Library View
 
 struct LibraryView: View {
+    @Binding var requestedMediaID: String?
+
     @State private var media: [LocalMedia] = []
     @State private var selectedMedia: LocalMedia?
     @State private var showingImporter = false
@@ -46,7 +48,13 @@ struct LibraryView: View {
     @State private var errorMessage: String?
     @State private var appeared = false
 
+    @StateObject private var playbackHistory = PlaybackHistoryStore.shared
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(requestedMediaID: Binding<String?> = .constant(nil)) {
+        self._requestedMediaID = requestedMediaID
+    }
 
     private var mediaDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -124,6 +132,12 @@ struct LibraryView: View {
                 guard !newItems.isEmpty else { return }
                 Task { await importPhotos(newItems) }
             }
+            .onChange(of: requestedMediaID) { _, _ in
+                openRequestedMediaIfAvailable()
+            }
+            .onChange(of: media.map(\.id)) { _, _ in
+                openRequestedMediaIfAvailable()
+            }
             .fullScreenCover(item: $selectedMedia) { item in
                 LocalVideoPlayerView(url: item.url)
                     .preferredColorScheme(.dark)
@@ -143,6 +157,8 @@ struct LibraryView: View {
             }
             .onAppear {
                 loadMedia()
+                openRequestedMediaIfAvailable()
+
                 withAnimation(
                     reduceMotion
                     ? .easeInOut(duration: 0.2)
@@ -151,6 +167,26 @@ struct LibraryView: View {
                     appeared = true
                 }
             }
+        }
+    }
+
+    // MARK: Requested Media
+
+    private func openRequestedMediaIfAvailable() {
+        guard let requestedMediaID else {
+            return
+        }
+
+        if let item = media.first(where: { $0.id == requestedMediaID }) {
+            self.requestedMediaID = nil
+            selectedMedia = item
+            return
+        }
+
+        // Remove history for a file that no longer exists in the local library.
+        if !media.isEmpty {
+            playbackHistory.remove(mediaID: requestedMediaID)
+            self.requestedMediaID = nil
         }
     }
 
@@ -280,12 +316,26 @@ struct LibraryView: View {
                     .tracking(1)
                     .foregroundStyle(.secondary)
 
-                Label("On this device", systemImage: "iphone")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                if let entry = playbackHistory.entry(for: item.id) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(
+                            "Continue • \(entry.progressPercent)% watched",
+                            systemImage: "clock.arrow.circlepath"
+                        )
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(KinetiqPalette.accent)
+
+                        ProgressView(value: entry.progress)
+                            .tint(KinetiqPalette.accent)
+                    }
+                } else {
+                    Label("On this device", systemImage: "iphone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
             Image(systemName: "play.circle.fill")
                 .font(.system(size: 29))
@@ -384,6 +434,7 @@ struct LibraryView: View {
     private func deleteMedia(_ item: LocalMedia) {
         do {
             try FileManager.default.removeItem(at: item.url)
+            playbackHistory.remove(mediaID: item.id)
             loadMedia()
         } catch {
             errorMessage = error.localizedDescription
@@ -445,6 +496,9 @@ private final class KinetiqPlaybackModel: ObservableObject {
     private var audioGroup: AVMediaSelectionGroup?
     private var subtitleGroup: AVMediaSelectionGroup?
 
+    private var lastSavedPosition: Double = 0
+    private var hasRestoredProgress = false
+
     init(url: URL) {
         self.url = url
         self.player = AVPlayer(url: url)
@@ -457,17 +511,27 @@ private final class KinetiqPlaybackModel: ObservableObject {
     private func configurePlayer() {
         player.automaticallyWaitsToMinimizeStalling = true
 
-        statusObservation = player.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-            Task { @MainActor in
+        statusObservation = player.currentItem?.observe(
+            \.status,
+            options: [.initial, .new]
+        ) { [weak self] item, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+
                 switch item.status {
                 case .readyToPlay:
-                    self?.isBuffering = false
-                    self?.duration = item.duration.seconds.isFinite ? item.duration.seconds : 0
+                    self.isBuffering = false
+                    let loadedDuration = item.duration.seconds
+                    self.duration = loadedDuration.isFinite ? loadedDuration : 0
+                    self.restorePlaybackProgressIfNeeded()
+
                 case .failed:
-                    self?.isBuffering = false
-                    self?.playbackError = item.error?.localizedDescription ?? "Unable to play this video."
+                    self.isBuffering = false
+                    self.playbackError = item.error?.localizedDescription
+                        ?? "Unable to play this video."
+
                 default:
-                    self?.isBuffering = true
+                    self.isBuffering = true
                 }
             }
         }
@@ -476,18 +540,85 @@ private final class KinetiqPlaybackModel: ObservableObject {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
+
                 let seconds = time.seconds
+
                 if seconds.isFinite {
                     self.currentTime = seconds
+
+                    // Save periodically to protect progress if the app closes unexpectedly.
+                    if self.duration > 0,
+                       abs(seconds - self.lastSavedPosition) >= 5 {
+                        self.saveProgress()
+                    }
                 }
+
                 self.isPlaying = self.player.rate != 0
             }
         }
 
-        Task { await loadMediaOptions() }
+        Task {
+            await loadMediaOptions()
+        }
     }
+
+    // MARK: Resume Playback
+
+    private func restorePlaybackProgressIfNeeded() {
+        guard !hasRestoredProgress else {
+            return
+        }
+
+        hasRestoredProgress = true
+
+        guard duration > 0 else {
+            return
+        }
+
+        let savedPosition = PlaybackHistoryStore.shared.resumePosition(
+            for: url.lastPathComponent
+        )
+
+        guard savedPosition >= 8,
+              savedPosition < duration * 0.97 else {
+            return
+        }
+
+        currentTime = savedPosition
+        lastSavedPosition = savedPosition
+
+        player.seek(
+            to: CMTime(seconds: savedPosition, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    // MARK: Save Playback
+
+    func saveProgress() {
+        guard duration.isFinite,
+              duration > 0,
+              currentTime.isFinite,
+              currentTime >= 0 else {
+            return
+        }
+
+        let title = url.deletingPathExtension().lastPathComponent
+
+        PlaybackHistoryStore.shared.save(
+            mediaID: url.lastPathComponent,
+            title: title,
+            position: currentTime,
+            duration: duration
+        )
+
+        lastSavedPosition = currentTime
+    }
+
+    // MARK: Media Options
 
     private func loadMediaOptions() async {
         guard let asset = player.currentItem?.asset else { return }
@@ -506,6 +637,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
             if let audio {
                 selectedAudio = player.currentItem?.currentMediaSelection.selectedMediaOption(in: audio)
             }
+
             if let subtitles {
                 selectedSubtitle = player.currentItem?.currentMediaSelection.selectedMediaOption(in: subtitles)
             }
@@ -513,6 +645,8 @@ private final class KinetiqPlaybackModel: ObservableObject {
             playbackError = error.localizedDescription
         }
     }
+
+    // MARK: Playback Controls
 
     func play() {
         playbackError = nil
@@ -523,6 +657,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
     func pause() {
         player.pause()
         isPlaying = false
+        saveProgress()
     }
 
     func togglePlayback() {
@@ -531,6 +666,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     func seek(to seconds: Double) {
         let safeTime = min(max(seconds, 0), max(duration, 0))
+
         player.seek(
             to: CMTime(seconds: safeTime, preferredTimescale: 600),
             toleranceBefore: .zero,
@@ -544,6 +680,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     func setRate(_ rate: Float) {
         playbackRate = rate
+
         if isPlaying {
             player.rate = rate
         }
@@ -561,12 +698,15 @@ private final class KinetiqPlaybackModel: ObservableObject {
         selectedSubtitle = option
     }
 
+    // MARK: Sleep Timer
+
     func setSleepTimer(_ minutes: Int?) {
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = minutes
 
         guard let minutes else { return }
+
         sleepTask = Task {
             do {
                 try await Task.sleep(for: .seconds(minutes * 60))
@@ -579,7 +719,11 @@ private final class KinetiqPlaybackModel: ObservableObject {
         }
     }
 
+    // MARK: Stop
+
     func stop() {
+        saveProgress()
+
         sleepTask?.cancel()
         sleepTask = nil
 
@@ -590,12 +734,17 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
         statusObservation?.invalidate()
         statusObservation = nil
+
         player.pause()
         player.replaceCurrentItem(with: nil)
     }
 
+    // MARK: Time Formatting
+
     static func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        guard seconds.isFinite, seconds >= 0 else {
+            return "00:00"
+        }
 
         let total = Int(seconds)
         let hours = total / 3600
@@ -605,6 +754,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
         if hours > 0 {
             return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
         }
+
         return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 }
@@ -613,7 +763,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
 private final class KinetiqPlayerUIView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+
+    var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
 }
 
 private struct KinetiqPlayerSurface: UIViewRepresentable {
@@ -633,7 +786,10 @@ private struct KinetiqPlayerSurface: UIViewRepresentable {
         uiView.playerLayer.videoGravity = aspectFill ? .resizeAspectFill : .resizeAspect
     }
 
-    static func dismantleUIView(_ uiView: KinetiqPlayerUIView, coordinator: ()) {
+    static func dismantleUIView(
+        _ uiView: KinetiqPlayerUIView,
+        coordinator: ()
+    ) {
         uiView.playerLayer.player = nil
     }
 }
@@ -645,6 +801,7 @@ private struct LocalVideoPlayerView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @StateObject private var model: KinetiqPlaybackModel
 
     @State private var controlsVisible = true
@@ -657,7 +814,9 @@ private struct LocalVideoPlayerView: View {
 
     init(url: URL) {
         self.url = url
-        _model = StateObject(wrappedValue: KinetiqPlaybackModel(url: url))
+        _model = StateObject(
+            wrappedValue: KinetiqPlaybackModel(url: url)
+        )
     }
 
     private var title: String {
@@ -675,9 +834,15 @@ private struct LocalVideoPlayerView: View {
                     .ignoresSafeArea()
 
                 // The video surface always occupies the complete presentation area.
-                KinetiqPlayerSurface(player: model.player, aspectFill: model.aspectFill)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(.black)
+                KinetiqPlayerSurface(
+                    player: model.player,
+                    aspectFill: model.aspectFill
+                )
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+                .background(.black)
 
                 // This transparent hit target toggles the HUD without changing layout.
                 Color.clear
@@ -706,16 +871,30 @@ private struct LocalVideoPlayerView: View {
                 }
 
                 if let activePanel {
-                    optionsOverlay(for: activePanel, safeAreaInsets: geometry.safeAreaInsets)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(5)
+                    optionsOverlay(
+                        for: activePanel,
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(5)
                 }
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height
+            )
             .background(.black)
             .clipped()
-            .animation(reduceMotion ? .easeInOut(duration: 0.15) : .easeInOut(duration: 0.24), value: controlsVisible)
-            .animation(.spring(response: 0.34, dampingFraction: 0.88), value: activePanel)
+            .animation(
+                reduceMotion
+                    ? .easeInOut(duration: 0.15)
+                    : .easeInOut(duration: 0.24),
+                value: controlsVisible
+            )
+            .animation(
+                .spring(response: 0.34, dampingFraction: 0.88),
+                value: activePanel
+            )
             .onAppear {
                 model.play()
                 revealControls()
@@ -725,11 +904,19 @@ private struct LocalVideoPlayerView: View {
                 autoHideTask = nil
                 model.stop()
             }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.willResignActiveNotification
+                )
+            ) { _ in
+                model.saveProgress()
+            }
             .onChange(of: model.isPlaying) { _, playing in
                 if playing {
                     scheduleAutoHide()
                 } else {
                     cancelAutoHide()
+
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = true
                     }
@@ -738,6 +925,7 @@ private struct LocalVideoPlayerView: View {
             .onChange(of: activePanel) { _, panel in
                 if panel != nil {
                     cancelAutoHide()
+
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = true
                     }
@@ -796,7 +984,9 @@ private struct LocalVideoPlayerView: View {
                     .foregroundStyle(.white)
                     .frame(width: 42, height: 42)
                     .background(.black.opacity(0.34), in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                    .overlay(
+                        Circle().stroke(.white.opacity(0.14), lineWidth: 1)
+                    )
             }
             .accessibilityLabel("Close player")
 
@@ -818,14 +1008,24 @@ private struct LocalVideoPlayerView: View {
                 model.aspectFill.toggle()
                 scheduleAutoHide()
             } label: {
-                Image(systemName: model.aspectFill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(.black.opacity(0.34), in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                Image(
+                    systemName: model.aspectFill
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay(
+                    Circle().stroke(.white.opacity(0.14), lineWidth: 1)
+                )
             }
-            .accessibilityLabel(model.aspectFill ? "Fit video to screen" : "Fill screen with video")
+            .accessibilityLabel(
+                model.aspectFill
+                    ? "Fit video to screen"
+                    : "Fill screen with video"
+            )
         }
     }
 
@@ -845,11 +1045,15 @@ private struct LocalVideoPlayerView: View {
 
             Button {
                 model.togglePlayback()
+
                 if model.isPlaying {
                     scheduleAutoHide()
                 } else {
                     cancelAutoHide()
-                    withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = true }
+
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = true
+                    }
                 }
             } label: {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
@@ -859,8 +1063,14 @@ private struct LocalVideoPlayerView: View {
                     .frame(width: 76, height: 76)
                     .background(.ultraThinMaterial, in: Circle())
                     .overlay(Circle().fill(.black.opacity(0.18)))
-                    .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.28), radius: 18, y: 7)
+                    .overlay(
+                        Circle().stroke(.white.opacity(0.24), lineWidth: 1)
+                    )
+                    .shadow(
+                        color: .black.opacity(0.28),
+                        radius: 18,
+                        y: 7
+                    )
             }
             .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
 
@@ -926,18 +1136,24 @@ private struct LocalVideoPlayerView: View {
                     } else {
                         activePanel = panel
                     }
+
                     controlsVisible = true
                     cancelAutoHide()
                 } label: {
                     VStack(spacing: 5) {
                         Image(systemName: panel.symbol)
                             .font(.system(size: 16, weight: .semibold))
+
                         Text(panel.rawValue)
                             .font(.system(size: 9, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
-                    .foregroundStyle(activePanel == panel ? KinetiqPalette.cyan : .white.opacity(0.92))
+                    .foregroundStyle(
+                        activePanel == panel
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.92)
+                    )
                     .frame(maxWidth: .infinity)
                     .frame(height: 54)
                     .contentShape(Rectangle())
@@ -950,18 +1166,25 @@ private struct LocalVideoPlayerView: View {
         .padding(.vertical, 5)
         .background(.ultraThinMaterial, in: Capsule())
         .background(Capsule().fill(.black.opacity(0.27)))
-        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
+        .overlay(
+            Capsule().stroke(.white.opacity(0.14), lineWidth: 1)
+        )
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 
     // MARK: Options Overlay
 
-    private func optionsOverlay(for panel: PlayerPanel, safeAreaInsets: EdgeInsets) -> some View {
+    private func optionsOverlay(
+        for panel: PlayerPanel,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         ZStack(alignment: .bottom) {
             Color.black.opacity(0.18)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-                .onTapGesture { activePanel = nil }
+                .onTapGesture {
+                    activePanel = nil
+                }
 
             PlayerOptionsSheet(panel: panel, model: model) {
                 activePanel = nil
@@ -1000,8 +1223,14 @@ private struct LocalVideoPlayerView: View {
             .padding(.top, 5)
         }
         .padding(24)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.white.opacity(0.12), lineWidth: 1))
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
         .padding(30)
     }
 
@@ -1010,6 +1239,7 @@ private struct LocalVideoPlayerView: View {
     private func toggleControls() {
         if controlsVisible {
             cancelAutoHide()
+
             withAnimation(.easeInOut(duration: 0.22)) {
                 controlsVisible = false
             }
@@ -1022,21 +1252,29 @@ private struct LocalVideoPlayerView: View {
         withAnimation(.easeInOut(duration: 0.22)) {
             controlsVisible = true
         }
+
         scheduleAutoHide()
     }
 
     private func scheduleAutoHide() {
         cancelAutoHide()
 
-        guard model.isPlaying, activePanel == nil, !isSeeking else { return }
+        guard model.isPlaying,
+              activePanel == nil,
+              !isSeeking else {
+            return
+        }
 
         autoHideTask = Task { @MainActor in
             do {
                 try await Task.sleep(for: autoHideDelay)
+
                 guard !Task.isCancelled,
                       model.isPlaying,
                       activePanel == nil,
-                      !isSeeking else { return }
+                      !isSeeking else {
+                    return
+                }
 
                 withAnimation(.easeInOut(duration: 0.28)) {
                     controlsVisible = false
@@ -1060,7 +1298,9 @@ private struct PlayerOptionsSheet: View {
     @ObservedObject var model: KinetiqPlaybackModel
     let onClose: () -> Void
 
-    private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    private let speeds: [Float] = [
+        0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1074,6 +1314,7 @@ private struct PlayerOptionsSheet: View {
                 HStack(spacing: 10) {
                     Image(systemName: panel.symbol)
                         .foregroundStyle(KinetiqPalette.cyan)
+
                     Text(panel.rawValue)
                         .font(.system(size: 17, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
@@ -1106,11 +1347,21 @@ private struct PlayerOptionsSheet: View {
             .frame(maxHeight: 370)
         }
         .background(.ultraThinMaterial)
-        .background(Color(red: 0.035, green: 0.045, blue: 0.065).opacity(0.90))
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
+        .background(
+            Color(red: 0.035, green: 0.045, blue: 0.065).opacity(0.90)
+        )
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+        )
         .overlay(alignment: .top) {
-            UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24)
-                .stroke(.white.opacity(0.13), lineWidth: 1)
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+            .stroke(.white.opacity(0.13), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.32), radius: 25, y: -5)
     }
@@ -1157,7 +1408,10 @@ private struct PlayerOptionsSheet: View {
                     model.selectAudio(nil)
                 }
 
-                ForEach(Array(model.audioOptions.enumerated()), id: \.offset) { _, option in
+                ForEach(
+                    Array(model.audioOptions.enumerated()),
+                    id: \.offset
+                ) { _, option in
                     optionRow(
                         title: option.displayName,
                         subtitle: option.locale?.identifier ?? "Audio track",
@@ -1174,7 +1428,11 @@ private struct PlayerOptionsSheet: View {
                 sectionLabel("PLAYBACK SPEED")
 
                 LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())],
+                    columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ],
                     spacing: 9
                 ) {
                     ForEach(speeds, id: \.self) { speed in
@@ -1183,11 +1441,17 @@ private struct PlayerOptionsSheet: View {
                         } label: {
                             Text(String(format: "%.2fx", speed))
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(model.playbackRate == speed ? .black : .white)
+                                .foregroundStyle(
+                                    model.playbackRate == speed
+                                        ? .black
+                                        : .white
+                                )
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                                 .background(
-                                    model.playbackRate == speed ? KinetiqPalette.cyan : .white.opacity(0.09),
+                                    model.playbackRate == speed
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
                                     in: RoundedRectangle(cornerRadius: 11)
                                 )
                         }
@@ -1238,7 +1502,10 @@ private struct PlayerOptionsSheet: View {
                     model.selectSubtitle(nil)
                 }
 
-                ForEach(Array(model.subtitleOptions.enumerated()), id: \.offset) { _, option in
+                ForEach(
+                    Array(model.subtitleOptions.enumerated()),
+                    id: \.offset
+                ) { _, option in
                     optionRow(
                         title: option.displayName,
                         subtitle: option.locale?.identifier ?? "Subtitle track",
@@ -1261,11 +1528,17 @@ private struct PlayerOptionsSheet: View {
                         } label: {
                             Text("\(minutes)m")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(model.sleepTimerMinutes == minutes ? .black : .white)
+                                .foregroundStyle(
+                                    model.sleepTimerMinutes == minutes
+                                        ? .black
+                                        : .white
+                                )
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                                 .background(
-                                    model.sleepTimerMinutes == minutes ? KinetiqPalette.cyan : .white.opacity(0.09),
+                                    model.sleepTimerMinutes == minutes
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
                                     in: RoundedRectangle(cornerRadius: 10)
                                 )
                         }
@@ -1275,15 +1548,20 @@ private struct PlayerOptionsSheet: View {
 
                 if let minutes = model.sleepTimerMinutes {
                     HStack {
-                        Label("Timer set: \(minutes) minutes", systemImage: "moon.zzz.fill")
-                            .font(.caption)
-                            .foregroundStyle(KinetiqPalette.cyan)
+                        Label(
+                            "Timer set: \(minutes) minutes",
+                            systemImage: "moon.zzz.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(KinetiqPalette.cyan)
 
                         Spacer()
 
-                        Button("Cancel") { model.setSleepTimer(nil) }
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
+                        Button("Cancel") {
+                            model.setSleepTimer(nil)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
                     }
                 }
 
@@ -1296,7 +1574,10 @@ private struct PlayerOptionsSheet: View {
                 informationRow("File", value: model.url.lastPathComponent)
                 informationRow("Format", value: model.url.pathExtension.uppercased())
                 informationRow("Duration", value: model.formattedDuration)
-                informationRow("Playback speed", value: String(format: "%.2fx", model.playbackRate))
+                informationRow(
+                    "Playback speed",
+                    value: String(format: "%.2fx", model.playbackRate)
+                )
             }
         }
     }
@@ -1321,7 +1602,11 @@ private struct PlayerOptionsSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(selected ? KinetiqPalette.cyan : .white.opacity(0.65))
+                    .foregroundStyle(
+                        selected
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.65)
+                    )
                     .frame(width: 30)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -1345,14 +1630,20 @@ private struct PlayerOptionsSheet: View {
             }
             .padding(12)
             .background(
-                selected ? KinetiqPalette.cyan.opacity(0.12) : .white.opacity(0.055),
+                selected
+                    ? KinetiqPalette.cyan.opacity(0.12)
+                    : .white.opacity(0.055),
                 in: RoundedRectangle(cornerRadius: 12)
             )
         }
         .buttonStyle(.plain)
     }
 
-    private func unavailableContent(symbol: String, title: String, message: String) -> some View {
+    private func unavailableContent(
+        symbol: String,
+        title: String,
+        message: String
+    ) -> some View {
         VStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 29, weight: .light))
@@ -1372,7 +1663,10 @@ private struct PlayerOptionsSheet: View {
         .padding(.vertical, 22)
     }
 
-    private func informationRow(_ title: String, value: String) -> some View {
+    private func informationRow(
+        _ title: String,
+        value: String
+    ) -> some View {
         HStack(alignment: .top) {
             Text(title)
                 .foregroundStyle(.white.opacity(0.52))

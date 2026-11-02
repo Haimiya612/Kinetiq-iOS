@@ -47,6 +47,9 @@ struct MainTabView: View {
 
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
+    @State private var requestedMediaID: String?
+
+    @StateObject private var playbackHistory = PlaybackHistoryStore.shared
 
     @Namespace private var tabAnimation
 
@@ -59,8 +62,16 @@ struct MainTabView: View {
                 case .home:
                     HomeView(
                         tagline: tagline,
-                        onDiscover: { select(.discover) },
-                        onModules: { select(.modules) }
+                        continueWatching: playbackHistory.continueWatching,
+                        onDiscover: {
+                            select(.discover)
+                        },
+                        onModules: {
+                            select(.modules)
+                        },
+                        onContinueWatching: { entry in
+                            openContinueWatching(entry)
+                        }
                     )
 
                 case .discover:
@@ -72,7 +83,9 @@ struct MainTabView: View {
                     )
 
                 case .library:
-                    LibraryView()
+                    LibraryView(
+                        requestedMediaID: $requestedMediaID
+                    )
 
                 case .modules:
                     KinetiqPlaceholderView(
@@ -112,6 +125,15 @@ struct MainTabView: View {
         .tint(KinetiqPalette.accent)
     }
 
+    // MARK: Continue Watching Routing
+
+    private func openContinueWatching(
+        _ entry: PlaybackHistoryEntry
+    ) {
+        requestedMediaID = entry.id
+        select(.library)
+    }
+
     // MARK: Content Transition
 
     private var contentTransition: AnyTransition {
@@ -148,8 +170,8 @@ struct MainTabView: View {
                     }
                     .foregroundStyle(
                         selectedTab == tab
-                        ? KinetiqPalette.accent
-                        : Color.secondary
+                            ? KinetiqPalette.accent
+                            : Color.secondary
                     )
                     .frame(maxWidth: .infinity)
                     .frame(height: 54)
@@ -195,7 +217,9 @@ struct MainTabView: View {
     // MARK: Selection
 
     private func select(_ tab: KinetiqTab) {
-        guard selectedTab != tab else { return }
+        guard selectedTab != tab else {
+            return
+        }
 
         navigationDirection = tab.index > selectedTab.index
             ? .forward
@@ -203,8 +227,8 @@ struct MainTabView: View {
 
         withAnimation(
             reduceMotion
-            ? .easeInOut(duration: 0.15)
-            : .spring(response: 0.38, dampingFraction: 0.84)
+                ? .easeInOut(duration: 0.15)
+                : .spring(response: 0.38, dampingFraction: 0.84)
         ) {
             selectedTab = tab
         }

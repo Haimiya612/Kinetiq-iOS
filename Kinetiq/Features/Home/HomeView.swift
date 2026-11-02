@@ -1,14 +1,16 @@
-
 import SwiftUI
 import UIKit
 
 struct HomeView: View {
     let tagline: String
+    let continueWatching: [PlaybackHistoryEntry]
     let onDiscover: () -> Void
     let onModules: () -> Void
+    let onContinueWatching: (PlaybackHistoryEntry) -> Void
 
     @State private var selectedCategory = "All"
     @State private var appeared = false
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let categories = [
@@ -27,14 +29,19 @@ struct HomeView: View {
                 heroCard
                     .entrance(appeared, delay: 0.14)
 
+                if !continueWatching.isEmpty {
+                    continueWatchingSection
+                        .entrance(appeared, delay: 0.18)
+                }
+
                 categorySection
-                    .entrance(appeared, delay: 0.20)
+                    .entrance(appeared, delay: 0.22)
 
                 mediaSection
-                    .entrance(appeared, delay: 0.26)
+                    .entrance(appeared, delay: 0.28)
 
                 moduleCard
-                    .entrance(appeared, delay: 0.32)
+                    .entrance(appeared, delay: 0.34)
             }
             .padding(.horizontal, 21)
             .padding(.top, 16)
@@ -44,13 +51,15 @@ struct HomeView: View {
         .onAppear {
             withAnimation(
                 reduceMotion
-                ? .easeInOut(duration: 0.2)
-                : .spring(response: 0.72, dampingFraction: 0.88)
+                    ? .easeInOut(duration: 0.2)
+                    : .spring(response: 0.72, dampingFraction: 0.88)
             ) {
                 appeared = true
             }
         }
     }
+
+    // MARK: Header
 
     private var header: some View {
         HStack(spacing: 10) {
@@ -101,6 +110,8 @@ struct HomeView: View {
         }
     }
 
+    // MARK: Introduction
+
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("ONE HOME. EVERY STORY.")
@@ -115,8 +126,8 @@ struct HomeView: View {
 
             Text(
                 tagline.isEmpty
-                ? "Movies, series, anime and manga -- all moving together."
-                : tagline
+                    ? "Movies, series, anime and manga -- all moving together."
+                    : tagline
             )
             .font(.system(size: 14, weight: .medium))
             .foregroundStyle(.secondary)
@@ -125,6 +136,8 @@ struct HomeView: View {
         }
         .padding(.top, 8)
     }
+
+    // MARK: Hero Card
 
     private var heroCard: some View {
         ZStack(alignment: .bottomLeading) {
@@ -196,7 +209,9 @@ struct HomeView: View {
                         Image(systemName: "arrow.right")
                     }
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color(red: 0.10, green: 0.20, blue: 0.34))
+                    .foregroundStyle(
+                        Color(red: 0.10, green: 0.20, blue: 0.34)
+                    )
                     .padding(.horizontal, 16)
                     .padding(.vertical, 11)
                     .background(.white, in: Capsule())
@@ -207,7 +222,9 @@ struct HomeView: View {
             .padding(21)
         }
         .frame(height: 258)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .clipShape(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .stroke(.white.opacity(0.10), lineWidth: 1)
@@ -220,6 +237,114 @@ struct HomeView: View {
         )
     }
 
+    // MARK: Continue Watching
+
+    private var continueWatchingSection: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            sectionHeading(
+                "Continue watching",
+                detail: "PICK UP WHERE YOU LEFT OFF"
+            )
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(continueWatching) { entry in
+                        Button {
+                            onContinueWatching(entry)
+                        } label: {
+                            continueWatchingCard(entry)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "Continue \(entry.title), \(entry.progressPercent) percent watched"
+                        )
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func continueWatchingCard(
+        _ entry: PlaybackHistoryEntry
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                KinetiqPalette.blue,
+                                KinetiqPalette.violet,
+                                KinetiqPalette.cyan.opacity(0.85)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                Circle()
+                    .stroke(.white.opacity(0.17), lineWidth: 1)
+                    .frame(width: 105, height: 105)
+                    .offset(x: 125, y: -10)
+
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 38, weight: .light))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                HStack {
+                    Label(
+                        "\(entry.progressPercent)%",
+                        systemImage: "play.fill"
+                    )
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.28), in: Capsule())
+
+                    Spacer()
+
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                .padding(10)
+            }
+            .frame(width: 224, height: 112)
+            .clipShape(
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(entry.title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack {
+                    Text("\(entry.progressPercent)% watched")
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 6)
+
+                    Text("\(entry.remainingTimeText) left")
+                        .foregroundStyle(KinetiqPalette.accent)
+                }
+                .font(.system(size: 10, weight: .semibold))
+
+                ProgressView(value: entry.progress)
+                    .tint(KinetiqPalette.accent)
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(width: 224, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: Categories
+
     private var categorySection: some View {
         VStack(alignment: .leading, spacing: 13) {
             sectionHeading(
@@ -231,24 +356,32 @@ struct HomeView: View {
                 HStack(spacing: 8) {
                     ForEach(categories, id: \.self) { category in
                         Button {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                            withAnimation(
+                                .spring(
+                                    response: 0.32,
+                                    dampingFraction: 0.78
+                                )
+                            ) {
                                 selectedCategory = category
                             }
+
                             onDiscover()
                         } label: {
                             Text(category)
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(
                                     selectedCategory == category
-                                    ? .white
-                                    : Color.primary.opacity(0.78)
+                                        ? .white
+                                        : Color.primary.opacity(0.78)
                                 )
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 10)
                                 .background(
                                     selectedCategory == category
-                                    ? KinetiqPalette.accent
-                                    : Color(uiColor: .secondarySystemGroupedBackground),
+                                        ? KinetiqPalette.accent
+                                        : Color(
+                                            uiColor: .secondarySystemGroupedBackground
+                                        ),
                                     in: Capsule()
                                 )
                         }
@@ -258,6 +391,8 @@ struct HomeView: View {
             }
         }
     }
+
+    // MARK: Media Types
 
     private var mediaSection: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -300,6 +435,8 @@ struct HomeView: View {
         }
     }
 
+    // MARK: Modules
+
     private var moduleCard: some View {
         Button(action: onModules) {
             HStack(spacing: 14) {
@@ -309,7 +446,10 @@ struct HomeView: View {
                     .frame(width: 46, height: 46)
                     .background(
                         KinetiqPalette.accent.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        in: RoundedRectangle(
+                            cornerRadius: 15,
+                            style: .continuous
+                        )
                     )
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -338,6 +478,8 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: Shared Section Heading
+
     private func sectionHeading(
         _ title: String,
         detail: String
@@ -356,6 +498,8 @@ struct HomeView: View {
         }
     }
 }
+
+// MARK: - Media Type Card
 
 private struct MediaTypeCard: View {
     let title: String
@@ -402,7 +546,10 @@ private struct MediaTypeCard: View {
                 )
         }
         .scaleEffect(pressed ? 0.975 : 1)
-        .animation(.spring(response: 0.28, dampingFraction: 0.62), value: pressed)
+        .animation(
+            .spring(response: 0.28, dampingFraction: 0.62),
+            value: pressed
+        )
         .onLongPressGesture(
             minimumDuration: 0.01,
             pressing: { pressing in
@@ -413,6 +560,8 @@ private struct MediaTypeCard: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+// MARK: - Entrance Animation
 
 private extension View {
     func entrance(_ appeared: Bool, delay: Double) -> some View {
