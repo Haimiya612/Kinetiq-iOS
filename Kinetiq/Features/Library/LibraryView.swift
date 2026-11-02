@@ -1,4 +1,3 @@
-
 import SwiftUI
 import AVKit
 import UniformTypeIdentifiers
@@ -18,12 +17,43 @@ private struct LocalMedia: Identifiable {
     }
 }
 
+// MARK: - Photo Transfer
+
+private struct PickedMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            let fileExtension = received.file.pathExtension.isEmpty
+                ? "mov"
+                : received.file.pathExtension
+
+            let temporaryURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "\(UUID().uuidString).\(fileExtension)"
+                )
+
+            try FileManager.default.copyItem(
+                at: received.file,
+                to: temporaryURL
+            )
+
+            return PickedMovie(url: temporaryURL)
+        }
+    }
+}
+
 // MARK: - Library View
 
 struct LibraryView: View {
     @State private var media: [LocalMedia] = []
     @State private var selectedMedia: LocalMedia?
+
     @State private var showingImporter = false
+    @State private var showingSourcePicker = false
+    @State private var showingPhotoPicker = false
+
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var errorMessage: String?
     @State private var appeared = false
 
@@ -52,7 +82,7 @@ struct LibraryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showingImporter = true
+                        showingSourcePicker = true
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 16, weight: .bold))
@@ -73,6 +103,27 @@ struct LibraryView: View {
                     .accessibilityLabel("Import media")
                 }
             }
+            .confirmationDialog(
+                "Add to your library",
+                isPresented: $showingSourcePicker,
+                titleVisibility: .visible
+            ) {
+                Button {
+                    showingPhotoPicker = true
+                } label: {
+                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                }
+
+                Button {
+                    showingImporter = true
+                } label: {
+                    Label("Files", systemImage: "folder")
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Choose where you want to import videos from.")
+            }
             .fileImporter(
                 isPresented: $showingImporter,
                 allowedContentTypes: [
@@ -84,6 +135,20 @@ struct LibraryView: View {
                 allowsMultipleSelection: true,
                 onCompletion: handleImport
             )
+            .photosPicker(
+                isPresented: $showingPhotoPicker,
+                selection: $selectedPhotoItems,
+                maxSelectionCount: 20,
+                matching: .videos,
+                preferredItemEncoding: .compatible
+            )
+            .onChange(of: selectedPhotoItems) { _, newItems in
+                guard !newItems.isEmpty else { return }
+
+                Task {
+                    await importPhotos(newItems)
+                }
+            }
             .sheet(item: $selectedMedia) { item in
                 LocalVideoPlayerView(url: item.url)
             }
@@ -149,7 +214,7 @@ struct LibraryView: View {
             }
 
             Button {
-                showingImporter = true
+                showingSourcePicker = true
             } label: {
                 Label("Import videos", systemImage: "plus")
                     .font(.system(.headline, design: .rounded))
@@ -269,7 +334,7 @@ struct LibraryView: View {
         )
     }
 
-    // MARK: Import
+    // MARK: File Import
 
     private func handleImport(_ result: Result<[URL], Error>) {
         switch result {
@@ -290,6 +355,7 @@ struct LibraryView: View {
 
             for sourceURL in urls {
                 let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+
                 defer {
                     if hasAccess {
                         sourceURL.stopAccessingSecurityScopedResource()
@@ -314,6 +380,30 @@ struct LibraryView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: Photo Library Import
+
+    @MainActor
+    private func importPhotos(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            do {
+                guard let movie = try await item.loadTransferable(
+                    type: PickedMovie.self
+                ) else {
+                    continue
+                }
+
+                importFiles([movie.url])
+
+                try? FileManager.default.removeItem(at: movie.url)
+
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+
+        selectedPhotoItems = []
     }
 
     // MARK: Storage
