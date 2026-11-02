@@ -1,0 +1,31 @@
+{
+  "releases": [
+    {
+      "version": "0.2.0",
+      "date": "2026-11-02",
+      "title": "A new chapter for Kinetiq",
+      "notes": [
+        {
+          "symbol": "sparkles",
+          "title": "A refreshed identity",
+          "detail": "Kinetiq now has its own visual identity and app icon."
+        },
+        {
+          "symbol": "square.grid.2x2",
+          "title": "Five main destinations",
+          "detail": "Home, Discover, Library, Modules and Profile form the foundation of the app."
+        },
+        {
+          "symbol": "wand.and.stars",
+          "title": "Refined animations",
+          "detail": "Navigation and interface transitions have received a visual polish."
+        },
+        {
+          "symbol": "gearshape",
+          "title": "Appearance settings",
+          "detail": "The settings area provides access to app appearance and version information."
+        }
+      ]
+    }
+  ]
+}
