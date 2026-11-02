@@ -5,6 +5,7 @@ enum AppStorageKey {
     static let appearance = "kinetiq.appearance"
     static let lastLaunchTagline = "kinetiq.brand.lastLaunchTagline"
     static let playbackHistory = "kinetiq.playbackHistory.v1"
+    static let playbackQueue = "kinetiq.playbackQueue.v1"
 }
 
 // MARK: - Playback History Entry
@@ -71,8 +72,6 @@ final class PlaybackHistoryStore: ObservableObject {
         load()
     }
 
-    // MARK: Public Access
-
     var continueWatching: [PlaybackHistoryEntry] {
         entries
             .filter { $0.progress < completionThreshold }
@@ -95,8 +94,6 @@ final class PlaybackHistoryStore: ObservableObject {
         return entry.position
     }
 
-    // MARK: Save Progress
-
     func save(
         mediaID: String,
         title: String,
@@ -114,14 +111,11 @@ final class PlaybackHistoryStore: ObservableObject {
 
         let safePosition = min(position, duration)
 
-        // A finished video should no longer appear in Continue Watching.
         if safePosition / duration >= completionThreshold {
             remove(mediaID: mediaID)
             return
         }
 
-        // Do not replace a valid saved position with a very early position.
-        // This can happen when a player is opened and closed immediately.
         guard safePosition >= minimumSavedPosition else {
             return
         }
@@ -144,8 +138,6 @@ final class PlaybackHistoryStore: ObservableObject {
         persist()
     }
 
-    // MARK: Remove History
-
     func remove(mediaID: String) {
         let previousCount = entries.count
         entries.removeAll { $0.id == mediaID }
@@ -165,8 +157,6 @@ final class PlaybackHistoryStore: ObservableObject {
         entries.removeAll()
         persist()
     }
-
-    // MARK: Persistence
 
     private func load() {
         guard let data = defaults.data(forKey: storageKey) else {
@@ -206,6 +196,393 @@ final class PlaybackHistoryStore: ObservableObject {
             defaults.set(data, forKey: storageKey)
         } catch {
             // Playback must continue even if history persistence fails.
+        }
+    }
+}
+
+// MARK: - Playback Queue Entry
+
+struct PlaybackQueueEntry: Codable, Identifiable, Equatable {
+    let id: String
+    var title: String
+    var fileURL: URL
+
+    init(
+        id: String,
+        title: String,
+        fileURL: URL
+    ) {
+        self.id = id
+        self.title = title
+        self.fileURL = fileURL
+    }
+}
+
+// MARK: - Repeat Mode
+
+enum PlaybackRepeatMode: String, Codable, CaseIterable, Identifiable {
+    case off
+    case all
+    case one
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .all: "Repeat All"
+        case .one: "Repeat One"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .off: "repeat"
+        case .all: "repeat"
+        case .one: "repeat.1"
+        }
+    }
+
+    var next: PlaybackRepeatMode {
+        switch self {
+        case .off: .all
+        case .all: .one
+        case .one: .off
+        }
+    }
+}
+
+// MARK: - Playback Queue Store
+
+@MainActor
+final class PlaybackQueueStore: ObservableObject {
+    static let shared = PlaybackQueueStore()
+
+    @Published private(set) var entries: [PlaybackQueueEntry] = []
+    @Published private(set) var currentIndex: Int = 0
+    @Published var isShuffled = false
+    @Published var repeatMode: PlaybackRepeatMode = .off
+
+    private let defaults: UserDefaults
+    private let storageKey = AppStorageKey.playbackQueue
+
+    private struct QueueSnapshot: Codable {
+        var entries: [PlaybackQueueEntry]
+        var currentMediaID: String?
+        var isShuffled: Bool
+        var repeatMode: PlaybackRepeatMode
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        restore()
+    }
+
+    // MARK: Current Playback
+
+    var currentEntry: PlaybackQueueEntry? {
+        guard entries.indices.contains(currentIndex) else {
+            return nil
+        }
+
+        return entries[currentIndex]
+    }
+
+    var nextEntry: PlaybackQueueEntry? {
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        if repeatMode == .one {
+            return currentEntry
+        }
+
+        let nextIndex = currentIndex + 1
+
+        if entries.indices.contains(nextIndex) {
+            return entries[nextIndex]
+        }
+
+        return repeatMode == .all ? entries.first : nil
+    }
+
+    var previousEntry: PlaybackQueueEntry? {
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        if currentIndex > 0 {
+            return entries[currentIndex - 1]
+        }
+
+        return repeatMode == .all ? entries.last : nil
+    }
+
+    var upcomingEntries: [PlaybackQueueEntry] {
+        guard !entries.isEmpty,
+              entries.indices.contains(currentIndex) else {
+            return []
+        }
+
+        return Array(entries.dropFirst(currentIndex + 1))
+    }
+
+    var isEmpty: Bool {
+        entries.isEmpty
+    }
+
+    // MARK: Queue Setup
+
+    func replaceQueue(
+        with newEntries: [PlaybackQueueEntry],
+        startingAt mediaID: String
+    ) {
+        var uniqueEntries: [PlaybackQueueEntry] = []
+        var seenIDs = Set<String>()
+
+        for entry in newEntries {
+            guard seenIDs.insert(entry.id).inserted else {
+                continue
+            }
+
+            uniqueEntries.append(entry)
+        }
+
+        entries = uniqueEntries
+
+        if let index = entries.firstIndex(where: { $0.id == mediaID }) {
+            currentIndex = index
+        } else {
+            currentIndex = 0
+        }
+
+        persist()
+    }
+
+    func setCurrent(mediaID: String) {
+        guard let index = entries.firstIndex(where: {
+            $0.id == mediaID
+        }) else {
+            return
+        }
+
+        currentIndex = index
+        persist()
+    }
+
+    // MARK: Add Items
+
+    func enqueue(_ entry: PlaybackQueueEntry) {
+        guard !entries.contains(where: { $0.id == entry.id }) else {
+            return
+        }
+
+        entries.append(entry)
+
+        if entries.count == 1 {
+            currentIndex = 0
+        }
+
+        persist()
+    }
+
+    func enqueue(_ newEntries: [PlaybackQueueEntry]) {
+        for entry in newEntries {
+            if !entries.contains(where: { $0.id == entry.id }) {
+                entries.append(entry)
+            }
+        }
+
+        persist()
+    }
+
+    func playNext(_ entry: PlaybackQueueEntry) {
+        entries.removeAll { $0.id == entry.id }
+
+        if entries.isEmpty {
+            entries = [entry]
+            currentIndex = 0
+        } else {
+            let insertionIndex = min(currentIndex + 1, entries.count)
+            entries.insert(entry, at: insertionIndex)
+        }
+
+        persist()
+    }
+
+    // MARK: Remove and Reorder
+
+    func remove(mediaID: String) {
+        guard let removedIndex = entries.firstIndex(where: {
+            $0.id == mediaID
+        }) else {
+            return
+        }
+
+        entries.remove(at: removedIndex)
+
+        if entries.isEmpty {
+            currentIndex = 0
+        } else if removedIndex < currentIndex {
+            currentIndex -= 1
+        } else if removedIndex == currentIndex {
+            currentIndex = min(currentIndex, entries.count - 1)
+        }
+
+        persist()
+    }
+
+    func move(from source: IndexSet, to destination: Int) {
+        entries.move(fromOffsets: source, toOffset: destination)
+
+        if let currentID = currentEntry?.id,
+           let updatedIndex = entries.firstIndex(where: {
+               $0.id == currentID
+           }) {
+            currentIndex = updatedIndex
+        }
+
+        persist()
+    }
+
+    func clear() {
+        entries.removeAll()
+        currentIndex = 0
+        persist()
+    }
+
+    // MARK: Navigation
+
+    @discardableResult
+    func advance() -> PlaybackQueueEntry? {
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        if repeatMode == .one {
+            return currentEntry
+        }
+
+        if currentIndex + 1 < entries.count {
+            currentIndex += 1
+            persist()
+            return currentEntry
+        }
+
+        guard repeatMode == .all else {
+            return nil
+        }
+
+        currentIndex = 0
+        persist()
+        return currentEntry
+    }
+
+    @discardableResult
+    func goToPrevious() -> PlaybackQueueEntry? {
+        guard !entries.isEmpty else {
+            return nil
+        }
+
+        if currentIndex > 0 {
+            currentIndex -= 1
+            persist()
+            return currentEntry
+        }
+
+        guard repeatMode == .all else {
+            return nil
+        }
+
+        currentIndex = entries.count - 1
+        persist()
+        return currentEntry
+    }
+
+    func play(mediaID: String) -> PlaybackQueueEntry? {
+        guard let index = entries.firstIndex(where: {
+            $0.id == mediaID
+        }) else {
+            return nil
+        }
+
+        currentIndex = index
+        persist()
+        return currentEntry
+    }
+
+    // MARK: Shuffle and Repeat
+
+    func toggleShuffle() {
+        isShuffled.toggle()
+
+        guard entries.count > 2,
+              let current = currentEntry else {
+            persist()
+            return
+        }
+
+        let currentID = current.id
+        var remaining = entries.filter { $0.id != currentID }
+        remaining.shuffle()
+
+        entries = [current] + remaining
+        currentIndex = 0
+
+        persist()
+    }
+
+    func cycleRepeatMode() {
+        repeatMode = repeatMode.next
+        persist()
+    }
+
+    // MARK: Persistence
+
+    private func restore() {
+        guard let data = defaults.data(forKey: storageKey) else {
+            return
+        }
+
+        do {
+            let snapshot = try JSONDecoder().decode(
+                QueueSnapshot.self,
+                from: data
+            )
+
+            entries = snapshot.entries
+            isShuffled = snapshot.isShuffled
+            repeatMode = snapshot.repeatMode
+
+            if let currentMediaID = snapshot.currentMediaID,
+               let index = entries.firstIndex(where: {
+                   $0.id == currentMediaID
+               }) {
+                currentIndex = index
+            } else {
+                currentIndex = 0
+            }
+        } catch {
+            entries = []
+            currentIndex = 0
+            isShuffled = false
+            repeatMode = .off
+        }
+    }
+
+    private func persist() {
+        let snapshot = QueueSnapshot(
+            entries: entries,
+            currentMediaID: currentEntry?.id,
+            isShuffled: isShuffled,
+            repeatMode: repeatMode
+        )
+
+        do {
+            let data = try JSONEncoder().encode(snapshot)
+            defaults.set(data, forKey: storageKey)
+        } catch {
+            // Queue persistence must never interrupt playback.
         }
     }
 }
