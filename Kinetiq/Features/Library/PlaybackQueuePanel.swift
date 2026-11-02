@@ -1,3 +1,4 @@
+
 import SwiftUI
 
 struct PlaybackQueuePanel: View {
@@ -9,32 +10,61 @@ struct PlaybackQueuePanel: View {
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(.white.opacity(0.35))
+                .fill(.white.opacity(0.3))
                 .frame(width: 38, height: 4)
                 .padding(.top, 10)
-                .padding(.bottom, 16)
+                .padding(.bottom, 17)
 
             header
 
             Rectangle()
-                .fill(.white.opacity(0.10))
+                .fill(.white.opacity(0.1))
                 .frame(height: 1)
 
-            if queue.isEmpty {
-                emptyState
-            } else {
-                queueList
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if let current = queue.currentEntry {
+                        sectionTitle("NOW PLAYING")
+
+                        currentRow(current)
+                    }
+
+                    if !queue.upcomingEntries.isEmpty {
+                        sectionTitle("UP NEXT")
+
+                        VStack(spacing: 8) {
+                            ForEach(queue.upcomingEntries) { entry in
+                                queueRow(entry)
+                            }
+                        }
+                    }
+
+                    let previousEntries = previousItems
+
+                    if !previousEntries.isEmpty {
+                        sectionTitle("PLAYED")
+
+                        VStack(spacing: 8) {
+                            ForEach(previousEntries) { entry in
+                                playedRow(entry)
+                            }
+                        }
+                    }
+
+                    if queue.isEmpty {
+                        emptyState
+                    }
+                }
+                .padding(18)
             }
+            .frame(maxHeight: 420)
 
             footer
         }
         .background(.ultraThinMaterial)
         .background(
-            Color(
-                red: 0.035,
-                green: 0.045,
-                blue: 0.065
-            ).opacity(0.94)
+            Color(red: 0.035, green: 0.045, blue: 0.065)
+                .opacity(0.96)
         )
         .clipShape(
             UnevenRoundedRectangle(
@@ -47,36 +77,20 @@ struct PlaybackQueuePanel: View {
                 topLeadingRadius: 24,
                 topTrailingRadius: 24
             )
-            .stroke(.white.opacity(0.13), lineWidth: 1)
+            .stroke(.white.opacity(0.12), lineWidth: 1)
         }
-        .shadow(
-            color: .black.opacity(0.32),
-            radius: 25,
-            y: -5
-        )
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "list.bullet")
-                .foregroundStyle(KinetiqPalette.cyan)
-
-            VStack(alignment: .leading, spacing: 3) {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Up Next")
-                    .font(
-                        .system(
-                            size: 17,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                Text(
-                    "\(queue.entries.count) videos in queue"
-                )
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.48))
+                Text("\(queue.entries.count) videos in queue")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
             }
 
             Spacer()
@@ -86,229 +100,12 @@ struct PlaybackQueuePanel: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white.opacity(0.8))
                     .frame(width: 32, height: 32)
-                    .background(
-                        .white.opacity(0.10),
-                        in: Circle()
-                    )
+                    .background(.white.opacity(0.1), in: Circle())
             }
             .accessibilityLabel("Close queue")
         }
         .padding(.horizontal, 19)
-        .padding(.bottom, 14)
-    }
-
-    private var queueList: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                if let current = queue.currentEntry {
-                    queueRow(
-                        current,
-                        position: queue.currentIndex,
-                        isCurrent: true
-                    )
-                }
-
-                if !queue.upcomingEntries.isEmpty {
-                    HStack {
-                        Text("UP NEXT")
-                            .font(
-                                .system(
-                                    size: 9,
-                                    weight: .bold,
-                                    design: .rounded
-                                )
-                            )
-                            .tracking(1.5)
-                            .foregroundStyle(
-                                .white.opacity(0.42)
-                            )
-
-                        Spacer()
-                    }
-                    .padding(.top, 12)
-                    .padding(.bottom, 3)
-
-                    ForEach(
-                        Array(
-                            queue.upcomingEntries.enumerated()
-                        ),
-                        id: \.element.id
-                    ) { index, entry in
-                        queueRow(
-                            entry,
-                            position: queue.currentIndex + index + 1,
-                            isCurrent: false
-                        )
-                    }
-                }
-
-                if queue.currentIndex > 0 {
-                    HStack {
-                        Text("PLAYED")
-                            .font(
-                                .system(
-                                    size: 9,
-                                    weight: .bold,
-                                    design: .rounded
-                                )
-                            )
-                            .tracking(1.5)
-                            .foregroundStyle(
-                                .white.opacity(0.42)
-                            )
-
-                        Spacer()
-                    }
-                    .padding(.top, 12)
-                    .padding(.bottom, 3)
-
-                    ForEach(
-                        Array(
-                            queue.entries.prefix(queue.currentIndex)
-                        )
-                    ) { entry in
-                        queueRow(
-                            entry,
-                            position: queue.entries.firstIndex(
-                                where: { $0.id == entry.id }
-                            ) ?? 0,
-                            isCurrent: false
-                        )
-                        .opacity(0.48)
-                    }
-                }
-            }
-            .padding(16)
-        }
-        .frame(maxHeight: 330)
-    }
-
-    private func queueRow(
-        _ entry: PlaybackQueueEntry,
-        position: Int,
-        isCurrent: Bool
-    ) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(
-                        isCurrent
-                            ? KinetiqPalette.cyan.opacity(0.16)
-                            : .white.opacity(0.07)
-                    )
-
-                Image(
-                    systemName: isCurrent
-                        ? "waveform"
-                        : "play.fill"
-                )
-                .font(
-                    .system(
-                        size: isCurrent ? 15 : 12,
-                        weight: .semibold
-                    )
-                )
-                .foregroundStyle(
-                    isCurrent
-                        ? KinetiqPalette.cyan
-                        : .white.opacity(0.62)
-                )
-            }
-            .frame(width: 42, height: 42)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.title)
-                    .font(
-                        .system(
-                            size: 12,
-                            weight: .semibold
-                        )
-                    )
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-
-                Text(
-                    isCurrent
-                        ? "NOW PLAYING"
-                        : entry.fileURL.pathExtension.uppercased()
-                )
-                .font(
-                    .system(
-                        size: 9,
-                        weight: .bold,
-                        design: .rounded
-                    )
-                )
-                .tracking(0.8)
-                .foregroundStyle(
-                    isCurrent
-                        ? KinetiqPalette.cyan
-                        : .white.opacity(0.42)
-                )
-            }
-
-            Spacer(minLength: 4)
-
-            if isCurrent {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(KinetiqPalette.cyan)
-            } else {
-                Button {
-                    queue.remove(mediaID: entry.id)
-                } label: {
-                    Image(systemName: "minus.circle")
-                        .font(.system(size: 17))
-                        .foregroundStyle(
-                            .white.opacity(0.48)
-                        )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    "Remove \(entry.title) from queue"
-                )
-            }
-        }
-        .padding(10)
-        .background(
-            isCurrent
-                ? KinetiqPalette.cyan.opacity(0.10)
-                : .white.opacity(0.045),
-            in: RoundedRectangle(cornerRadius: 13)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 13)
-                .stroke(
-                    isCurrent
-                        ? KinetiqPalette.cyan.opacity(0.24)
-                        : .clear,
-                    lineWidth: 1
-                )
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard !isCurrent else { return }
-            onSelect(entry)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "text.badge.plus")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(KinetiqPalette.cyan)
-
-            Text("Your queue is empty")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
-
-            Text("Add videos from your library to play them next.")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.52))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 35)
+        .padding(.bottom, 15)
     }
 
     private var footer: some View {
@@ -320,16 +117,18 @@ struct PlaybackQueuePanel: View {
                     "Shuffle",
                     systemImage: "shuffle"
                 )
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(
                     queue.isShuffled
                         ? KinetiqPalette.cyan
-                        : .white.opacity(0.72)
+                        : .white.opacity(0.75)
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(
-                    .white.opacity(0.07),
+                    queue.isShuffled
+                        ? KinetiqPalette.cyan.opacity(0.14)
+                        : .white.opacity(0.07),
                     in: RoundedRectangle(cornerRadius: 12)
                 )
             }
@@ -342,21 +141,200 @@ struct PlaybackQueuePanel: View {
                     queue.repeatMode.title,
                     systemImage: queue.repeatMode.symbol
                 )
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(
                     queue.repeatMode == .off
-                        ? .white.opacity(0.72)
+                        ? .white.opacity(0.75)
                         : KinetiqPalette.cyan
                 )
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(
-                    .white.opacity(0.07),
+                    queue.repeatMode == .off
+                        ? .white.opacity(0.07)
+                        : KinetiqPalette.cyan.opacity(0.14),
                     in: RoundedRectangle(cornerRadius: 12)
                 )
             }
             .buttonStyle(.plain)
         }
-        .padding(16)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 11) {
+            Image(systemName: "text.badge.plus")
+                .font(.system(size: 29, weight: .light))
+                .foregroundStyle(KinetiqPalette.cyan)
+
+            Text("Your queue is empty")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("Add videos from your library to build your queue.")
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.5))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 35)
+    }
+
+    private var previousItems: [PlaybackQueueEntry] {
+        guard queue.currentIndex > 0 else {
+            return []
+        }
+
+        return Array(queue.entries.prefix(queue.currentIndex).reversed())
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .tracking(1.4)
+            .foregroundStyle(KinetiqPalette.cyan)
+    }
+
+    private func currentRow(
+        _ entry: PlaybackQueueEntry
+    ) -> some View {
+        HStack(spacing: 12) {
+            artwork
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Label("Playing now", systemImage: "waveform")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(KinetiqPalette.cyan)
+            }
+
+            Spacer()
+
+            Image(systemName: "speaker.wave.2.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(KinetiqPalette.cyan)
+        }
+        .padding(11)
+        .background(
+            KinetiqPalette.cyan.opacity(0.1),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(KinetiqPalette.cyan.opacity(0.22), lineWidth: 1)
+        }
+    }
+
+    private func queueRow(
+        _ entry: PlaybackQueueEntry
+    ) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                onSelect(entry)
+            } label: {
+                HStack(spacing: 11) {
+                    artwork
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+
+                        Text("Queued")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(KinetiqPalette.cyan)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                queue.remove(mediaID: entry.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(width: 30, height: 38)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(entry.title) from queue")
+        }
+        .padding(9)
+        .background(
+            .white.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 13)
+        )
+    }
+
+    private func playedRow(
+        _ entry: PlaybackQueueEntry
+    ) -> some View {
+        Button {
+            onSelect(entry)
+        } label: {
+            HStack(spacing: 11) {
+                artwork
+                    .opacity(0.55)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(2)
+
+                    Text("Previously played")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+
+                Spacer()
+
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(9)
+            .background(
+                .white.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: 13)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var artwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            KinetiqPalette.cyan.opacity(0.24),
+                            KinetiqPalette.violet.opacity(0.24)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            Image(systemName: "play.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(KinetiqPalette.cyan)
+        }
+        .frame(width: 43, height: 43)
     }
 }
