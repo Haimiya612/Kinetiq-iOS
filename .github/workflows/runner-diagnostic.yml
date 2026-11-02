@@ -1,0 +1,38 @@
+name: Kinetiq Runner Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-runner:
+    name: Test Ubuntu Runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Confirm Ubuntu runner assignment
+        run: |
+          echo "Ubuntu runner successfully started."
+          echo "Operating system: $(uname -s)"
+          echo "Architecture: $(uname -m)"
+          echo "Hostname: $(hostname)"
+          echo "Runner: $RUNNER_NAME"
+          echo "Diagnostic: PASS"
+
+  macos-runner:
+    name: Test macOS Runner
+    runs-on: macos-15
+    timeout-minutes: 5
+
+    steps:
+      - name: Confirm macOS runner assignment
+        run: |
+          echo "macOS runner successfully started."
+          echo "Operating system: $(uname -s)"
+          echo "Architecture: $(uname -m)"
+          echo "Hostname: $(hostname)"
+          echo "Runner: $RUNNER_NAME"
+          echo "Diagnostic: PASS"
