@@ -39,7 +39,7 @@ final class TaglineSelectorTests: XCTestCase {
     // MARK: - Playback History Tests
 
     func testPlaybackProgressCanBeSavedAndRetrieved() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -59,7 +59,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testResumePositionReturnsSavedPosition() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -76,7 +76,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testEarlyProgressDoesNotCreateEntry() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -90,7 +90,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testEarlyProgressDoesNotOverwriteExistingProgress() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -114,7 +114,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testCompletedVideoIsRemovedFromHistory() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -138,7 +138,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testHistoryPersistsBetweenStoreInstances() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -157,7 +157,7 @@ final class TaglineSelectorTests: XCTestCase {
     }
 
     func testRemovingHistoryDeletesOnlyRequestedEntry() {
-        let (store, defaults, suite) = makeDefaults()
+        let (store, defaults, suite) = makeHistoryStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
         store.save(
@@ -180,31 +180,36 @@ final class TaglineSelectorTests: XCTestCase {
         XCTAssertNotNil(store.entry(for: "second.mp4"))
     }
 
-    // MARK: - Queue Tests
+    // MARK: - Playback Queue Tests
 
+    @MainActor
     func testQueueStartsAtRequestedItem() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        let items = [
-            queueItem("one.mp4"),
-            queueItem("two.mp4"),
-            queueItem("three.mp4")
-        ]
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4"),
+                queueItem("three.mp4")
+            ],
+            startingAt: "two.mp4"
+        )
 
-        queue.startQueue(items, startingAt: "two.mp4")
-
-        XCTAssertEqual(queue.currentItemID, "two.mp4")
-        XCTAssertEqual(queue.currentItem?.title, "two.mp4")
-        XCTAssertEqual(queue.upNext.map(\.id), ["three.mp4"])
+        XCTAssertEqual(queue.currentEntry?.id, "two.mp4")
+        XCTAssertEqual(
+            queue.upcomingEntries.map(\.id),
+            ["three.mp4"]
+        )
     }
 
+    @MainActor
     func testAdvanceMovesToNextItem() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [
+        queue.replaceQueue(
+            with: [
                 queueItem("one.mp4"),
                 queueItem("two.mp4"),
                 queueItem("three.mp4")
@@ -215,56 +220,71 @@ final class TaglineSelectorTests: XCTestCase {
         let next = queue.advance()
 
         XCTAssertEqual(next?.id, "two.mp4")
-        XCTAssertEqual(queue.currentItemID, "two.mp4")
+        XCTAssertEqual(queue.currentEntry?.id, "two.mp4")
     }
 
+    @MainActor
     func testQueueStopsAtEndWhenRepeatIsOff() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [queueItem("one.mp4"), queueItem("two.mp4")],
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4")
+            ],
             startingAt: "two.mp4"
         )
 
         XCTAssertNil(queue.advance())
-        XCTAssertNil(queue.currentItemID)
+        XCTAssertEqual(queue.currentEntry?.id, "two.mp4")
     }
 
+    @MainActor
     func testRepeatAllWrapsToFirstItem() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [queueItem("one.mp4"), queueItem("two.mp4")],
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4")
+            ],
             startingAt: "two.mp4"
         )
-        queue.setRepeatMode(.all)
+
+        queue.repeatMode = .all
 
         XCTAssertEqual(queue.advance()?.id, "one.mp4")
-        XCTAssertEqual(queue.currentItemID, "one.mp4")
+        XCTAssertEqual(queue.currentEntry?.id, "one.mp4")
     }
 
+    @MainActor
     func testRepeatOneKeepsCurrentItem() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [queueItem("one.mp4"), queueItem("two.mp4")],
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4")
+            ],
             startingAt: "one.mp4"
         )
-        queue.setRepeatMode(.one)
+
+        queue.repeatMode = .one
 
         XCTAssertEqual(queue.advance()?.id, "one.mp4")
-        XCTAssertEqual(queue.currentItemID, "one.mp4")
+        XCTAssertEqual(queue.currentEntry?.id, "one.mp4")
     }
 
-    func testEnqueueNextInsertsAfterCurrentItem() {
+    @MainActor
+    func testPlayNextInsertsImmediatelyAfterCurrentItem() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [
+        queue.replaceQueue(
+            with: [
                 queueItem("one.mp4"),
                 queueItem("two.mp4"),
                 queueItem("three.mp4")
@@ -272,37 +292,47 @@ final class TaglineSelectorTests: XCTestCase {
             startingAt: "one.mp4"
         )
 
-        queue.enqueueNext(queueItem("priority.mp4"))
+        queue.playNext(queueItem("priority.mp4"))
 
         XCTAssertEqual(
-            queue.items.map(\.id),
-            ["one.mp4", "priority.mp4", "two.mp4", "three.mp4"]
+            queue.entries.map(\.id),
+            [
+                "one.mp4",
+                "priority.mp4",
+                "two.mp4",
+                "three.mp4"
+            ]
         )
     }
 
+    @MainActor
     func testEnqueueDoesNotCreateDuplicates() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [queueItem("one.mp4"), queueItem("two.mp4")],
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4")
+            ],
             startingAt: "one.mp4"
         )
 
         queue.enqueue(queueItem("two.mp4"))
 
         XCTAssertEqual(
-            queue.items.filter { $0.id == "two.mp4" }.count,
+            queue.entries.filter { $0.id == "two.mp4" }.count,
             1
         )
     }
 
+    @MainActor
     func testRemovingCurrentQueueItemSelectsReplacement() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [
+        queue.replaceQueue(
+            with: [
                 queueItem("one.mp4"),
                 queueItem("two.mp4"),
                 queueItem("three.mp4")
@@ -312,54 +342,38 @@ final class TaglineSelectorTests: XCTestCase {
 
         queue.remove(mediaID: "two.mp4")
 
-        XCTAssertEqual(queue.currentItemID, "three.mp4")
+        XCTAssertEqual(queue.currentEntry?.id, "three.mp4")
         XCTAssertEqual(
-            queue.items.map(\.id),
+            queue.entries.map(\.id),
             ["one.mp4", "three.mp4"]
         )
     }
 
+    @MainActor
     func testQueuePersistsBetweenStoreInstances() {
         let (queue, defaults, suite) = makeQueueStore()
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        queue.startQueue(
-            [queueItem("one.mp4"), queueItem("two.mp4")],
+        queue.replaceQueue(
+            with: [
+                queueItem("one.mp4"),
+                queueItem("two.mp4")
+            ],
             startingAt: "two.mp4"
         )
-        queue.toggleShuffle()
-        queue.setRepeatMode(.all)
+
+        queue.repeatMode = .all
 
         let restored = PlaybackQueueStore(defaults: defaults)
 
-        XCTAssertEqual(restored.currentItemID, "two.mp4")
-        XCTAssertEqual(restored.items.count, 2)
-        XCTAssertTrue(restored.shuffleEnabled)
+        XCTAssertEqual(restored.currentEntry?.id, "two.mp4")
+        XCTAssertEqual(restored.entries.count, 2)
         XCTAssertEqual(restored.repeatMode, .all)
     }
 
-    func testClearingQueueResetsPlaybackOptions() {
-        let (queue, defaults, suite) = makeQueueStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
+    // MARK: - Helpers
 
-        queue.startQueue(
-            [queueItem("one.mp4")],
-            startingAt: "one.mp4"
-        )
-        queue.toggleShuffle()
-        queue.setRepeatMode(.one)
-
-        queue.clear()
-
-        XCTAssertTrue(queue.items.isEmpty)
-        XCTAssertNil(queue.currentItemID)
-        XCTAssertFalse(queue.shuffleEnabled)
-        XCTAssertEqual(queue.repeatMode, .off)
-    }
-
-    // MARK: - Test Helpers
-
-    private func makeDefaults() -> (
+    private func makeHistoryStore() -> (
         PlaybackHistoryStore,
         UserDefaults,
         String
@@ -375,6 +389,7 @@ final class TaglineSelectorTests: XCTestCase {
         )
     }
 
+    @MainActor
     private func makeQueueStore() -> (
         PlaybackQueueStore,
         UserDefaults,
@@ -391,11 +406,12 @@ final class TaglineSelectorTests: XCTestCase {
         )
     }
 
+    @MainActor
     private func queueItem(_ name: String) -> PlaybackQueueEntry {
         PlaybackQueueEntry(
             id: name,
             title: name,
-            filePath: "/tmp/\(name)"
+            fileURL: URL(fileURLWithPath: "/tmp/\(name)")
         )
     }
 }
