@@ -1,21 +1,15 @@
-
 import SwiftUI
 
 @main
 struct KinetiqApp: App {
     @StateObject private var taglineStore: LaunchTaglineStore
+    @StateObject private var whatsNewStore = WhatsNewStore()
 
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
-    @AppStorage("kinetiq.lastSeenWhatsNewVersion")
-    private var lastSeenWhatsNewVersion = ""
-
     @State private var showingWhatsNew = false
-
-    private var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
-    }
+    @State private var checkedForUpdates = false
 
     init() {
         _taglineStore = StateObject(wrappedValue: LaunchTaglineStore())
@@ -28,7 +22,15 @@ struct KinetiqApp: App {
                     AppAppearance(rawValue: appearanceRawValue)?.colorScheme
                 )
                 .task {
-                    guard lastSeenWhatsNewVersion != currentVersion else {
+                    guard !checkedForUpdates else { return }
+                    checkedForUpdates = true
+
+                    await whatsNewStore.load()
+
+                    guard
+                        !Task.isCancelled,
+                        whatsNewStore.hasUnseenReleases
+                    else {
                         return
                     }
 
@@ -40,10 +42,12 @@ struct KinetiqApp: App {
                 .sheet(
                     isPresented: $showingWhatsNew,
                     onDismiss: {
-                        lastSeenWhatsNewVersion = currentVersion
+                        whatsNewStore.markLatestAsSeen()
                     }
                 ) {
-                    WhatsNewView()
+                    WhatsNewView(
+                        releases: whatsNewStore.unseenReleases
+                    )
                 }
         }
     }
