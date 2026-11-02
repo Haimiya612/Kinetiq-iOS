@@ -38,7 +38,7 @@ final class WhatsNewStore: ObservableObject {
     )!
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
 
     // Local fallback in case GitHub is unavailable on first launch.
@@ -69,6 +69,33 @@ final class WhatsNewStore: ObservableObject {
               "symbol": "gearshape",
               "title": "Appearance settings",
               "detail": "The settings area provides access to app appearance and version information."
+            }
+          ]
+        },
+        {
+          "version": "0.3.0",
+          "date": "2026-11-02",
+          "title": "A better way to watch",
+          "notes": [
+            {
+              "symbol": "arrow.up.left.and.arrow.down.right",
+              "title": "Full-screen video player",
+              "detail": "The player now gives your video the entire screen, with controls layered above it instead of taking up permanent layout space."
+            },
+            {
+              "symbol": "slider.horizontal.3",
+              "title": "Floating player controls",
+              "detail": "Playback, audio, subtitle and other options open as translucent overlays while the video remains visible behind them."
+            },
+            {
+              "symbol": "hand.tap",
+              "title": "Tap to reveal or hide",
+              "detail": "Tap the video to show or hide the player interface. Controls also fade away automatically during playback and remain available while paused."
+            },
+            {
+              "symbol": "play.rectangle",
+              "title": "Improved playback experience",
+              "detail": "The updated layout makes better use of the display while keeping essential playback actions close at hand."
             }
           ]
         }
@@ -189,7 +216,7 @@ struct SettingsView: View {
     @State private var showingWhatsNew = false
 
     private var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
 
     var body: some View {
@@ -280,7 +307,7 @@ struct WhatsNewView: View {
     @State private var appeared = false
 
     private var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
 
     var body: some View {
