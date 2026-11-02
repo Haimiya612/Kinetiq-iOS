@@ -16,12 +16,12 @@ on:
         description: "Choose the macOS runner"
         required: true
         type: choice
-        default: macos-26-intel
+        default: macos-26
         options:
-          - macos-26-intel
-          - macos-15-intel
           - macos-26
+          - macos-26-intel
           - macos-15
+          - macos-15-intel
 
 permissions:
   contents: read
@@ -33,13 +33,13 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and Test Kinetiq
-    runs-on: ${{ inputs.runner || 'macos-26-intel' }}
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 40
 
     env:
       PROJECT: Kinetiq.xcodeproj
       SCHEME: Kinetiq
-      DERIVED_DATA: ${{ runner.temp }}/KinetiqDerivedData
+      DERIVED_DATA: ${{ github.workspace }}/DerivedData
 
     steps:
       # --------------------------------------------------
@@ -66,7 +66,7 @@ jobs:
             DEVELOPER="/Applications/Xcode.app/Contents/Developer"
           else
             DEVELOPER="$(find /Applications \
-              -maxdepth 2 \
+              -maxdepth 4 \
               -type d \
               -path '*/Contents/Developer' \
               -name Developer \
@@ -145,7 +145,6 @@ jobs:
           )
 
           data = json.loads(result.stdout)
-
           devices = []
 
           for runtime, runtime_devices in data["devices"].items():
@@ -156,7 +155,6 @@ jobs:
                   ):
                       devices.append(device)
 
-          # Prefer iPhone 17 Pro when available.
           selected = next(
               (d for d in devices if d["name"] == "iPhone 17 Pro"),
               devices[0] if devices else None
@@ -167,7 +165,7 @@ jobs:
               print(f"Simulator UUID: {selected['udid']}")
 
               with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                  output.write(f"available=true\n")
+                  output.write("available=true\n")
                   output.write(f"udid={selected['udid']}\n")
           else:
               print("No available iPhone simulator was found.")
@@ -252,7 +250,7 @@ jobs:
           echo "Unsigned IPA created successfully."
 
       # --------------------------------------------------
-      # 9. Upload IPA artifact
+      # 9. Upload unsigned IPA
       # --------------------------------------------------
 
       - name: Upload unsigned IPA
