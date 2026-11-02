@@ -2,6 +2,8 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Tab Navigation
+
 private enum KinetiqTab: String, CaseIterable, Identifiable {
     case home = "Home"
     case discover = "Discover"
@@ -10,6 +12,10 @@ private enum KinetiqTab: String, CaseIterable, Identifiable {
     case profile = "Profile"
 
     var id: String { rawValue }
+
+    var index: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
 
     var symbol: String {
         switch self {
@@ -22,11 +28,29 @@ private enum KinetiqTab: String, CaseIterable, Identifiable {
     }
 }
 
+private enum TabNavigationDirection {
+    case forward
+    case backward
+
+    var insertionEdge: Edge {
+        self == .forward ? .trailing : .leading
+    }
+
+    var removalEdge: Edge {
+        self == .forward ? .leading : .trailing
+    }
+}
+
+// MARK: - Main Tab View
+
 struct MainTabView: View {
     let tagline: String
 
     @State private var selectedTab: KinetiqTab = .home
+    @State private var navigationDirection: TabNavigationDirection = .forward
+
     @Namespace private var tabAnimation
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -39,6 +63,7 @@ struct MainTabView: View {
                         onDiscover: { select(.discover) },
                         onModules: { select(.modules) }
                     )
+
                 case .discover:
                     KinetiqPlaceholderView(
                         title: "Discover",
@@ -46,8 +71,10 @@ struct MainTabView: View {
                         symbol: "sparkle.magnifyingglass",
                         accent: KinetiqPalette.cyan
                     )
+
                 case .library:
                     LibraryView()
+
                 case .modules:
                     KinetiqPlaceholderView(
                         title: "Modules",
@@ -55,6 +82,7 @@ struct MainTabView: View {
                         symbol: "square.stack.3d.up.fill",
                         accent: KinetiqPalette.violet
                     )
+
                 case .profile:
                     NavigationStack {
                         KinetiqPlaceholderView(
@@ -77,20 +105,30 @@ struct MainTabView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id(selectedTab)
-            .transition(
-                reduceMotion
-                ? .opacity
-                : .asymmetric(
-                    insertion: .opacity.combined(with: .move(edge: .trailing)),
-                    removal: .opacity.combined(with: .move(edge: .leading))
-                )
-            )
+            .transition(contentTransition)
 
             bottomBar
         }
         .background(Color(uiColor: .systemBackground))
         .tint(KinetiqPalette.accent)
     }
+
+    // MARK: Content Transition
+
+    private var contentTransition: AnyTransition {
+        guard !reduceMotion else {
+            return .opacity
+        }
+
+        return .asymmetric(
+            insertion: .move(edge: navigationDirection.insertionEdge)
+                .combined(with: .opacity),
+            removal: .move(edge: navigationDirection.removalEdge)
+                .combined(with: .opacity)
+        )
+    }
+
+    // MARK: Bottom Navigation
 
     private var bottomBar: some View {
         HStack(spacing: 5) {
@@ -101,7 +139,10 @@ struct MainTabView: View {
                     VStack(spacing: 5) {
                         Image(systemName: tab.symbol)
                             .font(.system(size: 18, weight: .semibold))
-                            .symbolEffect(.bounce, value: selectedTab == tab)
+                            .symbolEffect(
+                                .bounce,
+                                value: selectedTab == tab
+                            )
 
                         Text(tab.rawValue)
                             .font(.system(size: 10, weight: .semibold))
@@ -119,7 +160,9 @@ struct MainTabView: View {
                                 cornerRadius: 16,
                                 style: .continuous
                             )
-                            .fill(KinetiqPalette.accent.opacity(0.12))
+                            .fill(
+                                KinetiqPalette.accent.opacity(0.12)
+                            )
                             .matchedGeometryEffect(
                                 id: "active-tab",
                                 in: tabAnimation
@@ -150,8 +193,14 @@ struct MainTabView: View {
         }
     }
 
+    // MARK: Selection
+
     private func select(_ tab: KinetiqTab) {
         guard selectedTab != tab else { return }
+
+        navigationDirection = tab.index > selectedTab.index
+            ? .forward
+            : .backward
 
         withAnimation(
             reduceMotion
@@ -162,6 +211,8 @@ struct MainTabView: View {
         }
     }
 }
+
+// MARK: - Placeholder Screens
 
 private struct KinetiqPlaceholderView: View {
     let title: String
@@ -181,7 +232,10 @@ private struct KinetiqPlaceholderView: View {
                         .frame(width: 42, height: 42)
                         .background(
                             LinearGradient(
-                                colors: [KinetiqPalette.cyan, KinetiqPalette.violet],
+                                colors: [
+                                    KinetiqPalette.cyan,
+                                    KinetiqPalette.violet
+                                ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
@@ -189,7 +243,13 @@ private struct KinetiqPlaceholderView: View {
                         )
 
                     Text("KINETIQ")
-                        .font(.system(size: 15, weight: .black, design: .rounded))
+                        .font(
+                            .system(
+                                size: 15,
+                                weight: .black,
+                                design: .rounded
+                            )
+                        )
                         .tracking(2)
 
                     Spacer()
@@ -197,12 +257,24 @@ private struct KinetiqPlaceholderView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("YOUR MEDIA UNIVERSE")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(
+                            .system(
+                                size: 10,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
                         .tracking(2)
                         .foregroundStyle(accent)
 
                     Text(title)
-                        .font(.system(size: 37, weight: .bold, design: .rounded))
+                        .font(
+                            .system(
+                                size: 37,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
                         .tracking(-1.2)
 
                     Text(subtitle)
@@ -212,18 +284,23 @@ private struct KinetiqPlaceholderView: View {
                 }
 
                 ZStack {
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    accent.opacity(0.25),
-                                    accent.opacity(0.06),
-                                    Color(uiColor: .secondarySystemGroupedBackground)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
+                    RoundedRectangle(
+                        cornerRadius: 28,
+                        style: .continuous
+                    )
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                accent.opacity(0.25),
+                                accent.opacity(0.06),
+                                Color(
+                                    uiColor: .secondarySystemGroupedBackground
+                                )
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
+                    )
 
                     Circle()
                         .fill(accent.opacity(0.12))
@@ -238,11 +315,20 @@ private struct KinetiqPlaceholderView: View {
                 }
                 .frame(height: 220)
                 .clipShape(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    RoundedRectangle(
+                        cornerRadius: 28,
+                        style: .continuous
+                    )
                 )
 
                 Text("A NEW CHAPTER IS TAKING SHAPE")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .font(
+                        .system(
+                            size: 9,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
                     .tracking(1.6)
                     .foregroundStyle(.secondary)
             }
@@ -251,7 +337,9 @@ private struct KinetiqPlaceholderView: View {
             .offset(y: appeared ? 0 : 12)
         }
         .onAppear {
-            withAnimation(.spring(response: 0.65, dampingFraction: 0.86)) {
+            withAnimation(
+                .spring(response: 0.65, dampingFraction: 0.86)
+            ) {
                 appeared = true
             }
         }
