@@ -2,6 +2,7 @@
 import SwiftUI
 import AVKit
 import UniformTypeIdentifiers
+import PhotosUI
 
 // MARK: - Local Media
 
