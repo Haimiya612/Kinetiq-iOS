@@ -1,3 +1,4 @@
+
 # Kinetiq -- Development Roadmap
 
 Kinetiq is an independent, native iOS media platform designed to bring video,
@@ -63,6 +64,12 @@ implementations from other applications.
 - [x] Pin the What's New continuation action to the bottom of its presentation.
 
 ## Development Infrastructure
+
+- [ ] Refine the primary navigation around four destinations: Home, Favorites, Downloads, and Settings.
+- [ ] Merge the local Library experience into Home instead of dedicating a bottom-navigation destination to it.
+- [ ] Add a source/module picker at the top of Home, below the Dynamic Island and safe-area region.
+- [ ] Add a Video/Manga mode switch directly below the source picker.
+- [ ] Keep the navigation architecture extensible for a future fifth destination.
 
 - [x] Configure the GitHub repository.
 - [x] Configure GitHub Actions.
@@ -133,7 +140,12 @@ into remote content and additional media categories.
 
 ## Player Experience
 
-- [ ] Generate and cache local video thumbnails.
+- [ ] Generate and cache local video thumbnails for both Library and Home's Continue Watching cards.
+- [ ] Persist generated thumbnail files so they survive app restarts and are not regenerated unnecessarily.
+- [ ] Associate thumbnails with stable media identifiers and invalidate them when media changes or is removed.
+- [ ] Prefer source/module-provided episode artwork for remote media when available.
+- [ ] Generate a representative frame from a playable remote stream when source artwork is unavailable and the stream permits it.
+- [ ] Provide a consistent artwork fallback for media without a usable thumbnail.
 - [ ] Display technical video resolution.
 - [ ] Display local file size.
 - [ ] Display file format and duration.
@@ -182,8 +194,12 @@ system.
 
 ## Organization
 
+- [ ] Merge the local Library into the Home experience while retaining a dedicated in-Home library destination/view.
+- [ ] Implement the Home source/module picker.
+- [ ] Implement the Video/Manga mode switch beneath the source picker.
 - [ ] Implement media categories.
-- [ ] Implement favorites.
+- [ ] Implement the Favorites destination and its saved-media collection.
+- [ ] Implement favorites for local media and, later, module-provided media.
 - [ ] Implement custom collections.
 - [ ] Implement playlists for local video.
 - [ ] Add sorting options.
@@ -552,6 +568,7 @@ and devices.
 
 ## Downloads
 
+- [ ] Add Downloads as a primary bottom-navigation destination.
 - [ ] Implement a download manager.
 - [ ] Support download queues.
 - [ ] Display download progress.
@@ -661,7 +678,10 @@ and devices.
 The current implementation includes:
 
 - Native SwiftUI application architecture.
-- Five main navigation destinations.
+- Existing five-destination navigation remains in the current app build until the planned four-destination redesign is applied.
+- The Home source picker and Video/Manga switcher are planned as top-level Home controls.
+- The Library is planned to become part of Home rather than a separate bottom-navigation destination.
+- Continue Watching thumbnail generation is planned to use persistent local frame thumbnails or source-provided episode artwork, with a generated-frame fallback when supported.
 - Persistent appearance preferences.
 - Launch tagline selection.
 - What's New presentation for unseen release notes.
