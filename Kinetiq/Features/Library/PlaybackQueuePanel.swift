@@ -1,10 +1,10 @@
-
 import SwiftUI
 
 struct PlaybackQueuePanel: View {
     @ObservedObject var queue: PlaybackQueueStore
 
     let onSelect: (PlaybackQueueEntry) -> Void
+    let onRemove: (PlaybackQueueEntry) -> Void
     let onClose: () -> Void
 
     var body: some View {
@@ -25,13 +25,11 @@ struct PlaybackQueuePanel: View {
                 VStack(alignment: .leading, spacing: 20) {
                     if let current = queue.currentEntry {
                         sectionTitle("NOW PLAYING")
-
                         currentRow(current)
                     }
 
                     if !queue.upcomingEntries.isEmpty {
                         sectionTitle("UP NEXT")
-
                         VStack(spacing: 8) {
                             ForEach(queue.upcomingEntries) { entry in
                                 queueRow(entry)
@@ -40,10 +38,8 @@ struct PlaybackQueuePanel: View {
                     }
 
                     let previousEntries = previousItems
-
                     if !previousEntries.isEmpty {
                         sectionTitle("PLAYED")
-
                         VStack(spacing: 8) {
                             ForEach(previousEntries) { entry in
                                 playedRow(entry)
@@ -62,10 +58,7 @@ struct PlaybackQueuePanel: View {
             footer
         }
         .background(.ultraThinMaterial)
-        .background(
-            Color(red: 0.035, green: 0.045, blue: 0.065)
-                .opacity(0.96)
-        )
+        .background(Color(red: 0.035, green: 0.045, blue: 0.065).opacity(0.96))
         .clipShape(
             UnevenRoundedRectangle(
                 topLeadingRadius: 24,
@@ -113,48 +106,30 @@ struct PlaybackQueuePanel: View {
             Button {
                 queue.toggleShuffle()
             } label: {
-                Label(
-                    "Shuffle",
-                    systemImage: "shuffle"
-                )
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(
-                    queue.isShuffled
-                        ? KinetiqPalette.cyan
-                        : .white.opacity(0.75)
-                )
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(
-                    queue.isShuffled
-                        ? KinetiqPalette.cyan.opacity(0.14)
-                        : .white.opacity(0.07),
-                    in: RoundedRectangle(cornerRadius: 12)
-                )
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(queue.isShuffled ? KinetiqPalette.cyan : .white.opacity(0.75))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        queue.isShuffled ? KinetiqPalette.cyan.opacity(0.14) : .white.opacity(0.07),
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
             }
             .buttonStyle(.plain)
 
             Button {
                 queue.cycleRepeatMode()
             } label: {
-                Label(
-                    queue.repeatMode.title,
-                    systemImage: queue.repeatMode.symbol
-                )
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(
-                    queue.repeatMode == .off
-                        ? .white.opacity(0.75)
-                        : KinetiqPalette.cyan
-                )
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(
-                    queue.repeatMode == .off
-                        ? .white.opacity(0.07)
-                        : KinetiqPalette.cyan.opacity(0.14),
-                    in: RoundedRectangle(cornerRadius: 12)
-                )
+                Label(queue.repeatMode.title, systemImage: queue.repeatMode.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(queue.repeatMode == .off ? .white.opacity(0.75) : KinetiqPalette.cyan)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        queue.repeatMode == .off ? .white.opacity(0.07) : KinetiqPalette.cyan.opacity(0.14),
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
             }
             .buttonStyle(.plain)
         }
@@ -183,10 +158,7 @@ struct PlaybackQueuePanel: View {
     }
 
     private var previousItems: [PlaybackQueueEntry] {
-        guard queue.currentIndex > 0 else {
-            return []
-        }
-
+        guard queue.currentIndex > 0 else { return [] }
         return Array(queue.entries.prefix(queue.currentIndex).reversed())
     }
 
@@ -197,9 +169,7 @@ struct PlaybackQueuePanel: View {
             .foregroundStyle(KinetiqPalette.cyan)
     }
 
-    private func currentRow(
-        _ entry: PlaybackQueueEntry
-    ) -> some View {
+    private func currentRow(_ entry: PlaybackQueueEntry) -> some View {
         HStack(spacing: 12) {
             artwork
 
@@ -221,19 +191,14 @@ struct PlaybackQueuePanel: View {
                 .foregroundStyle(KinetiqPalette.cyan)
         }
         .padding(11)
-        .background(
-            KinetiqPalette.cyan.opacity(0.1),
-            in: RoundedRectangle(cornerRadius: 14)
-        )
+        .background(KinetiqPalette.cyan.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(KinetiqPalette.cyan.opacity(0.22), lineWidth: 1)
         }
     }
 
-    private func queueRow(
-        _ entry: PlaybackQueueEntry
-    ) -> some View {
+    private func queueRow(_ entry: PlaybackQueueEntry) -> some View {
         HStack(spacing: 10) {
             Button {
                 onSelect(entry)
@@ -263,7 +228,7 @@ struct PlaybackQueuePanel: View {
             .buttonStyle(.plain)
 
             Button {
-                queue.remove(mediaID: entry.id)
+                onRemove(entry)
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
@@ -275,21 +240,15 @@ struct PlaybackQueuePanel: View {
             .accessibilityLabel("Remove \(entry.title) from queue")
         }
         .padding(9)
-        .background(
-            .white.opacity(0.055),
-            in: RoundedRectangle(cornerRadius: 13)
-        )
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
     }
 
-    private func playedRow(
-        _ entry: PlaybackQueueEntry
-    ) -> some View {
+    private func playedRow(_ entry: PlaybackQueueEntry) -> some View {
         Button {
             onSelect(entry)
         } label: {
             HStack(spacing: 11) {
-                artwork
-                    .opacity(0.55)
+                artwork.opacity(0.55)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(entry.title)
@@ -309,10 +268,7 @@ struct PlaybackQueuePanel: View {
                     .foregroundStyle(.white.opacity(0.4))
             }
             .padding(9)
-            .background(
-                .white.opacity(0.035),
-                in: RoundedRectangle(cornerRadius: 13)
-            )
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 13))
         }
         .buttonStyle(.plain)
     }
@@ -322,10 +278,7 @@ struct PlaybackQueuePanel: View {
             RoundedRectangle(cornerRadius: 9)
                 .fill(
                     LinearGradient(
-                        colors: [
-                            KinetiqPalette.cyan.opacity(0.24),
-                            KinetiqPalette.violet.opacity(0.24)
-                        ],
+                        colors: [KinetiqPalette.cyan.opacity(0.24), KinetiqPalette.violet.opacity(0.24)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )

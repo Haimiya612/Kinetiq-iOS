@@ -35,18 +35,14 @@ struct PlaybackHistoryEntry: Codable, Identifiable, Equatable {
     }
 
     private static func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else {
-            return "0 min"
-        }
+        guard seconds.isFinite, seconds >= 0 else { return "0 min" }
 
         let totalMinutes = Int(ceil(seconds / 60))
         let hours = totalMinutes / 60
         let minutes = totalMinutes % 60
 
         if hours > 0 {
-            return minutes == 0
-                ? "\(hours) hr"
-                : "\(hours) hr \(minutes) min"
+            return minutes == 0 ? "\(hours) hr" : "\(hours) hr \(minutes) min"
         }
 
         return "\(max(totalMinutes, 1)) min"
@@ -62,7 +58,6 @@ final class PlaybackHistoryStore: ObservableObject {
 
     private let defaults: UserDefaults
     private let storageKey = AppStorageKey.playbackHistory
-
     private let minimumSavedPosition: Double = 8
     private let completionThreshold: Double = 0.97
     private let maximumEntries = 30
@@ -83,11 +78,8 @@ final class PlaybackHistoryStore: ObservableObject {
     }
 
     func resumePosition(for mediaID: String) -> Double {
-        guard let entry = entry(for: mediaID) else {
-            return 0
-        }
-
-        guard entry.progress < completionThreshold else {
+        guard let entry = entry(for: mediaID),
+              entry.progress < completionThreshold else {
             return 0
         }
 
@@ -116,9 +108,7 @@ final class PlaybackHistoryStore: ObservableObject {
             return
         }
 
-        guard safePosition >= minimumSavedPosition else {
-            return
-        }
+        guard safePosition >= minimumSavedPosition else { return }
 
         let newEntry = PlaybackHistoryEntry(
             id: mediaID,
@@ -141,19 +131,12 @@ final class PlaybackHistoryStore: ObservableObject {
     func remove(mediaID: String) {
         let previousCount = entries.count
         entries.removeAll { $0.id == mediaID }
-
-        guard entries.count != previousCount else {
-            return
-        }
-
+        guard entries.count != previousCount else { return }
         persist()
     }
 
     func clear() {
-        guard !entries.isEmpty else {
-            return
-        }
-
+        guard !entries.isEmpty else { return }
         entries.removeAll()
         persist()
     }
@@ -165,11 +148,7 @@ final class PlaybackHistoryStore: ObservableObject {
         }
 
         do {
-            let decoded = try JSONDecoder().decode(
-                [PlaybackHistoryEntry].self,
-                from: data
-            )
-
+            let decoded = try JSONDecoder().decode([PlaybackHistoryEntry].self, from: data)
             entries = decoded
                 .filter {
                     !$0.id.isEmpty
@@ -180,9 +159,7 @@ final class PlaybackHistoryStore: ObservableObject {
                     && $0.duration > 0
                     && $0.progress < completionThreshold
                 }
-                .sorted {
-                    $0.lastPlayedAt > $1.lastPlayedAt
-                }
+                .sorted { $0.lastPlayedAt > $1.lastPlayedAt }
                 .prefix(maximumEntries)
                 .map { $0 }
         } catch {
@@ -207,11 +184,7 @@ struct PlaybackQueueEntry: Codable, Identifiable, Equatable {
     var title: String
     var fileURL: URL
 
-    init(
-        id: String,
-        title: String,
-        fileURL: URL
-    ) {
+    init(id: String, title: String, fileURL: URL) {
         self.id = id
         self.title = title
         self.fileURL = fileURL
@@ -237,8 +210,7 @@ enum PlaybackRepeatMode: String, Codable, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .off: "repeat"
-        case .all: "repeat"
+        case .off, .all: "repeat"
         case .one: "repeat.1"
         }
     }
@@ -260,11 +232,24 @@ final class PlaybackQueueStore: ObservableObject {
 
     @Published private(set) var entries: [PlaybackQueueEntry] = []
     @Published private(set) var currentIndex: Int = 0
-    @Published var isShuffled = false
-    @Published var repeatMode: PlaybackRepeatMode = .off
+
+    // These remain externally settable for the existing UI/tests. Direct changes
+    // are persisted too, fixing the old repeat-mode restore failure.
+    @Published var isShuffled = false {
+        didSet {
+            if !isRestoring { persist() }
+        }
+    }
+
+    @Published var repeatMode: PlaybackRepeatMode = .off {
+        didSet {
+            if !isRestoring { persist() }
+        }
+    }
 
     private let defaults: UserDefaults
     private let storageKey = AppStorageKey.playbackQueue
+    private var isRestoring = false
 
     private struct QueueSnapshot: Codable {
         var entries: [PlaybackQueueEntry]
@@ -281,91 +266,49 @@ final class PlaybackQueueStore: ObservableObject {
     // MARK: Current Playback
 
     var currentEntry: PlaybackQueueEntry? {
-        guard entries.indices.contains(currentIndex) else {
-            return nil
-        }
-
+        guard entries.indices.contains(currentIndex) else { return nil }
         return entries[currentIndex]
     }
 
     var nextEntry: PlaybackQueueEntry? {
-        guard !entries.isEmpty else {
-            return nil
-        }
-
-        if repeatMode == .one {
-            return currentEntry
-        }
+        guard !entries.isEmpty else { return nil }
+        if repeatMode == .one { return currentEntry }
 
         let nextIndex = currentIndex + 1
-
-        if entries.indices.contains(nextIndex) {
-            return entries[nextIndex]
-        }
-
+        if entries.indices.contains(nextIndex) { return entries[nextIndex] }
         return repeatMode == .all ? entries.first : nil
     }
 
     var previousEntry: PlaybackQueueEntry? {
-        guard !entries.isEmpty else {
-            return nil
-        }
-
-        if currentIndex > 0 {
-            return entries[currentIndex - 1]
-        }
-
+        guard !entries.isEmpty else { return nil }
+        if currentIndex > 0 { return entries[currentIndex - 1] }
         return repeatMode == .all ? entries.last : nil
     }
 
     var upcomingEntries: [PlaybackQueueEntry] {
-        guard !entries.isEmpty,
-              entries.indices.contains(currentIndex) else {
-            return []
-        }
-
+        guard !entries.isEmpty, entries.indices.contains(currentIndex) else { return [] }
         return Array(entries.dropFirst(currentIndex + 1))
     }
 
-    var isEmpty: Bool {
-        entries.isEmpty
-    }
+    var isEmpty: Bool { entries.isEmpty }
 
     // MARK: Queue Setup
 
-    func replaceQueue(
-        with newEntries: [PlaybackQueueEntry],
-        startingAt mediaID: String
-    ) {
+    func replaceQueue(with newEntries: [PlaybackQueueEntry], startingAt mediaID: String) {
         var uniqueEntries: [PlaybackQueueEntry] = []
         var seenIDs = Set<String>()
 
-        for entry in newEntries {
-            guard seenIDs.insert(entry.id).inserted else {
-                continue
-            }
-
+        for entry in newEntries where seenIDs.insert(entry.id).inserted {
             uniqueEntries.append(entry)
         }
 
         entries = uniqueEntries
-
-        if let index = entries.firstIndex(where: { $0.id == mediaID }) {
-            currentIndex = index
-        } else {
-            currentIndex = 0
-        }
-
+        currentIndex = entries.firstIndex(where: { $0.id == mediaID }) ?? 0
         persist()
     }
 
     func setCurrent(mediaID: String) {
-        guard let index = entries.firstIndex(where: {
-            $0.id == mediaID
-        }) else {
-            return
-        }
-
+        guard let index = entries.firstIndex(where: { $0.id == mediaID }) else { return }
         currentIndex = index
         persist()
     }
@@ -373,38 +316,37 @@ final class PlaybackQueueStore: ObservableObject {
     // MARK: Add Items
 
     func enqueue(_ entry: PlaybackQueueEntry) {
-        guard !entries.contains(where: { $0.id == entry.id }) else {
-            return
-        }
-
+        guard !entries.contains(where: { $0.id == entry.id }) else { return }
         entries.append(entry)
-
-        if entries.count == 1 {
-            currentIndex = 0
-        }
-
+        if entries.count == 1 { currentIndex = 0 }
         persist()
     }
 
     func enqueue(_ newEntries: [PlaybackQueueEntry]) {
-        for entry in newEntries {
-            if !entries.contains(where: { $0.id == entry.id }) {
-                entries.append(entry)
-            }
+        for entry in newEntries where !entries.contains(where: { $0.id == entry.id }) {
+            entries.append(entry)
         }
-
         persist()
     }
 
     func playNext(_ entry: PlaybackQueueEntry) {
+        // Moving the currently playing item next to itself would interrupt the
+        // queue's identity, so treat it as an intentional no-op.
+        if currentEntry?.id == entry.id {
+            persist()
+            return
+        }
+
+        let activeID = currentEntry?.id
         entries.removeAll { $0.id == entry.id }
 
-        if entries.isEmpty {
-            entries = [entry]
-            currentIndex = 0
+        if let activeID,
+           let activeIndex = entries.firstIndex(where: { $0.id == activeID }) {
+            entries.insert(entry, at: min(activeIndex + 1, entries.count))
+            currentIndex = activeIndex
         } else {
-            let insertionIndex = min(currentIndex + 1, entries.count)
-            entries.insert(entry, at: insertionIndex)
+            entries.insert(entry, at: 0)
+            currentIndex = 0
         }
 
         persist()
@@ -413,12 +355,7 @@ final class PlaybackQueueStore: ObservableObject {
     // MARK: Remove and Reorder
 
     func remove(mediaID: String) {
-        guard let removedIndex = entries.firstIndex(where: {
-            $0.id == mediaID
-        }) else {
-            return
-        }
-
+        guard let removedIndex = entries.firstIndex(where: { $0.id == mediaID }) else { return }
         entries.remove(at: removedIndex)
 
         if entries.isEmpty {
@@ -436,9 +373,7 @@ final class PlaybackQueueStore: ObservableObject {
         entries.move(fromOffsets: source, toOffset: destination)
 
         if let currentID = currentEntry?.id,
-           let updatedIndex = entries.firstIndex(where: {
-               $0.id == currentID
-           }) {
+           let updatedIndex = entries.firstIndex(where: { $0.id == currentID }) {
             currentIndex = updatedIndex
         }
 
@@ -455,13 +390,8 @@ final class PlaybackQueueStore: ObservableObject {
 
     @discardableResult
     func advance() -> PlaybackQueueEntry? {
-        guard !entries.isEmpty else {
-            return nil
-        }
-
-        if repeatMode == .one {
-            return currentEntry
-        }
+        guard !entries.isEmpty else { return nil }
+        if repeatMode == .one { return currentEntry }
 
         if currentIndex + 1 < entries.count {
             currentIndex += 1
@@ -469,10 +399,7 @@ final class PlaybackQueueStore: ObservableObject {
             return currentEntry
         }
 
-        guard repeatMode == .all else {
-            return nil
-        }
-
+        guard repeatMode == .all else { return nil }
         currentIndex = 0
         persist()
         return currentEntry
@@ -480,9 +407,7 @@ final class PlaybackQueueStore: ObservableObject {
 
     @discardableResult
     func goToPrevious() -> PlaybackQueueEntry? {
-        guard !entries.isEmpty else {
-            return nil
-        }
+        guard !entries.isEmpty else { return nil }
 
         if currentIndex > 0 {
             currentIndex -= 1
@@ -490,22 +415,14 @@ final class PlaybackQueueStore: ObservableObject {
             return currentEntry
         }
 
-        guard repeatMode == .all else {
-            return nil
-        }
-
+        guard repeatMode == .all else { return nil }
         currentIndex = entries.count - 1
         persist()
         return currentEntry
     }
 
     func play(mediaID: String) -> PlaybackQueueEntry? {
-        guard let index = entries.firstIndex(where: {
-            $0.id == mediaID
-        }) else {
-            return nil
-        }
-
+        guard let index = entries.firstIndex(where: { $0.id == mediaID }) else { return nil }
         currentIndex = index
         persist()
         return currentEntry
@@ -516,8 +433,7 @@ final class PlaybackQueueStore: ObservableObject {
     func toggleShuffle() {
         isShuffled.toggle()
 
-        guard entries.count > 2,
-              let current = currentEntry else {
+        guard entries.count > 2, let current = currentEntry else {
             persist()
             return
         }
@@ -525,10 +441,8 @@ final class PlaybackQueueStore: ObservableObject {
         let currentID = current.id
         var remaining = entries.filter { $0.id != currentID }
         remaining.shuffle()
-
         entries = [current] + remaining
         currentIndex = 0
-
         persist()
     }
 
@@ -540,24 +454,19 @@ final class PlaybackQueueStore: ObservableObject {
     // MARK: Persistence
 
     private func restore() {
-        guard let data = defaults.data(forKey: storageKey) else {
-            return
-        }
+        isRestoring = true
+        defer { isRestoring = false }
+
+        guard let data = defaults.data(forKey: storageKey) else { return }
 
         do {
-            let snapshot = try JSONDecoder().decode(
-                QueueSnapshot.self,
-                from: data
-            )
-
+            let snapshot = try JSONDecoder().decode(QueueSnapshot.self, from: data)
             entries = snapshot.entries
             isShuffled = snapshot.isShuffled
             repeatMode = snapshot.repeatMode
 
             if let currentMediaID = snapshot.currentMediaID,
-               let index = entries.firstIndex(where: {
-                   $0.id == currentMediaID
-               }) {
+               let index = entries.firstIndex(where: { $0.id == currentMediaID }) {
                 currentIndex = index
             } else {
                 currentIndex = 0

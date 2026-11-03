@@ -4,32 +4,22 @@ import Foundation
 
 // MARK: - Playback Queue Controller
 
-/// Coordinates queue navigation with one persistent AVPlayer instance.
-///
-/// The controller owns queue navigation and track transitions. It does not
-/// create a new AVPlayer when moving between entries, so the player surface
-/// can remain attached throughout playback.
+/// Drives queue navigation through the same AVPlayer used by the player UI.
+/// Queue entries remain local files in Phase 2; remote streams are a later roadmap item.
 @MainActor
 final class PlaybackQueueController: ObservableObject {
-
-    // MARK: Published State
-
     @Published private(set) var currentEntry: PlaybackQueueEntry?
     @Published private(set) var isActive = false
     @Published private(set) var playbackError: String?
 
-    // MARK: Dependencies
-
     let player: AVPlayer
     let queue: PlaybackQueueStore
 
-    // MARK: Private State
+    /// Called immediately before an item finishes and the queue advances.
+    var onItemFinished: (() -> Void)?
 
     private var endObserver: NSObjectProtocol?
     private var isStopped = false
-    private var transitionID = UUID()
-
-    // MARK: Initialization
 
     init(
         player: AVPlayer,
@@ -37,11 +27,8 @@ final class PlaybackQueueController: ObservableObject {
     ) {
         self.player = player
         self.queue = queue
-
         player.automaticallyWaitsToMinimizeStalling = true
-
         currentEntry = queue.currentEntry
-
         observePlaybackCompletion()
     }
 
@@ -55,49 +42,48 @@ final class PlaybackQueueController: ObservableObject {
 
     func startQueue(
         entries: [PlaybackQueueEntry],
-        startingAt mediaID: String
+        startingAt mediaID: String,
+        autoplay: Bool = false
     ) {
         guard !entries.isEmpty else {
             playbackError = "There are no videos to play."
             return
         }
 
-        queue.replaceQueue(
-            with: entries,
-            startingAt: mediaID
-        )
+        queue.replaceQueue(with: entries, startingAt: mediaID)
 
         guard let entry = queue.currentEntry else {
             playbackError = "The selected video could not be found."
             return
         }
 
-        load(entry)
+        if !load(entry, autoplay: autoplay) {
+            _ = advanceToAvailableEntry(autoplay: autoplay)
+        }
     }
 
-    // MARK: Track Loading
+    // MARK: Loading
 
     @discardableResult
     func load(
         _ entry: PlaybackQueueEntry,
         autoplay: Bool = true
     ) -> Bool {
-        guard FileManager.default.fileExists(
-            atPath: entry.fileURL.path
-        ) else {
+        guard entry.fileURL.isFileURL,
+              FileManager.default.fileExists(atPath: entry.fileURL.path) else {
             playbackError = "This file is no longer available."
             isActive = false
             return false
         }
 
-        transitionID = UUID()
+        if queue.currentEntry?.id != entry.id {
+            _ = queue.play(mediaID: entry.id)
+        }
+
         isStopped = false
         playbackError = nil
-
         player.pause()
-
-        let item = AVPlayerItem(url: entry.fileURL)
-        player.replaceCurrentItem(with: item)
+        player.replaceCurrentItem(with: AVPlayerItem(url: entry.fileURL))
 
         currentEntry = entry
         isActive = true
@@ -109,35 +95,59 @@ final class PlaybackQueueController: ObservableObject {
         return true
     }
 
-    // MARK: Next
+    // MARK: Next / Previous
 
     @discardableResult
     func next() -> PlaybackQueueEntry? {
-        guard let entry = queue.advance() else {
+        advanceToAvailableEntry(autoplay: true)
+    }
+
+    @discardableResult
+    private func advanceToAvailableEntry(autoplay: Bool) -> PlaybackQueueEntry? {
+        guard !queue.entries.isEmpty else {
             player.pause()
             isActive = false
             return nil
         }
 
-        guard load(entry) else {
-            return skipUnavailableEntries()
-        }
-
-        return entry
-    }
-
-    /// Skips unavailable entries without getting stuck on a broken file.
-    private func skipUnavailableEntries() -> PlaybackQueueEntry? {
-        let maximumAttempts = queue.entries.count
-        var attempts = 0
-
-        while attempts < maximumAttempts {
-            attempts += 1
-
+        // One pass prevents an invalid item from trapping repeat-all/repeat-one.
+        for _ in 0..<queue.entries.count {
             guard let entry = queue.advance() else {
                 player.pause()
                 isActive = false
                 return nil
+            }
+
+            if load(entry, autoplay: autoplay) {
+                return entry
+            }
+        }
+
+        player.pause()
+        isActive = false
+        playbackError = "None of the queue items are available anymore."
+        return nil
+    }
+
+    @discardableResult
+    func previous(
+        currentTime: Double,
+        restartThreshold: Double = 3
+    ) -> PlaybackQueueEntry? {
+        if currentTime > restartThreshold {
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            return currentEntry
+        }
+
+        guard !queue.entries.isEmpty else {
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            return currentEntry
+        }
+
+        for _ in 0..<queue.entries.count {
+            guard let entry = queue.goToPrevious() else {
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                return currentEntry
             }
 
             if load(entry) {
@@ -147,65 +157,20 @@ final class PlaybackQueueController: ObservableObject {
 
         player.pause()
         isActive = false
-        playbackError = "None of the remaining queue items are available."
-
+        playbackError = "None of the previous queue items are available."
         return nil
     }
 
-    // MARK: Previous
-
     @discardableResult
-    func previous(
-        currentTime: Double,
-        restartThreshold: Double = 3
-    ) -> PlaybackQueueEntry? {
-
-        if currentTime > restartThreshold {
-            player.seek(
-                to: .zero,
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
-
-            return currentEntry
-        }
-
-        guard let entry = queue.goToPrevious() else {
-            player.seek(
-                to: .zero,
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
-
-            return currentEntry
-        }
-
-        guard load(entry) else {
-            return nil
-        }
-
-        return entry
-    }
-
-    // MARK: Select Queue Entry
-
-    @discardableResult
-    func select(
-        mediaID: String
-    ) -> PlaybackQueueEntry? {
-
+    func select(mediaID: String) -> PlaybackQueueEntry? {
         guard let entry = queue.play(mediaID: mediaID) else {
             return nil
         }
 
-        guard load(entry) else {
-            return nil
-        }
-
-        return entry
+        return load(entry) ? entry : nil
     }
 
-    // MARK: Playback Completion
+    // MARK: Completion Observation
 
     private func observePlaybackCompletion() {
         endObserver = NotificationCenter.default.addObserver(
@@ -213,7 +178,6 @@ final class PlaybackQueueController: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-
             guard let finishedItem = notification.object as? AVPlayerItem else {
                 return
             }
@@ -225,23 +189,16 @@ final class PlaybackQueueController: ObservableObject {
                     return
                 }
 
-                self.advanceAutomatically()
+                self.onItemFinished?()
+                _ = self.next()
             }
         }
-    }
-
-    private func advanceAutomatically() {
-        _ = next()
     }
 
     // MARK: Playback Controls
 
     func play() {
-        guard !isStopped,
-              player.currentItem != nil else {
-            return
-        }
-
+        guard !isStopped, player.currentItem != nil else { return }
         playbackError = nil
         player.play()
         isActive = true
@@ -253,21 +210,7 @@ final class PlaybackQueueController: ObservableObject {
     }
 
     func togglePlayback() {
-        if player.rate > 0 {
-            pause()
-        } else {
-            play()
-        }
-    }
-
-    // MARK: Shuffle and Repeat
-
-    func toggleShuffle() {
-        queue.toggleShuffle()
-    }
-
-    func cycleRepeatMode() {
-        queue.cycleRepeatMode()
+        player.rate > 0 ? pause() : play()
     }
 
     // MARK: Queue Editing
@@ -285,28 +228,44 @@ final class PlaybackQueueController: ObservableObject {
     }
 
     func remove(mediaID: String) {
+        let removingCurrent = currentEntry?.id == mediaID
         queue.remove(mediaID: mediaID)
 
-        if currentEntry?.id == mediaID {
-            currentEntry = queue.currentEntry
+        guard removingCurrent else { return }
+
+        guard let replacement = queue.currentEntry else {
+            stop()
+            return
         }
+
+        if !load(replacement) {
+            _ = advanceToAvailableEntry(autoplay: true)
+        }
+    }
+
+    func clear() {
+        queue.clear()
+        stop()
+    }
+
+    func toggleShuffle() {
+        queue.toggleShuffle()
+    }
+
+    func cycleRepeatMode() {
+        queue.cycleRepeatMode()
     }
 
     // MARK: Cleanup
 
     func stop() {
-        guard !isStopped else {
-            return
-        }
-
+        guard !isStopped else { return }
         isStopped = true
-        transitionID = UUID()
-
         player.pause()
         player.replaceCurrentItem(with: nil)
-
         isActive = false
         currentEntry = nil
         playbackError = nil
+        onItemFinished = nil
     }
 }
