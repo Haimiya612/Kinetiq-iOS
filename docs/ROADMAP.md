@@ -143,7 +143,20 @@ into remote content and additional media categories.
 - [ ] Display seek feedback.
 - [ ] Implement a playback retry path that replaces failed AVPlayerItems.
 - [ ] Provide a way to skip a failed queue item.
-- [ ] Add external subtitle file support.
+- [ ] Add external subtitle file support for SRT and WebVTT.
+- [ ] Synchronize external subtitles with the active media item and playback timeline.
+- [ ] Combine embedded and external subtitle tracks in one player selection interface.
+- [ ] Detect media capabilities from the currently loaded item and its source/module.
+- [ ] Show only playback options supported by the current media and source.
+- [ ] Detect and expose selectable audio tracks, subtitle tracks, and alternate video tracks when available.
+- [ ] Detect available HLS quality variants and provide Auto and manual quality selection when supported.
+- [ ] Keep quality selection unavailable for fixed-quality local files and sources without selectable variants.
+- [ ] Add automatic Picture-in-Picture activation when the user leaves the app during active playback.
+- [ ] Configure the playback audio session and background playback requirements for reliable automatic PiP.
+- [ ] Preserve playback and player state when transitioning from the full-screen player into PiP.
+- [ ] Render selected external SRT and WebVTT subtitles inside the system PiP video presentation.
+- [ ] Respect the player's subtitle setting in PiP: selected subtitles appear, while Off suppresses them.
+- [ ] Ensure external subtitle rendering in PiP remains synchronized through seeking, pausing, resuming, and queue changes.
 - [ ] Add subtitle appearance customization.
 - [ ] Add chapter and timestamp navigation.
 - [ ] Add configurable seek intervals.
@@ -676,7 +689,8 @@ considered implemented until their source code, tests, and integration exist:
 
 - Local video thumbnail generation and caching.
 - Technical media metadata.
-- Picture-in-Picture.
+- Picture-in-Picture, including automatic background transition and external-subtitle rendering.
+- Capability-driven track and quality detection for the active media source.
 - AirPlay route selection.
 - Double-tap seeking and feedback.
 - Playback retry and failed-item recovery.
