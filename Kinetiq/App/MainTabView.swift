@@ -1,3 +1,4 @@
+
 import SwiftUI
 import UIKit
 
@@ -45,8 +46,9 @@ private enum TabNavigationDirection {
 struct MainTabView: View {
     let tagline: String
 
+    // Keep the existing storage key so saved preferences are preserved.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
-    private var useLiquidGlassButtons = false
+    private var useLiquidGlassDock = false
 
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
@@ -59,14 +61,7 @@ struct MainTabView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            if #available(iOS 26.0, *), useLiquidGlassButtons {
-                mainLayout
-                    .buttonStyle(.glass)
-            } else {
-                mainLayout
-            }
-        }
+        mainLayout
     }
 
     private var mainLayout: some View {
@@ -161,25 +156,29 @@ struct MainTabView: View {
     // MARK: Bottom Navigation
 
     private var bottomBar: some View {
-        Group {
-            if #available(iOS 26.0, *), useLiquidGlassButtons {
-                dockContent
-                    .glassEffect(.regular.interactive(), in: Capsule())
-            } else {
-                dockContent
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay {
-                        Capsule()
-                            .strokeBorder(
-                                Color.primary.opacity(0.07),
-                                lineWidth: 0.7
-                            )
-                    }
+        dockContent
+            // The dock itself stays visually restrained.
+            // Liquid Glass is reserved for the moving selected-tab indicator.
+            .background(
+                .regularMaterial,
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        Color.primary.opacity(0.08),
+                        lineWidth: 0.7
+                    )
             }
-        }
-        .padding(.horizontal, 17)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
+            .shadow(
+                color: Color.black.opacity(0.07),
+                radius: 14,
+                x: 0,
+                y: 5
+            )
+            .padding(.horizontal, 17)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
     }
 
     private var dockContent: some View {
@@ -208,14 +207,7 @@ struct MainTabView: View {
                     .frame(height: 55)
                     .background {
                         if selectedTab == tab {
-                            Capsule()
-                                .fill(
-                                    KinetiqPalette.accent.opacity(0.15)
-                                )
-                                .matchedGeometryEffect(
-                                    id: "active-tab",
-                                    in: tabAnimation
-                                )
+                            selectedTabIndicator
                         }
                     }
                     .contentShape(Capsule())
@@ -229,6 +221,57 @@ struct MainTabView: View {
             }
         }
         .padding(6)
+        // Swiping across the dock changes the selected destination.
+        // The matched glass indicator follows the selected tab.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 32)
+                .onEnded { value in
+                    let horizontal = value.translation.width
+                    let vertical = value.translation.height
+
+                    guard
+                        abs(horizontal) > 45,
+                        abs(horizontal) > abs(vertical)
+                    else {
+                        return
+                    }
+
+                    let nextIndex = selectedTab.index + (
+                        horizontal < 0 ? 1 : -1
+                    )
+
+                    guard KinetiqTab.allCases.indices.contains(nextIndex) else {
+                        return
+                    }
+
+                    select(KinetiqTab.allCases[nextIndex])
+                }
+        )
+    }
+
+    @ViewBuilder
+    private var selectedTabIndicator: some View {
+        if #available(iOS 26.0, *), useLiquidGlassDock {
+            Capsule()
+                .fill(.clear)
+                .matchedGeometryEffect(
+                    id: "active-tab",
+                    in: tabAnimation
+                )
+                .glassEffect(
+                    .regular.interactive(),
+                    in: Capsule()
+                )
+        } else {
+            Capsule()
+                .fill(
+                    KinetiqPalette.accent.opacity(0.15)
+                )
+                .matchedGeometryEffect(
+                    id: "active-tab",
+                    in: tabAnimation
+                )
+        }
     }
 
     // MARK: Selection
@@ -245,7 +288,7 @@ struct MainTabView: View {
         withAnimation(
             reduceMotion
                 ? .easeInOut(duration: 0.15)
-                : .spring(response: 0.38, dampingFraction: 0.84)
+                : .spring(response: 0.42, dampingFraction: 0.82)
         ) {
             selectedTab = tab
         }

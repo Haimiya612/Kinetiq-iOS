@@ -1,3 +1,4 @@
+
 import SwiftUI
 import Foundation
 
@@ -212,8 +213,9 @@ struct SettingsView: View {
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
+    // The original key is retained to preserve existing user preferences.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
-    private var useLiquidGlassButtons = false
+    private var useLiquidGlassDock = false
 
     @StateObject private var whatsNewStore = WhatsNewStore()
     @State private var showingWhatsNew = false
@@ -222,7 +224,7 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
     }
 
-    private var supportsLiquidGlassButtons: Bool {
+    private var supportsLiquidGlassDock: Bool {
         if #available(iOS 26.0, *) {
             return true
         }
@@ -241,21 +243,21 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Toggle(isOn: $useLiquidGlassButtons) {
+                    Toggle(isOn: $useLiquidGlassDock) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Liquid Glass buttons")
+                            Text("Liquid Glass dock")
                                 .font(.body.weight(.medium))
 
-                            Text("Use the native iOS 26 button appearance across Kinetiq.")
+                            Text("Show an interactive glass highlight that slides between the navigation tabs.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .disabled(!supportsLiquidGlassButtons)
+                    .disabled(!supportsLiquidGlassDock)
 
-                    if !supportsLiquidGlassButtons {
-                        Text("Liquid Glass buttons require iOS 26 or later.")
+                    if !supportsLiquidGlassDock {
+                        Text("Liquid Glass dock requires iOS 26 or later.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -370,45 +372,25 @@ struct WhatsNewView: View {
                             description: Text("There are no update notes available for this version yet.")
                         )
                     } else {
-                        ForEach(Array(releases.reversed().enumerated()), id: \.element.id) { index, release in
+                        ForEach(
+                            Array(releases.reversed().enumerated()),
+                            id: \.element.id
+                        ) { index, release in
                             releaseSection(release)
                                 .opacity(appeared ? 1 : 0)
                                 .offset(y: appeared ? 0 : 14)
                                 .animation(
                                     reduceMotion
-                                    ? nil
-                                    : .spring(response: 0.48, dampingFraction: 0.84)
+                                        ? nil
+                                        : .spring(
+                                            response: 0.48,
+                                            dampingFraction: 0.84
+                                        )
                                         .delay(Double(index) * 0.07),
                                     value: appeared
                                 )
                         }
                     }
-
-                    Button {
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text("Continue to Kinetiq")
-                            Image(systemName: "arrow.right")
-                        }
-                        .font(.system(.headline, design: .rounded))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 17)
-                        .background {
-                            LinearGradient(
-                                colors: [
-                                    KinetiqPalette.cyan,
-                                    KinetiqPalette.blue,
-                                    KinetiqPalette.violet
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    }
-                    .padding(.top, 4)
 
                     Text("KINETIQ  •  YOUR MEDIA UNIVERSE")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -418,7 +400,12 @@ struct WhatsNewView: View {
                         .padding(.top, 4)
                 }
                 .padding(24)
+                .padding(.bottom, 18)
             }
+        }
+        // The action is outside the ScrollView and remains visible.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            continueFooter
         }
         .onAppear {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.5)) {
@@ -426,6 +413,56 @@ struct WhatsNewView: View {
             }
         }
     }
+
+    // MARK: Fixed Continue Footer
+
+    private var continueFooter: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 1)
+
+            Button {
+                dismiss()
+            } label: {
+                HStack(spacing: 8) {
+                    Text("Continue to Kinetiq")
+                    Image(systemName: "arrow.right")
+                }
+                .font(.system(.headline, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 17)
+                .background {
+                    LinearGradient(
+                        colors: [
+                            KinetiqPalette.cyan,
+                            KinetiqPalette.blue,
+                            KinetiqPalette.violet
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 18,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 24)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+        }
+        .background {
+            Color(uiColor: .systemBackground)
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    // MARK: Header
 
     private var header: some View {
         HStack {
@@ -458,6 +495,8 @@ struct WhatsNewView: View {
         }
     }
 
+    // MARK: Release Sections
+
     private func releaseSection(_ release: KinetiqRelease) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
@@ -485,17 +524,29 @@ struct WhatsNewView: View {
                             .frame(width: 44, height: 44)
                             .background(
                                 KinetiqPalette.cyan.opacity(0.11),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                in: RoundedRectangle(
+                                    cornerRadius: 14,
+                                    style: .continuous
+                                )
                             )
 
                         VStack(alignment: .leading, spacing: 5) {
                             Text(item.title)
-                                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                .font(
+                                    .system(
+                                        .subheadline,
+                                        design: .rounded
+                                    )
+                                    .weight(.bold)
+                                )
 
                             Text(item.detail)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .fixedSize(
+                                    horizontal: false,
+                                    vertical: true
+                                )
                                 .lineSpacing(3)
                         }
 
@@ -505,7 +556,10 @@ struct WhatsNewView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         Color(uiColor: .secondarySystemBackground),
-                        in: RoundedRectangle(cornerRadius: 19, style: .continuous)
+                        in: RoundedRectangle(
+                            cornerRadius: 19,
+                            style: .continuous
+                        )
                     )
                 }
             }
