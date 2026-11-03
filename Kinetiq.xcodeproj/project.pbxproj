@@ -21,7 +21,9 @@
 		4CF48A039D9B227303186594 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HomeView.swift"; sourceTree = "<group>"; };
 		20CA90543F39754DBCFC2E8F /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF48A039D9B227303186594 /* HomeView.swift */; };
 		B5BEB1824C58F7ECC8DFF776 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LibraryView.swift"; sourceTree = "<group>"; };
+		D5F8A1C24B6E7390A2C4D817 /* ExternalSubtitleSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ExternalSubtitleSupport.swift"; sourceTree = "<group>"; };
 		4B043EFAD24712A9028C5628 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5BEB1824C58F7ECC8DFF776 /* LibraryView.swift */; };
+		7C2E9A4D1B6F8035C7A9E241 /* ExternalSubtitleSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5F8A1C24B6E7390A2C4D817 /* ExternalSubtitleSupport.swift */; };
 		7A1A2A3A4A5A4A6A7A8A9A01 /* PlaybackQueueController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlaybackQueueController.swift"; sourceTree = "<group>"; };
 		7A1A2A3A4A5A4A6A7A8A9A02 /* PlaybackQueueController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1A2A3A4A5A4A6A7A8A9A01 /* PlaybackQueueController.swift */; };
 		7A1A2A3A4A5A4A6A7A8A9A03 /* PlaybackQueuePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlaybackQueuePanel.swift"; sourceTree = "<group>"; };
@@ -42,7 +44,7 @@
 		D5A3CF29701CC263A9F07C42 /* Storage */ = {isa = PBXGroup; children = (C9B3266B2D12EE063A60D7C9); path = "Storage"; sourceTree = "<group>"; };
 		708542948A3B222AF87CBF1B /* Core */ = {isa = PBXGroup; children = (C9D7D0E74DDECF62B41191D2, A5637D0A1DBF2F8D62B2D542, D5A3CF29701CC263A9F07C42); path = "Core"; sourceTree = "<group>"; };
 		7320576F8E69F075631E6571 /* Home */ = {isa = PBXGroup; children = (4CF48A039D9B227303186594); path = "Home"; sourceTree = "<group>"; };
-		F85BA4F58B43CB35B1CD34E8 /* Library */ = {isa = PBXGroup; children = (B5BEB1824C58F7ECC8DFF776, 7A1A2A3A4A5A4A6A7A8A9A01, 7A1A2A3A4A5A4A6A7A8A9A03); path = "Library"; sourceTree = "<group>"; };
+		F85BA4F58B43CB35B1CD34E8 /* Library */ = {isa = PBXGroup; children = (B5BEB1824C58F7ECC8DFF776, D5F8A1C24B6E7390A2C4D817, 7A1A2A3A4A5A4A6A7A8A9A01, 7A1A2A3A4A5A4A6A7A8A9A03); path = "Library"; sourceTree = "<group>"; };
 		DD1705967C5691C0E5DD98B9 /* Settings */ = {isa = PBXGroup; children = (62F24690A6F558F597D89A8D); path = "Settings"; sourceTree = "<group>"; };
 		FCE84E5E95C48F4756FFFB6D /* Features */ = {isa = PBXGroup; children = (7320576F8E69F075631E6571, F85BA4F58B43CB35B1CD34E8, DD1705967C5691C0E5DD98B9); path = "Features"; sourceTree = "<group>"; };
 		6A5258272E3BC28683FAF7BF /* Resources */ = {isa = PBXGroup; children = (6C36FFE920F24CEDB7CFDBFC); path = "Resources"; sourceTree = "<group>"; };
@@ -50,7 +52,7 @@
 		E5C8E3C8B51E9CDD6EEC601B /* KinetiqTests */ = {isa = PBXGroup; children = (827B9CB8A2ECE9CC3308B6FB, 7A1A2A3A4A5A4A6A7A8A9A05); path = "KinetiqTests"; sourceTree = "<group>"; };
 		5151B46607EBC8890D8DFCC2 /* Products */ = {isa = PBXGroup; children = (AC932B5842DD245F688B9722, F4909F29EDD95ADA67F1D3DB); name = Products; sourceTree = "<group>"; };
 		ADCF10F76EBF2A74473E9DC4 = {isa = PBXGroup; children = (77411DC22593C8882D069FA3, E5C8E3C8B51E9CDD6EEC601B, 5151B46607EBC8890D8DFCC2); sourceTree = "<group>"; };
-		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB); runOnlyForDeploymentPostprocessing = 0; };
+		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7C2E9A4D1B6F8035C7A9E241, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB); runOnlyForDeploymentPostprocessing = 0; };
 		F001BC2AF9EB5498B3360756 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		E28FAD8F60ECDED9B4AD087A /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222F0DBFFE5EB23DCD3FD16F); runOnlyForDeploymentPostprocessing = 0; };
 		29BEEA3D856852A8CC3247ED /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (0F6810B113D77F527ACB84A7, 7A1A2A3A4A5A4A6A7A8A9A06); runOnlyForDeploymentPostprocessing = 0; };
