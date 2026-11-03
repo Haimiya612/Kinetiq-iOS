@@ -8,14 +8,9 @@ struct HomeView: View {
     let onModules: () -> Void
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
 
-    @State private var selectedCategory = "All"
     @State private var appeared = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private let categories = [
-        "All", "Movies", "Series", "Anime", "Manga"
-    ]
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -34,14 +29,11 @@ struct HomeView: View {
                         .entrance(appeared, delay: 0.18)
                 }
 
-                categorySection
-                    .entrance(appeared, delay: 0.22)
-
                 mediaSection
-                    .entrance(appeared, delay: 0.28)
+                    .entrance(appeared, delay: 0.24)
 
                 moduleCard
-                    .entrance(appeared, delay: 0.34)
+                    .entrance(appeared, delay: 0.30)
             }
             .padding(.horizontal, 21)
             .padding(.top, 16)
@@ -253,6 +245,7 @@ struct HomeView: View {
                         } label: {
                             continueWatchingCard(entry)
                         }
+                        .buttonStyle(.plain)
                         .accessibilityLabel(
                             "Continue \(entry.title), \(entry.progressPercent) percent watched"
                         )
@@ -339,54 +332,6 @@ struct HomeView: View {
         }
         .frame(width: 224, alignment: .leading)
         .contentShape(Rectangle())
-    }
-
-    // MARK: Categories
-
-    private var categorySection: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            sectionHeading(
-                "Explore your way",
-                detail: "THE WHOLE UNIVERSE"
-            )
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(categories, id: \.self) { category in
-                        Button {
-                            withAnimation(
-                                .spring(
-                                    response: 0.32,
-                                    dampingFraction: 0.78
-                                )
-                            ) {
-                                selectedCategory = category
-                            }
-
-                            onDiscover()
-                        } label: {
-                            Text(category)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(
-                                    selectedCategory == category
-                                        ? .white
-                                        : Color.primary.opacity(0.78)
-                                )
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(
-                                    selectedCategory == category
-                                        ? KinetiqPalette.accent
-                                        : Color(
-                                            uiColor: .secondarySystemGroupedBackground
-                                        ),
-                                    in: Capsule()
-                                )
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // MARK: Media Types
@@ -491,6 +436,226 @@ struct HomeView: View {
                 .font(.system(size: 8, weight: .bold, design: .rounded))
                 .tracking(1.2)
                 .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+// MARK: - Discover Screen
+
+struct DiscoverView: View {
+    private let categories = [
+        "All", "Movies", "Series", "Anime", "Manga"
+    ]
+
+    @State private var selectedCategory = "All"
+    @State private var appeared = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 27) {
+                header
+                    .entrance(appeared, delay: 0.02)
+
+                introduction
+                    .entrance(appeared, delay: 0.08)
+
+                categorySection
+                    .entrance(appeared, delay: 0.14)
+
+                discoveryPlaceholder
+                    .entrance(appeared, delay: 0.20)
+            }
+            .padding(.horizontal, 21)
+            .padding(.top, 16)
+            .padding(.bottom, 30)
+        }
+        .background(Color(uiColor: .systemBackground))
+        .onAppear {
+            withAnimation(
+                reduceMotion
+                    ? .easeInOut(duration: 0.2)
+                    : .spring(response: 0.72, dampingFraction: 0.88)
+            ) {
+                appeared = true
+            }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image("KinetiqLogo")
+                .resizable()
+                .scaledToFit()
+                .padding(7)
+                .frame(width: 42, height: 42)
+                .background(
+                    LinearGradient(
+                        colors: [
+                            KinetiqPalette.cyan,
+                            KinetiqPalette.violet
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("KINETIQ")
+                    .font(.system(size: 15, weight: .black, design: .rounded))
+                    .tracking(2.2)
+
+                Text("SEARCH & DISCOVER")
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+
+    // MARK: Introduction
+
+    private var introduction: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("FIND YOUR NEXT FAVOURITE.")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(2.4)
+                .foregroundStyle(KinetiqPalette.accent)
+
+            Text("A universe to explore.")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .tracking(-1.25)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(
+                "Movies, series, anime and manga. Choose what you feel like exploring."
+            )
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(.secondary)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: Categories
+
+    private var categorySection: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Explore your way")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .tracking(-0.35)
+
+                Spacer(minLength: 8)
+
+                Text("THE WHOLE UNIVERSE")
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .tracking(1.2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(categories, id: \.self) { category in
+                        Button {
+                            withAnimation(
+                                .spring(
+                                    response: 0.32,
+                                    dampingFraction: 0.78
+                                )
+                            ) {
+                                selectedCategory = category
+                            }
+                        } label: {
+                            Text(category)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(
+                                    selectedCategory == category
+                                        ? .white
+                                        : Color.primary.opacity(0.78)
+                                )
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(
+                                    selectedCategory == category
+                                        ? KinetiqPalette.accent
+                                        : Color(
+                                            uiColor: .secondarySystemGroupedBackground
+                                        ),
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(
+                            selectedCategory == category ? .isSelected : []
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Discovery Placeholder
+
+    private var discoveryPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .font(.system(size: 31, weight: .light))
+                .foregroundStyle(KinetiqPalette.accent)
+                .frame(width: 58, height: 58)
+                .background(
+                    KinetiqPalette.accent.opacity(0.12),
+                    in: RoundedRectangle(
+                        cornerRadius: 18,
+                        style: .continuous
+                    )
+                )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(
+                    selectedCategory == "All"
+                        ? "Your next story starts here."
+                        : "Explore \(selectedCategory.lowercased())."
+                )
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+
+                Text(
+                    "Your catalogue will appear here as Kinetiq connects to content sources."
+                )
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(
+                cornerRadius: 23,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 23,
+                style: .continuous
+            )
+            .strokeBorder(
+                Color.primary.opacity(0.045),
+                lineWidth: 0.7
+            )
         }
     }
 }
