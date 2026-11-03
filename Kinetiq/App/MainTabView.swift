@@ -269,18 +269,12 @@ private struct KinetiqPlaceholderView: View {
                     Image("KinetiqLogo")
                         .resizable()
                         .scaledToFit()
-                        .padding(7)
-                        .frame(width: 42, height: 42)
-                        .background(
-                            LinearGradient(
-                                colors: [
-                                    KinetiqPalette.cyan,
-                                    KinetiqPalette.violet
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: 14)
+                        .frame(width: 50, height: 50)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 16,
+                                style: .continuous
+                            )
                         )
 
                     Text("KINETIQ")
