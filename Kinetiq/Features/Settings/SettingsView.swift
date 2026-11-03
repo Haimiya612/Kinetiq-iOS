@@ -212,11 +212,22 @@ struct SettingsView: View {
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
+    @AppStorage("kinetiq.appearance.liquidGlassButtons")
+    private var useLiquidGlassButtons = false
+
     @StateObject private var whatsNewStore = WhatsNewStore()
     @State private var showingWhatsNew = false
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
+    }
+
+    private var supportsLiquidGlassButtons: Bool {
+        if #available(iOS 26.0, *) {
+            return true
+        }
+
+        return false
     }
 
     var body: some View {
@@ -229,6 +240,25 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+
+                    Toggle(isOn: $useLiquidGlassButtons) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Liquid Glass buttons")
+                                .font(.body.weight(.medium))
+
+                            Text("Use the native iOS 26 button appearance across Kinetiq.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .disabled(!supportsLiquidGlassButtons)
+
+                    if !supportsLiquidGlassButtons {
+                        Text("Liquid Glass buttons require iOS 26 or later.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("What's New") {
@@ -267,7 +297,6 @@ struct SettingsView: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                 }
 
                 Section("About Kinetiq") {
@@ -379,7 +408,6 @@ struct WhatsNewView: View {
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     }
-                    .buttonStyle(.plain)
                     .padding(.top, 4)
 
                     Text("KINETIQ  •  YOUR MEDIA UNIVERSE")
@@ -402,9 +430,10 @@ struct WhatsNewView: View {
     private var header: some View {
         HStack {
             HStack(spacing: 9) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 17, weight: .black))
-                    .foregroundStyle(.white)
+                Image("KinetiqLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(6)
                     .frame(width: 38, height: 38)
                     .background {
                         LinearGradient(

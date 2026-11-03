@@ -45,6 +45,9 @@ private enum TabNavigationDirection {
 struct MainTabView: View {
     let tagline: String
 
+    @AppStorage("kinetiq.appearance.liquidGlassButtons")
+    private var useLiquidGlassButtons = false
+
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
     @State private var requestedMediaID: String?
@@ -56,6 +59,17 @@ struct MainTabView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        Group {
+            if #available(iOS 26.0, *), useLiquidGlassButtons {
+                mainLayout
+                    .buttonStyle(.glass)
+            } else {
+                mainLayout
+            }
+        }
+    }
+
+    private var mainLayout: some View {
         VStack(spacing: 0) {
             Group {
                 switch selectedTab {
@@ -192,7 +206,6 @@ struct MainTabView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .accessibilityLabel(tab.rawValue)
                 .accessibilityAddTraits(
                     selectedTab == tab ? .isSelected : []
@@ -249,9 +262,10 @@ private struct KinetiqPlaceholderView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 10) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundStyle(.white)
+                    Image("KinetiqLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .padding(7)
                         .frame(width: 42, height: 42)
                         .background(
                             LinearGradient(

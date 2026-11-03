@@ -63,9 +63,10 @@ struct HomeView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "waveform")
-                .font(.system(size: 19, weight: .bold))
-                .foregroundStyle(.white)
+            Image("KinetiqLogo")
+                .resizable()
+                .scaledToFit()
+                .padding(7)
                 .frame(width: 42, height: 42)
                 .background(
                     LinearGradient(
@@ -105,7 +106,6 @@ struct HomeView: View {
                         in: Circle()
                     )
             }
-            .buttonStyle(.plain)
             .accessibilityLabel("Search and discover")
         }
     }
@@ -216,7 +216,6 @@ struct HomeView: View {
                     .padding(.vertical, 11)
                     .background(.white, in: Capsule())
                 }
-                .buttonStyle(.plain)
                 .padding(.top, 2)
             }
             .padding(21)
@@ -254,7 +253,6 @@ struct HomeView: View {
                         } label: {
                             continueWatchingCard(entry)
                         }
-                        .buttonStyle(.plain)
                         .accessibilityLabel(
                             "Continue \(entry.title), \(entry.progressPercent) percent watched"
                         )
@@ -385,7 +383,6 @@ struct HomeView: View {
                                     in: Capsule()
                                 )
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -475,7 +472,6 @@ struct HomeView: View {
                 in: RoundedRectangle(cornerRadius: 20, style: .continuous)
             )
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: Shared Section Heading
