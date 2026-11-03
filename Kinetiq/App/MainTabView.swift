@@ -1,4 +1,3 @@
-
 import SwiftUI
 import UIKit
 
@@ -46,7 +45,7 @@ private enum TabNavigationDirection {
 struct MainTabView: View {
     let tagline: String
 
-    // Keep the existing storage key so saved preferences are preserved.
+    // Preserve the existing preference key.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
     private var useLiquidGlassDock = false
 
@@ -54,9 +53,11 @@ struct MainTabView: View {
     @State private var navigationDirection: TabNavigationDirection = .forward
     @State private var requestedMediaID: String?
 
-    @StateObject private var playbackHistory = PlaybackHistoryStore.shared
+    // Tracks the glass indicator while it is being dragged.
+    @State private var draggedTabPosition: CGFloat?
+    @State private var dragStartPosition: CGFloat?
 
-    @Namespace private var tabAnimation
+    @StateObject private var playbackHistory = PlaybackHistoryStore.shared
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -157,8 +158,6 @@ struct MainTabView: View {
 
     private var bottomBar: some View {
         dockContent
-            // The dock itself stays visually restrained.
-            // Liquid Glass is reserved for the moving selected-tab indicator.
             .background(
                 .regularMaterial,
                 in: Capsule()
@@ -182,82 +181,178 @@ struct MainTabView: View {
     }
 
     private var dockContent: some View {
-        HStack(spacing: 3) {
-            ForEach(KinetiqTab.allCases) { tab in
-                Button {
-                    select(tab)
-                } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: 18, weight: .semibold))
-                            .symbolEffect(
-                                .bounce,
-                                value: selectedTab == tab
+        GeometryReader { geometry in
+            let tabSpacing: CGFloat = 3
+            let horizontalInset: CGFloat = 6
+
+            let availableWidth = max(
+                0,
+                geometry.size.width - horizontalInset * 2
+            )
+
+            let tabCount = KinetiqTab.allCases.count
+            let tabCountValue = CGFloat(tabCount)
+
+            let tabWidth = max(
+                0,
+                (
+                    availableWidth
+                    - tabSpacing * CGFloat(tabCount - 1)
+                ) / tabCountValue
+            )
+
+            let displayedPosition = draggedTabPosition
+                ?? CGFloat(selectedTab.index)
+
+            let displayedTabIndex = min(
+                max(Int(displayedPosition.rounded()), 0),
+                tabCount - 1
+            )
+
+            let indicatorOffset = displayedPosition
+                * (tabWidth + tabSpacing)
+
+            ZStack(alignment: .leading) {
+
+                // MARK: Moving Liquid Glass Indicator
+
+                selectedTabIndicator
+                    .frame(
+                        width: tabWidth,
+                        height: 55
+                    )
+                    .offset(x: indicatorOffset)
+                    .allowsHitTesting(false)
+
+                // MARK: Stationary Tab Buttons
+
+                HStack(spacing: tabSpacing) {
+                    ForEach(KinetiqTab.allCases) { tab in
+                        Button {
+                            select(tab)
+                        } label: {
+                            VStack(spacing: 5) {
+                                Image(systemName: tab.symbol)
+                                    .font(
+                                        .system(
+                                            size: 18,
+                                            weight: .semibold
+                                        )
+                                    )
+                                    .symbolEffect(
+                                        .bounce,
+                                        value: selectedTab == tab
+                                    )
+
+                                Text(tab.rawValue)
+                                    .font(
+                                        .system(
+                                            size: 10,
+                                            weight: .semibold
+                                        )
+                                    )
+                            }
+                            .foregroundStyle(
+                                displayedTabIndex == tab.index
+                                    ? KinetiqPalette.accent
+                                    : Color.secondary
                             )
-
-                        Text(tab.rawValue)
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                    .foregroundStyle(
-                        selectedTab == tab
-                            ? KinetiqPalette.accent
-                            : Color.secondary
-                    )
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 55)
-                    .background {
-                        if selectedTab == tab {
-                            selectedTabIndicator
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 55)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel(tab.rawValue)
+                        .accessibilityAddTraits(
+                            selectedTab == tab ? .isSelected : []
+                        )
                     }
-                    .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
-                .accessibilityLabel(tab.rawValue)
-                .accessibilityAddTraits(
-                    selectedTab == tab ? .isSelected : []
+                .frame(
+                    width: availableWidth,
+                    height: 55
                 )
-            }
-        }
-        .padding(6)
-        // Swiping across the dock changes the selected destination.
-        // The matched glass indicator follows the selected tab.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 32)
-                .onEnded { value in
-                    let horizontal = value.translation.width
-                    let vertical = value.translation.height
 
-                    guard
-                        abs(horizontal) > 45,
-                        abs(horizontal) > abs(vertical)
-                    else {
-                        return
-                    }
+                // MARK: Draggable Indicator Handle
+                //
+                // This transparent hit area sits directly over
+                // the glass indicator. It moves with the indicator.
+                // The rest of the dock has no drag gesture.
 
-                    let nextIndex = selectedTab.index + (
-                        horizontal < 0 ? 1 : -1
+                Capsule()
+                    .fill(Color.clear)
+                    .frame(
+                        width: tabWidth,
+                        height: 55
                     )
+                    .contentShape(Capsule())
+                    .offset(x: indicatorOffset)
+                    .gesture(
+                        DragGesture(minimumDistance: 8)
+                            .onChanged { value in
+                                // Only respond to horizontal dragging.
+                                guard abs(value.translation.width)
+                                        > abs(value.translation.height)
+                                else {
+                                    return
+                                }
 
-                    guard KinetiqTab.allCases.indices.contains(nextIndex) else {
-                        return
-                    }
+                                if dragStartPosition == nil {
+                                    dragStartPosition = CGFloat(
+                                        selectedTab.index
+                                    )
+                                }
 
-                    select(KinetiqTab.allCases[nextIndex])
-                }
-        )
+                                let startingPosition =
+                                    dragStartPosition
+                                    ?? CGFloat(selectedTab.index)
+
+                                let dragStep = max(
+                                    tabWidth + tabSpacing,
+                                    1
+                                )
+
+                                let proposedPosition =
+                                    startingPosition
+                                    + value.translation.width / dragStep
+
+                                draggedTabPosition = min(
+                                    max(proposedPosition, 0),
+                                    CGFloat(tabCount - 1)
+                                )
+                            }
+                            .onEnded { _ in
+                                let finalPosition =
+                                    draggedTabPosition
+                                    ?? CGFloat(selectedTab.index)
+
+                                finishIndicatorDrag(
+                                    at: finalPosition,
+                                    tabCount: tabCount
+                                )
+                            }
+                    )
+                    .zIndex(1)
+                    .accessibilityHidden(true)
+            }
+            .frame(
+                width: availableWidth,
+                height: 55
+            )
+            .padding(.horizontal, horizontalInset)
+            .padding(.vertical, 6)
+        }
+        .frame(height: 67)
     }
+
+    // MARK: Indicator Appearance
 
     @ViewBuilder
     private var selectedTabIndicator: some View {
         if #available(iOS 26.0, *), useLiquidGlassDock {
             Capsule()
                 .fill(.clear)
-                .matchedGeometryEffect(
-                    id: "active-tab",
-                    in: tabAnimation
-                )
                 .glassEffect(
                     .regular.interactive(),
                     in: Capsule()
@@ -267,16 +362,48 @@ struct MainTabView: View {
                 .fill(
                     KinetiqPalette.accent.opacity(0.15)
                 )
-                .matchedGeometryEffect(
-                    id: "active-tab",
-                    in: tabAnimation
-                )
+        }
+    }
+
+    // MARK: Indicator Drag Completion
+
+    private func finishIndicatorDrag(
+        at position: CGFloat,
+        tabCount: Int
+    ) {
+        let targetIndex = min(
+            max(Int(position.rounded()), 0),
+            tabCount - 1
+        )
+
+        let targetTab = KinetiqTab.allCases[targetIndex]
+
+        withAnimation(selectionAnimation) {
+            draggedTabPosition = nil
+            dragStartPosition = nil
+
+            updateSelection(targetTab)
         }
     }
 
     // MARK: Selection
 
+    private var selectionAnimation: Animation {
+        reduceMotion
+            ? .easeInOut(duration: 0.15)
+            : .spring(
+                response: 0.42,
+                dampingFraction: 0.82
+            )
+    }
+
     private func select(_ tab: KinetiqTab) {
+        withAnimation(selectionAnimation) {
+            updateSelection(tab)
+        }
+    }
+
+    private func updateSelection(_ tab: KinetiqTab) {
         guard selectedTab != tab else {
             return
         }
@@ -285,13 +412,7 @@ struct MainTabView: View {
             ? .forward
             : .backward
 
-        withAnimation(
-            reduceMotion
-                ? .easeInOut(duration: 0.15)
-                : .spring(response: 0.42, dampingFraction: 0.82)
-        ) {
-            selectedTab = tab
-        }
+        selectedTab = tab
     }
 }
 
