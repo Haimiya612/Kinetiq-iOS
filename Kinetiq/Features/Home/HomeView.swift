@@ -58,18 +58,15 @@ struct HomeView: View {
             Image("KinetiqLogo")
                 .resizable()
                 .scaledToFit()
-                .padding(7)
-                .frame(width: 42, height: 42)
-                .background(
-                    LinearGradient(
-                        colors: [KinetiqPalette.cyan, KinetiqPalette.violet],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .frame(width: 50, height: 50)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 16,
+                        style: .continuous
+                    )
                 )
                 .shadow(
-                    color: KinetiqPalette.blue.opacity(0.25),
+                    color: KinetiqPalette.blue.opacity(0.20),
                     radius: 12,
                     x: 0,
                     y: 5
@@ -490,19 +487,10 @@ struct DiscoverView: View {
             Image("KinetiqLogo")
                 .resizable()
                 .scaledToFit()
-                .padding(7)
-                .frame(width: 42, height: 42)
-                .background(
-                    LinearGradient(
-                        colors: [
-                            KinetiqPalette.cyan,
-                            KinetiqPalette.violet
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    in: RoundedRectangle(
-                        cornerRadius: 14,
+                .frame(width: 50, height: 50)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 16,
                         style: .continuous
                     )
                 )

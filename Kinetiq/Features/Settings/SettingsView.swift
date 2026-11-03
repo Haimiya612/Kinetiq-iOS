@@ -433,16 +433,13 @@ struct WhatsNewView: View {
                 Image("KinetiqLogo")
                     .resizable()
                     .scaledToFit()
-                    .padding(6)
-                    .frame(width: 38, height: 38)
-                    .background {
-                        LinearGradient(
-                            colors: [KinetiqPalette.cyan, KinetiqPalette.violet],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                    .frame(width: 50, height: 50)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 16,
+                            style: .continuous
                         )
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    )
 
                 Text("KINETIQ")
                     .font(.system(size: 14, weight: .black, design: .rounded))
