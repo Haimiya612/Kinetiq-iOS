@@ -89,12 +89,7 @@ struct MainTabView: View {
                     )
 
                 case .discover:
-                    KinetiqPlaceholderView(
-                        title: "Discover",
-                        subtitle: "Movies, series, anime and manga. One universe, endless stories.",
-                        symbol: "sparkle.magnifyingglass",
-                        accent: KinetiqPalette.cyan
-                    )
+                    DiscoverView()
 
                 case .library:
                     LibraryView(
@@ -166,7 +161,29 @@ struct MainTabView: View {
     // MARK: Bottom Navigation
 
     private var bottomBar: some View {
-        HStack(spacing: 5) {
+        Group {
+            if #available(iOS 26.0, *), useLiquidGlassButtons {
+                dockContent
+                    .glassEffect(.regular.interactive(), in: Capsule())
+            } else {
+                dockContent
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(
+                                Color.primary.opacity(0.07),
+                                lineWidth: 0.7
+                            )
+                    }
+            }
+        }
+        .padding(.horizontal, 17)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+
+    private var dockContent: some View {
+        HStack(spacing: 3) {
             ForEach(KinetiqTab.allCases) { tab in
                 Button {
                     select(tab)
@@ -188,43 +205,30 @@ struct MainTabView: View {
                             : Color.secondary
                     )
                     .frame(maxWidth: .infinity)
-                    .frame(height: 54)
+                    .frame(height: 55)
                     .background {
                         if selectedTab == tab {
-                            RoundedRectangle(
-                                cornerRadius: 16,
-                                style: .continuous
-                            )
-                            .fill(
-                                KinetiqPalette.accent.opacity(0.12)
-                            )
-                            .matchedGeometryEffect(
-                                id: "active-tab",
-                                in: tabAnimation
-                            )
+                            Capsule()
+                                .fill(
+                                    KinetiqPalette.accent.opacity(0.15)
+                                )
+                                .matchedGeometryEffect(
+                                    id: "active-tab",
+                                    in: tabAnimation
+                                )
                         }
                     }
-                    .contentShape(Rectangle())
+                    .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel(tab.rawValue)
                 .accessibilityAddTraits(
                     selectedTab == tab ? .isSelected : []
                 )
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 5)
-        .background {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.06))
-                        .frame(height: 0.5)
-                }
-                .ignoresSafeArea(edges: .bottom)
-        }
+        .padding(6)
     }
 
     // MARK: Selection
