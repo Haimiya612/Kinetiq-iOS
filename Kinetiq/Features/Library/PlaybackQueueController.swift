@@ -1,3 +1,4 @@
+
 import AVFoundation
 import Combine
 import Foundation
@@ -23,14 +24,16 @@ final class PlaybackQueueController: ObservableObject {
 
     init(
         player: AVPlayer,
-        queue: PlaybackQueueStore = .shared
+        queue: PlaybackQueueStore? = nil
     ) {
+        let resolvedQueue = queue ?? PlaybackQueueStore.shared
+
         self.player = player
-        self.queue = queue
+        self.queue = resolvedQueue
 
         player.automaticallyWaitsToMinimizeStalling = true
 
-        currentEntry = queue.currentEntry
+        currentEntry = resolvedQueue.currentEntry
 
         observePlaybackCompletion()
     }
