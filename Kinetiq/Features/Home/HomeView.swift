@@ -1,5 +1,486 @@
 import SwiftUI
 import UIKit
+import AVFoundation
+import CryptoKit
+
+// MARK: - Persistent Continue Watching Thumbnails
+
+private struct ThumbnailMetadata: Codable {
+    let mediaID: String
+    let fileSize: Int64
+    let modificationDate: TimeInterval
+}
+
+/// Disk-backed thumbnails for local media.
+///
+/// Thumbnails survive app restarts and remain cached while their source
+/// media exists in Documents/KinetiqMedia. Removing playback history alone
+/// does not remove the thumbnail.
+private final class ContinueWatchingThumbnailCache: @unchecked Sendable {
+    static let shared = ContinueWatchingThumbnailCache()
+
+    private let memoryCache = NSCache<NSString, UIImage>()
+
+    private let stateQueue = DispatchQueue(
+        label: "com.kinetiq.continue-thumbnails.state",
+        qos: .utility
+    )
+
+    private let generationQueue = DispatchQueue(
+        label: "com.kinetiq.continue-thumbnails.generation",
+        qos: .utility,
+        attributes: .concurrent
+    )
+
+    // All state below is accessed exclusively on stateQueue.
+    private var pendingRequests: [
+        String: [CheckedContinuation<UIImage?, Never>]
+    ] = [:]
+
+    private var invalidationVersions: [String: UInt64] = [:]
+    private var cachedMediaIDs = Set<String>()
+
+    private init() {
+        memoryCache.countLimit = 100
+        memoryCache.totalCostLimit = 72 * 1024 * 1024
+    }
+
+    // MARK: Load or Generate
+
+    func image(
+        for mediaID: String,
+        url: URL
+    ) async -> UIImage? {
+        guard !mediaID.isEmpty else {
+            return nil
+        }
+
+        return await withCheckedContinuation { continuation in
+            stateQueue.async { [self] in
+                if let cachedImage = memoryCache.object(
+                    forKey: mediaID as NSString
+                ) {
+                    continuation.resume(returning: cachedImage)
+                    return
+                }
+
+                if pendingRequests[mediaID] != nil {
+                    pendingRequests[mediaID, default: []].append(
+                        continuation
+                    )
+                    return
+                }
+
+                pendingRequests[mediaID] = [continuation]
+
+                let requestVersion = invalidationVersions[
+                    mediaID,
+                    default: 0
+                ]
+
+                generationQueue.async { [self] in
+                    let image = Self.loadOrGenerateImage(
+                        mediaID: mediaID,
+                        url: url
+                    )
+
+                    stateQueue.async { [self] in
+                        let isCurrentGeneration =
+                            invalidationVersions[
+                                mediaID,
+                                default: requestVersion
+                            ] == requestVersion
+
+                        if isCurrentGeneration, let image {
+                            let imageCost = image.cgImage.map {
+                                $0.bytesPerRow * $0.height
+                            } ?? 0
+
+                            memoryCache.setObject(
+                                image,
+                                forKey: mediaID as NSString,
+                                cost: imageCost
+                            )
+
+                            cachedMediaIDs.insert(mediaID)
+                        } else if !isCurrentGeneration {
+                            Self.removeDiskArtifacts(for: mediaID)
+                        }
+
+                        invalidationVersions.removeValue(
+                            forKey: mediaID
+                        )
+
+                        let continuations =
+                            pendingRequests.removeValue(
+                                forKey: mediaID
+                            ) ?? []
+
+                        let result = isCurrentGeneration ? image : nil
+
+                        continuations.forEach {
+                            $0.resume(returning: result)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Remove One Media Item
+
+    func invalidate(mediaID: String) {
+        guard !mediaID.isEmpty else { return }
+
+        stateQueue.async { [self] in
+            memoryCache.removeObject(
+                forKey: mediaID as NSString
+            )
+
+            cachedMediaIDs.remove(mediaID)
+
+            if pendingRequests[mediaID] != nil {
+                invalidationVersions[mediaID, default: 0] &+= 1
+            }
+
+            Self.removeDiskArtifacts(for: mediaID)
+        }
+    }
+
+    // MARK: Remove Orphaned Thumbnails
+
+    /// Called when Home appears and when Continue Watching changes.
+    ///
+    /// The source media directory is authoritative. A completed movie can
+    /// leave Continue Watching while its thumbnail remains cached, because
+    /// the movie file is still present.
+    func removeOrphans() {
+        stateQueue.async { [self] in
+            let fileManager = FileManager.default
+            let mediaDirectory = Self.localMediaDirectory
+
+            let mediaFiles = (
+                try? fileManager.contentsOfDirectory(
+                    at: mediaDirectory,
+                    includingPropertiesForKeys: nil
+                )
+            ) ?? []
+
+            let validMediaIDs = Set(
+                mediaFiles.map(\.lastPathComponent)
+            )
+
+            for mediaID in pendingRequests.keys
+                where !validMediaIDs.contains(mediaID) {
+                invalidationVersions[mediaID, default: 0] &+= 1
+            }
+
+            let removedIDs = cachedMediaIDs.subtracting(
+                validMediaIDs
+            )
+
+            for mediaID in removedIDs {
+                memoryCache.removeObject(
+                    forKey: mediaID as NSString
+                )
+                cachedMediaIDs.remove(mediaID)
+            }
+
+            guard let cachedFiles = try? fileManager.contentsOfDirectory(
+                at: Self.thumbnailDirectory,
+                includingPropertiesForKeys: nil
+            ) else {
+                return
+            }
+
+            let validCacheStems = Set(
+                validMediaIDs.map(Self.cacheStem)
+            )
+
+            for fileURL in cachedFiles {
+                let stem = fileURL.deletingPathExtension()
+                    .lastPathComponent
+
+                if !validCacheStems.contains(stem) {
+                    try? fileManager.removeItem(at: fileURL)
+                }
+            }
+        }
+    }
+
+    // MARK: Storage Locations
+
+    private static var localMediaDirectory: URL {
+        FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        .appendingPathComponent(
+            "KinetiqMedia",
+            isDirectory: true
+        )
+    }
+
+    private static var thumbnailDirectory: URL {
+        FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        .appendingPathComponent(
+            "Kinetiq",
+            isDirectory: true
+        )
+        .appendingPathComponent(
+            "Thumbnails",
+            isDirectory: true
+        )
+    }
+
+    private static func cacheStem(for mediaID: String) -> String {
+        let digest = SHA256.hash(
+            data: Data(mediaID.utf8)
+        )
+
+        return digest.map {
+            String(format: "%02x", $0)
+        }
+        .joined()
+    }
+
+    private static func imageURL(for mediaID: String) -> URL {
+        thumbnailDirectory
+            .appendingPathComponent(cacheStem(for: mediaID))
+            .appendingPathExtension("jpg")
+    }
+
+    private static func metadataURL(for mediaID: String) -> URL {
+        thumbnailDirectory
+            .appendingPathComponent(cacheStem(for: mediaID))
+            .appendingPathExtension("json")
+    }
+
+    // MARK: Disk Cache
+
+    private static func loadOrGenerateImage(
+        mediaID: String,
+        url: URL
+    ) -> UIImage? {
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+
+        let fileManager = FileManager.default
+
+        do {
+            try fileManager.createDirectory(
+                at: thumbnailDirectory,
+                withIntermediateDirectories: true
+            )
+
+            var directory = thumbnailDirectory
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try? directory.setResourceValues(resourceValues)
+        } catch {
+            return nil
+        }
+
+        guard let attributes = try? fileManager.attributesOfItem(
+            atPath: url.path
+        ) else {
+            return nil
+        }
+
+        let fileSize = (
+            attributes[.size] as? NSNumber
+        )?.int64Value ?? 0
+
+        let modificationDate = (
+            attributes[.modificationDate] as? Date
+        )?.timeIntervalSince1970 ?? 0
+
+        let expectedMetadata = ThumbnailMetadata(
+            mediaID: mediaID,
+            fileSize: fileSize,
+            modificationDate: modificationDate
+        )
+
+        let imageURL = imageURL(for: mediaID)
+        let metadataURL = metadataURL(for: mediaID)
+
+        // Reuse the persisted image when the underlying media is unchanged.
+        if let metadataData = try? Data(contentsOf: metadataURL),
+           let storedMetadata = try? JSONDecoder().decode(
+                ThumbnailMetadata.self,
+                from: metadataData
+           ),
+           storedMetadata.mediaID == expectedMetadata.mediaID,
+           storedMetadata.fileSize == expectedMetadata.fileSize,
+           storedMetadata.modificationDate
+                == expectedMetadata.modificationDate,
+           let image = UIImage(contentsOfFile: imageURL.path) {
+            return image
+        }
+
+        // A changed source file invalidates its old artwork.
+        try? fileManager.removeItem(at: imageURL)
+        try? fileManager.removeItem(at: metadataURL)
+
+        guard let generatedImage = generateFrame(from: url),
+              let jpegData = generatedImage.jpegData(
+                compressionQuality: 0.88
+              ) else {
+            return nil
+        }
+
+        do {
+            try jpegData.write(
+                to: imageURL,
+                options: .atomic
+            )
+
+            let metadataData = try JSONEncoder().encode(
+                expectedMetadata
+            )
+
+            try metadataData.write(
+                to: metadataURL,
+                options: .atomic
+            )
+        } catch {
+            try? fileManager.removeItem(at: imageURL)
+            try? fileManager.removeItem(at: metadataURL)
+            return generatedImage
+        }
+
+        return generatedImage
+    }
+
+    // MARK: Frame Generation
+
+    private static func generateFrame(from url: URL) -> UIImage? {
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(
+            width: 900,
+            height: 900
+        )
+
+        let duration = asset.duration.seconds
+
+        // Move past the opening frame when possible. This tends to produce
+        // a more representative image than always sampling at 0–1 seconds.
+        let sampleTime: Double
+
+        if duration.isFinite, duration > 0 {
+            sampleTime = min(
+                max(duration * 0.12, 1),
+                45
+            )
+        } else {
+            sampleTime = 1
+        }
+
+        let timestamp = CMTime(
+            seconds: sampleTime,
+            preferredTimescale: 600
+        )
+
+        guard let cgImage = try? generator.copyCGImage(
+            at: timestamp,
+            actualTime: nil
+        ) else {
+            return nil
+        }
+
+        return UIImage(cgImage: cgImage)
+    }
+
+    // MARK: Disk Cleanup
+
+    private static func removeDiskArtifacts(for mediaID: String) {
+        let fileManager = FileManager.default
+
+        try? fileManager.removeItem(
+            at: imageURL(for: mediaID)
+        )
+
+        try? fileManager.removeItem(
+            at: metadataURL(for: mediaID)
+        )
+    }
+}
+
+// MARK: - Continue Watching Thumbnail View
+
+private struct ContinueWatchingThumbnailView: View {
+    let mediaID: String
+    let url: URL
+
+    @State private var image: UIImage?
+
+    private var requestID: String {
+        "\(mediaID)|\(url.standardizedFileURL.path)"
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else {
+                fallbackArtwork
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .task(id: requestID) {
+            let loadedImage = await ContinueWatchingThumbnailCache.shared.image(
+                for: mediaID,
+                url: url
+            )
+
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.22)) {
+                image = loadedImage
+            }
+        }
+    }
+
+    private var fallbackArtwork: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    KinetiqPalette.blue,
+                    KinetiqPalette.violet,
+                    KinetiqPalette.cyan.opacity(0.85)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .stroke(.white.opacity(0.17), lineWidth: 1)
+                .frame(width: 105, height: 105)
+                .offset(x: 125, y: -10)
+
+            Image(systemName: "play.rectangle.fill")
+                .font(.system(size: 38, weight: .light))
+                .foregroundStyle(.white.opacity(0.88))
+        }
+    }
+}
 
 // MARK: - Home Media Mode
 
@@ -57,6 +538,8 @@ struct HomeView: View {
         .padding(.top, 10)
         .background(Color(uiColor: .systemBackground))
         .onAppear {
+            ContinueWatchingThumbnailCache.shared.removeOrphans()
+
             withAnimation(
                 reduceMotion
                     ? .easeInOut(duration: 0.2)
@@ -65,6 +548,31 @@ struct HomeView: View {
                 appeared = true
             }
         }
+        .onChange(of: continueWatching.map(\.id)) { _, _ in
+            // A completed item can disappear from Continue Watching while
+            // its local file remains. Only files actually removed from the
+            // library have their thumbnails cleaned up.
+            ContinueWatchingThumbnailCache.shared.removeOrphans()
+        }
+    }
+
+    // MARK: Local Media Resolution
+
+    private func localMediaURL(
+        for entry: PlaybackHistoryEntry
+    ) -> URL {
+        FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        .appendingPathComponent(
+            "KinetiqMedia",
+            isDirectory: true
+        )
+        .appendingPathComponent(
+            entry.id,
+            isDirectory: false
+        )
     }
 
     // MARK: Source / Module Picker
@@ -478,28 +986,20 @@ struct HomeView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 11) {
             ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                KinetiqPalette.blue,
-                                KinetiqPalette.violet,
-                                KinetiqPalette.cyan.opacity(0.85)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                ContinueWatchingThumbnailView(
+                    mediaID: entry.id,
+                    url: localMediaURL(for: entry)
+                )
 
-                Circle()
-                    .stroke(.white.opacity(0.17), lineWidth: 1)
-                    .frame(width: 105, height: 105)
-                    .offset(x: 125, y: -10)
-
-                Image(systemName: "play.rectangle.fill")
-                    .font(.system(size: 38, weight: .light))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        .black.opacity(0.04),
+                        .black.opacity(0.32)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
 
                 HStack {
                     Label(
@@ -510,13 +1010,18 @@ struct HomeView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
-                    .background(.black.opacity(0.28), in: Capsule())
+                    .background(.black.opacity(0.38), in: Capsule())
 
                     Spacer()
 
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .frame(width: 25, height: 25)
+                        .background(
+                            .black.opacity(0.28),
+                            in: Circle()
+                        )
                 }
                 .padding(10)
             }
@@ -524,6 +1029,16 @@ struct HomeView: View {
             .clipShape(
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
             )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 17,
+                    style: .continuous
+                )
+                .strokeBorder(
+                    Color.white.opacity(0.10),
+                    lineWidth: 0.8
+                )
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(entry.title)
