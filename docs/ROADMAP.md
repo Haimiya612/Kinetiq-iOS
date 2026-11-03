@@ -1,4 +1,3 @@
-
 # Kinetiq -- Development Roadmap
 
 Kinetiq is an independent, native iOS media platform designed to bring video,
