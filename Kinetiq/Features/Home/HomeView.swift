@@ -1,44 +1,60 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Home Media Mode
+
+private enum HomeMediaMode: String, CaseIterable, Identifiable {
+    case video = "Video"
+    case manga = "Manga"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .video: "play.rectangle.fill"
+        case .manga: "book.closed.fill"
+        }
+    }
+}
+
+// MARK: - Home View
+
 struct HomeView: View {
     let tagline: String
     let continueWatching: [PlaybackHistoryEntry]
+
     let onDiscover: () -> Void
     let onModules: () -> Void
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
+    let onOpenLibrary: () -> Void
 
+    @State private var selectedMode: HomeMediaMode = .video
+    @State private var selectedSource = "Local Library"
     @State private var appeared = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 27) {
-                header
-                    .entrance(appeared, delay: 0.02)
+        VStack(spacing: 13) {
+            sourcePicker
+            mediaModeSwitcher
 
-                introduction
-                    .entrance(appeared, delay: 0.08)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 27) {
+                    header
 
-                heroCard
-                    .entrance(appeared, delay: 0.14)
-
-                if !continueWatching.isEmpty {
-                    continueWatchingSection
-                        .entrance(appeared, delay: 0.18)
+                    if selectedMode == .video {
+                        videoContent
+                    } else {
+                        mangaPlaceholder
+                    }
                 }
-
-                mediaSection
-                    .entrance(appeared, delay: 0.24)
-
-                moduleCard
-                    .entrance(appeared, delay: 0.30)
+                .padding(.horizontal, 21)
+                .padding(.top, 12)
+                .padding(.bottom, 30)
             }
-            .padding(.horizontal, 21)
-            .padding(.top, 16)
-            .padding(.bottom, 30)
         }
+        .padding(.top, 10)
         .background(Color(uiColor: .systemBackground))
         .onAppear {
             withAnimation(
@@ -48,6 +64,210 @@ struct HomeView: View {
             ) {
                 appeared = true
             }
+        }
+    }
+
+    // MARK: Source / Module Picker
+
+    private var sourcePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("ACTIVE SOURCE")
+                    .font(
+                        .system(
+                            size: 9,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
+                    .tracking(1.7)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("SOURCE")
+                    .font(
+                        .system(
+                            size: 8,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
+                    .tracking(1.2)
+                    .foregroundStyle(KinetiqPalette.accent)
+            }
+
+            Menu {
+                Button {
+                    selectedSource = "Local Library"
+                } label: {
+                    Label(
+                        "Local Library",
+                        systemImage: "iphone"
+                    )
+                }
+
+                Divider()
+
+                Button(action: onModules) {
+                    Label(
+                        "Manage Modules",
+                        systemImage: "square.stack.3d.up.fill"
+                    )
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "iphone")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .frame(width: 37, height: 37)
+                        .background(
+                            KinetiqPalette.accent.opacity(0.12),
+                            in: RoundedRectangle(
+                                cornerRadius: 12,
+                                style: .continuous
+                            )
+                        )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(selectedSource)
+                            .font(
+                                .system(
+                                    size: 14,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
+                            .foregroundStyle(.primary)
+
+                        Text("Personal media on this device")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(
+                        cornerRadius: 17,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 17,
+                        style: .continuous
+                    )
+                    .strokeBorder(
+                        Color.primary.opacity(0.045),
+                        lineWidth: 0.7
+                    )
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                "Active source: \(selectedSource). Choose a source or manage modules."
+            )
+        }
+        .padding(.horizontal, 21)
+    }
+
+    // MARK: Video / Manga Switcher
+
+    private var mediaModeSwitcher: some View {
+        HStack(spacing: 5) {
+            ForEach(HomeMediaMode.allCases) { mode in
+                Button {
+                    withAnimation(
+                        reduceMotion
+                            ? .easeInOut(duration: 0.15)
+                            : .spring(
+                                response: 0.34,
+                                dampingFraction: 0.78
+                            )
+                    ) {
+                        selectedMode = mode
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: mode.symbol)
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Text(mode.rawValue)
+                            .font(
+                                .system(
+                                    size: 13,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
+                    }
+                    .foregroundStyle(
+                        selectedMode == mode
+                            ? .white
+                            : Color.primary.opacity(0.72)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background {
+                        if selectedMode == mode {
+                            RoundedRectangle(
+                                cornerRadius: 13,
+                                style: .continuous
+                            )
+                            .fill(KinetiqPalette.accent)
+                        }
+                    }
+                    .contentShape(
+                        RoundedRectangle(
+                            cornerRadius: 13,
+                            style: .continuous
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    selectedMode == mode ? .isSelected : []
+                )
+            }
+        }
+        .padding(5)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+        )
+        .padding(.horizontal, 21)
+    }
+
+    // MARK: Video Home
+
+    private var videoContent: some View {
+        VStack(alignment: .leading, spacing: 27) {
+            introduction
+                .entrance(appeared, delay: 0.04)
+
+            heroCard
+                .entrance(appeared, delay: 0.10)
+
+            if !continueWatching.isEmpty {
+                continueWatchingSection
+                    .entrance(appeared, delay: 0.16)
+            }
+
+            librarySection
+                .entrance(appeared, delay: 0.22)
         }
     }
 
@@ -115,7 +335,7 @@ struct HomeView: View {
 
             Text(
                 tagline.isEmpty
-                    ? "Movies, series, anime and manga -- all moving together."
+                    ? "Movies, series and anime -- all moving together."
                     : tagline
             )
             .font(.system(size: 14, weight: .medium))
@@ -331,89 +551,161 @@ struct HomeView: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: Media Types
+    // MARK: Library Entry
 
-    private var mediaSection: some View {
+    private var librarySection: some View {
         VStack(alignment: .leading, spacing: 13) {
             sectionHeading(
-                "A universe of possibilities",
-                detail: "MADE FOR EVERY MOOD"
+                "Your library",
+                detail: "YOUR PERSONAL COLLECTION"
             )
 
-            HStack(spacing: 11) {
-                MediaTypeCard(
-                    title: "Movies",
-                    subtitle: "Big-screen stories",
-                    symbol: "film",
-                    colors: [KinetiqPalette.blue, KinetiqPalette.violet]
-                )
+            Button(action: onOpenLibrary) {
+                HStack(spacing: 14) {
+                    Image(systemName: "play.rectangle.on.rectangle.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .frame(width: 48, height: 48)
+                        .background(
+                            KinetiqPalette.accent.opacity(0.12),
+                            in: RoundedRectangle(
+                                cornerRadius: 15,
+                                style: .continuous
+                            )
+                        )
 
-                MediaTypeCard(
-                    title: "Series",
-                    subtitle: "One more episode",
-                    symbol: "tv",
-                    colors: [KinetiqPalette.cyan, KinetiqPalette.blue]
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Open your library")
+                            .font(
+                                .system(
+                                    size: 14,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
+                            .foregroundStyle(.primary)
+
+                        Text("Browse and play your imported videos")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(15)
+                .background(
+                    Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(
+                        cornerRadius: 20,
+                        style: .continuous
+                    )
                 )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 20,
+                        style: .continuous
+                    )
+                    .strokeBorder(
+                        Color.primary.opacity(0.045),
+                        lineWidth: 0.7
+                    )
+                }
+                .contentShape(Rectangle())
             }
-
-            HStack(spacing: 11) {
-                MediaTypeCard(
-                    title: "Anime",
-                    subtitle: "Worlds beyond",
-                    symbol: "sparkles",
-                    colors: [KinetiqPalette.violet, KinetiqPalette.blue]
-                )
-
-                MediaTypeCard(
-                    title: "Manga",
-                    subtitle: "Stories in panels",
-                    symbol: "book.closed",
-                    colors: [KinetiqPalette.blue, KinetiqPalette.cyan]
-                )
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open your local video library")
         }
     }
 
-    // MARK: Modules
+    // MARK: Manga Placeholder
 
-    private var moduleCard: some View {
-        Button(action: onModules) {
-            HStack(spacing: 14) {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 20, weight: .semibold))
+    private var mangaPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("A NEW WAY TO READ.")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(2.3)
                     .foregroundStyle(KinetiqPalette.accent)
-                    .frame(width: 46, height: 46)
-                    .background(
-                        KinetiqPalette.accent.opacity(0.12),
-                        in: RoundedRectangle(
-                            cornerRadius: 15,
-                            style: .continuous
-                        )
-                    )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Your sources. Your rules.")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                Text("Your manga universe.")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .tracking(-1.1)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(
+                    "Discover, organize and read manga from the sources you choose."
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ZStack {
+                RoundedRectangle(
+                    cornerRadius: 27,
+                    style: .continuous
+                )
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            KinetiqPalette.violet.opacity(0.20),
+                            KinetiqPalette.blue.opacity(0.12),
+                            Color(uiColor: .secondarySystemGroupedBackground)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+                Circle()
+                    .fill(KinetiqPalette.violet.opacity(0.12))
+                    .frame(width: 190, height: 190)
+                    .blur(radius: 3)
+                    .offset(x: 105, y: -50)
+
+                VStack(spacing: 14) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.system(size: 57, weight: .light))
+                        .foregroundStyle(KinetiqPalette.violet)
+
+                    Text("Manga is taking shape")
+                        .font(
+                            .system(
+                                size: 18,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
                         .foregroundStyle(.primary)
 
-                    Text("The modular engine is part of the journey.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    Text(
+                        "The manga library, source integration and reader will be built here."
+                    )
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .frame(maxWidth: 260)
+                }
+                .padding(25)
             }
-            .padding(15)
-            .background(
-                Color(uiColor: .secondarySystemGroupedBackground),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .frame(height: 260)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 27,
+                    style: .continuous
+                )
             )
         }
+        .padding(.top, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .entrance(appeared, delay: 0.05)
     }
 
     // MARK: Shared Section Heading
@@ -630,83 +922,15 @@ struct DiscoverView: View {
         .padding(20)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(
-                cornerRadius: 23,
-                style: .continuous
-            )
+            in: RoundedRectangle(cornerRadius: 23, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(
-                cornerRadius: 23,
-                style: .continuous
-            )
-            .strokeBorder(
-                Color.primary.opacity(0.045),
-                lineWidth: 0.7
-            )
-        }
-    }
-}
-
-// MARK: - Media Type Card
-
-private struct MediaTypeCard: View {
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let colors: [Color]
-
-    @State private var pressed = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                Image(systemName: symbol)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-
-                Text(subtitle)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
-            }
-        }
-        .padding(15)
-        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 19, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: colors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+            RoundedRectangle(cornerRadius: 23, style: .continuous)
+                .strokeBorder(
+                    Color.primary.opacity(0.045),
+                    lineWidth: 0.7
                 )
         }
-        .scaleEffect(pressed ? 0.975 : 1)
-        .animation(
-            .spring(response: 0.28, dampingFraction: 0.62),
-            value: pressed
-        )
-        .onLongPressGesture(
-            minimumDuration: 0.01,
-            pressing: { pressing in
-                pressed = pressing
-            },
-            perform: {}
-        )
-        .accessibilityElement(children: .combine)
     }
 }
 

@@ -5,10 +5,9 @@ import UIKit
 
 private enum KinetiqTab: String, CaseIterable, Identifiable {
     case home = "Home"
-    case discover = "Discover"
-    case library = "Library"
-    case modules = "Modules"
-    case profile = "Profile"
+    case favorites = "Favorites"
+    case downloads = "Downloads"
+    case settings = "Settings"
 
     var id: String { rawValue }
 
@@ -19,10 +18,9 @@ private enum KinetiqTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: "house.fill"
-        case .discover: "safari"
-        case .library: "books.vertical.fill"
-        case .modules: "square.stack.3d.up.fill"
-        case .profile: "person.crop.circle"
+        case .favorites: "heart.fill"
+        case .downloads: "arrow.down.circle.fill"
+        case .settings: "gearshape.fill"
         }
     }
 }
@@ -40,20 +38,37 @@ private enum TabNavigationDirection {
     }
 }
 
+// MARK: - Home Sheets
+
+private enum HomeSheet: String, Identifiable {
+    case discover
+    case modules
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .discover: "Discover"
+        case .modules: "Module Sources"
+        }
+    }
+}
+
 // MARK: - Main Tab View
 
 struct MainTabView: View {
     let tagline: String
 
-    // Preserve the existing preference key.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
     private var useLiquidGlassDock = false
 
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
-    @State private var requestedMediaID: String?
 
-    // Tracks the glass indicator while it is being dragged.
+    @State private var requestedMediaID: String?
+    @State private var showingLibrary = false
+    @State private var activeSheet: HomeSheet?
+
     @State private var draggedTabPosition: CGFloat?
     @State private var dragStartPosition: CGFloat?
 
@@ -65,59 +80,33 @@ struct MainTabView: View {
         mainLayout
     }
 
+    // MARK: Main Layout
+
     private var mainLayout: some View {
         VStack(spacing: 0) {
             Group {
                 switch selectedTab {
                 case .home:
-                    HomeView(
-                        tagline: tagline,
-                        continueWatching: playbackHistory.continueWatching,
-                        onDiscover: {
-                            select(.discover)
-                        },
-                        onModules: {
-                            select(.modules)
-                        },
-                        onContinueWatching: { entry in
-                            openContinueWatching(entry)
-                        }
-                    )
+                    homeDestination
 
-                case .discover:
-                    DiscoverView()
-
-                case .library:
-                    LibraryView(
-                        requestedMediaID: $requestedMediaID
-                    )
-
-                case .modules:
+                case .favorites:
                     KinetiqPlaceholderView(
-                        title: "Modules",
-                        subtitle: "Connect sources and shape your Kinetiq experience.",
-                        symbol: "square.stack.3d.up.fill",
-                        accent: KinetiqPalette.violet
+                        title: "Favorites",
+                        subtitle: "Your favorite movies, episodes and manga will live here.",
+                        symbol: "heart.fill",
+                        accent: KinetiqPalette.cyan
                     )
 
-                case .profile:
-                    NavigationStack {
-                        KinetiqPlaceholderView(
-                            title: "Your space",
-                            subtitle: "Your preferences and personal Kinetiq experience.",
-                            symbol: "person.crop.circle.fill",
-                            accent: KinetiqPalette.blue
-                        )
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                NavigationLink {
-                                    SettingsView()
-                                } label: {
-                                    Image(systemName: "gearshape")
-                                }
-                            }
-                        }
-                    }
+                case .downloads:
+                    KinetiqPlaceholderView(
+                        title: "Downloads",
+                        subtitle: "Keep your media available offline with Kinetiq's download manager.",
+                        symbol: "arrow.down.circle.fill",
+                        accent: KinetiqPalette.blue
+                    )
+
+                case .settings:
+                    SettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,15 +117,106 @@ struct MainTabView: View {
         }
         .background(Color(uiColor: .systemBackground))
         .tint(KinetiqPalette.accent)
+        .sheet(item: $activeSheet) { destination in
+            NavigationStack {
+                Group {
+                    switch destination {
+                    case .discover:
+                        DiscoverView()
+
+                    case .modules:
+                        KinetiqPlaceholderView(
+                            title: "Module Sources",
+                            subtitle: "Connect your own video and manga sources. The secure Kinetiq module engine is being built.",
+                            symbol: "square.stack.3d.up.fill",
+                            accent: KinetiqPalette.violet
+                        )
+                    }
+                }
+                .navigationTitle(destination.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            activeSheet = nil
+                        }
+                        .fontWeight(.semibold)
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
-    // MARK: Continue Watching Routing
+    // MARK: Home Destination
+
+    @ViewBuilder
+    private var homeDestination: some View {
+        if showingLibrary {
+            LibraryView(
+                requestedMediaID: $requestedMediaID
+            )
+            .overlay(alignment: .topLeading) {
+                Button(action: closeLibrary) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay {
+                            Circle()
+                                .strokeBorder(
+                                    Color.primary.opacity(0.08),
+                                    lineWidth: 0.7
+                                )
+                        }
+                }
+                .accessibilityLabel("Back to Home")
+                .padding(.leading, 17)
+                .padding(.top, 6)
+            }
+        } else {
+            HomeView(
+                tagline: tagline,
+                continueWatching: playbackHistory.continueWatching,
+                onDiscover: {
+                    activeSheet = .discover
+                },
+                onModules: {
+                    activeSheet = .modules
+                },
+                onContinueWatching: openContinueWatching,
+                onOpenLibrary: openLibrary
+            )
+        }
+    }
+
+    // MARK: Library Navigation
+
+    private func openLibrary() {
+        requestedMediaID = nil
+
+        withAnimation(selectionAnimation) {
+            showingLibrary = true
+        }
+    }
 
     private func openContinueWatching(
         _ entry: PlaybackHistoryEntry
     ) {
         requestedMediaID = entry.id
-        select(.library)
+
+        withAnimation(selectionAnimation) {
+            showingLibrary = true
+        }
+    }
+
+    private func closeLibrary() {
+        withAnimation(selectionAnimation) {
+            showingLibrary = false
+            requestedMediaID = nil
+        }
     }
 
     // MARK: Content Transition
@@ -224,7 +304,7 @@ struct MainTabView: View {
                     .offset(x: indicatorOffset)
                     .allowsHitTesting(false)
 
-                // MARK: Stationary Tab Buttons
+                // MARK: Tab Buttons
 
                 HStack(spacing: tabSpacing) {
                     ForEach(KinetiqTab.allCases) { tab in
@@ -275,10 +355,6 @@ struct MainTabView: View {
                 )
 
                 // MARK: Draggable Indicator Handle
-                //
-                // This transparent hit area sits directly over
-                // the glass indicator. It moves with the indicator.
-                // The rest of the dock has no drag gesture.
 
                 Capsule()
                     .fill(Color.clear)
@@ -291,7 +367,6 @@ struct MainTabView: View {
                     .gesture(
                         DragGesture(minimumDistance: 8)
                             .onChanged { value in
-                                // Only respond to horizontal dragging.
                                 guard abs(value.translation.width)
                                         > abs(value.translation.height)
                                 else {
@@ -378,12 +453,10 @@ struct MainTabView: View {
 
         let targetTab = KinetiqTab.allCases[targetIndex]
 
-        withAnimation(selectionAnimation) {
-            draggedTabPosition = nil
-            dragStartPosition = nil
+        draggedTabPosition = nil
+        dragStartPosition = nil
 
-            updateSelection(targetTab)
-        }
+        select(targetTab)
     }
 
     // MARK: Selection
@@ -399,6 +472,20 @@ struct MainTabView: View {
 
     private func select(_ tab: KinetiqTab) {
         withAnimation(selectionAnimation) {
+            if tab == .home, selectedTab == .home {
+                if showingLibrary {
+                    showingLibrary = false
+                    requestedMediaID = nil
+                }
+
+                return
+            }
+
+            if tab != .home {
+                showingLibrary = false
+                requestedMediaID = nil
+            }
+
             updateSelection(tab)
         }
     }
@@ -426,33 +513,12 @@ private struct KinetiqPlaceholderView: View {
 
     @State private var appeared = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 10) {
-                    Image("KinetiqLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 50, height: 50)
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 16,
-                                style: .continuous
-                            )
-                        )
-
-                    Text("KINETIQ")
-                        .font(
-                            .system(
-                                size: 15,
-                                weight: .black,
-                                design: .rounded
-                            )
-                        )
-                        .tracking(2)
-
-                    Spacer()
-                }
+                header
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("YOUR MEDIA UNIVERSE")
@@ -480,6 +546,10 @@ private struct KinetiqPlaceholderView: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineSpacing(4)
+                        .fixedSize(
+                            horizontal: false,
+                            vertical: true
+                        )
                 }
 
                 ZStack {
@@ -535,12 +605,42 @@ private struct KinetiqPlaceholderView: View {
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 12)
         }
+        .background(Color(uiColor: .systemBackground))
         .onAppear {
             withAnimation(
-                .spring(response: 0.65, dampingFraction: 0.86)
+                reduceMotion
+                    ? .easeInOut(duration: 0.2)
+                    : .spring(response: 0.65, dampingFraction: 0.86)
             ) {
                 appeared = true
             }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image("KinetiqLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 50, height: 50)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 16,
+                        style: .continuous
+                    )
+                )
+
+            Text("KINETIQ")
+                .font(
+                    .system(
+                        size: 15,
+                        weight: .black,
+                        design: .rounded
+                    )
+                )
+                .tracking(2)
+
+            Spacer()
         }
     }
 }
