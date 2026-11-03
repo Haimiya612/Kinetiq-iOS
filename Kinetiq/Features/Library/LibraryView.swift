@@ -17,66 +17,142 @@ private struct LocalMedia: Identifiable {
 
 // MARK: - Thumbnail Cache
 
-private final class MediaThumbnailCache {
+/// Coordinates thumbnail requests so multiple cells asking for the same
+/// file share one generation operation. Cache state and continuations are
+/// confined to stateQueue; different files can be generated concurrently.
+private final class MediaThumbnailCache: @unchecked Sendable {
     static let shared = MediaThumbnailCache()
 
     private let cache = NSCache<NSString, UIImage>()
-    private let queue = DispatchQueue(
-        label: "com.kinetiq.media-thumbnails",
+
+    private let stateQueue = DispatchQueue(
+        label: "com.kinetiq.media-thumbnails.state",
+        qos: .utility
+    )
+
+    private let generationQueue = DispatchQueue(
+        label: "com.kinetiq.media-thumbnails.generation",
         qos: .utility,
         attributes: .concurrent
     )
 
+    // Accessed exclusively on stateQueue.
+    private var pendingRequests: [
+        String: [CheckedContinuation<UIImage?, Never>]
+    ] = [:]
+
+    // A generation invalidated while in flight must not repopulate the cache.
+    // Accessed exclusively on stateQueue.
+    private var invalidationVersions: [String: UInt64] = [:]
+
     private init() {
         cache.countLimit = 150
+        cache.totalCostLimit = 96 * 1024 * 1024
     }
 
     func image(for url: URL) async -> UIImage? {
-        let key = url.path as NSString
-
-        if let cached = cache.object(forKey: key) {
-            return cached
-        }
+        let key = url.standardizedFileURL.path
 
         return await withCheckedContinuation { continuation in
-            queue.async {
-                if let cached = self.cache.object(forKey: key) {
-                    continuation.resume(returning: cached)
+            stateQueue.async { [self] in
+                if let cachedImage = cache.object(forKey: key as NSString) {
+                    continuation.resume(returning: cachedImage)
                     return
                 }
 
-                let asset = AVURLAsset(url: url)
-                let generator = AVAssetImageGenerator(asset: asset)
-                generator.appliesPreferredTrackTransform = true
-                generator.maximumSize = CGSize(width: 720, height: 720)
-
-                let timestamp = CMTime(seconds: 1, preferredTimescale: 600)
-
-                let image: UIImage?
-
-                if let cgImage = try? generator.copyCGImage(
-                    at: timestamp,
-                    actualTime: nil
-                ) {
-                    image = UIImage(cgImage: cgImage)
-                    if let image {
-                        self.cache.setObject(image, forKey: key)
-                    }
-                } else {
-                    image = nil
+                if pendingRequests[key] != nil {
+                    pendingRequests[key, default: []].append(continuation)
+                    return
                 }
 
-                continuation.resume(returning: image)
+                pendingRequests[key] = [continuation]
+                let requestVersion = invalidationVersions[key, default: 0]
+
+                generationQueue.async { [self] in
+                    let generatedImage = Self.generateImage(for: url)
+
+                    stateQueue.async { [self] in
+                        let isCurrentGeneration =
+                            invalidationVersions[key, default: requestVersion]
+                                == requestVersion
+
+                        if isCurrentGeneration, let generatedImage {
+                            let imageCost = generatedImage.cgImage.map {
+                                $0.bytesPerRow * $0.height
+                            } ?? 0
+
+                            cache.setObject(
+                                generatedImage,
+                                forKey: key as NSString,
+                                cost: imageCost
+                            )
+                        }
+
+                        invalidationVersions.removeValue(forKey: key)
+
+                        let waitingContinuations =
+                            pendingRequests.removeValue(forKey: key) ?? []
+
+                        let result = isCurrentGeneration
+                            ? generatedImage
+                            : nil
+
+                        waitingContinuations.forEach {
+                            $0.resume(returning: result)
+                        }
+                    }
+                }
             }
         }
     }
 
     func invalidate(_ url: URL) {
-        cache.removeObject(forKey: url.path as NSString)
+        let key = url.standardizedFileURL.path
+
+        stateQueue.async { [self] in
+            cache.removeObject(forKey: key as NSString)
+
+            if pendingRequests[key] != nil {
+                invalidationVersions[key, default: 0] &+= 1
+            }
+        }
     }
 
     func clear() {
-        cache.removeAllObjects()
+        stateQueue.async { [self] in
+            cache.removeAllObjects()
+
+            for key in pendingRequests.keys {
+                invalidationVersions[key, default: 0] &+= 1
+            }
+        }
+    }
+
+    private static func generateImage(for url: URL) -> UIImage? {
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 720, height: 720)
+
+        let timestamp = CMTime(
+            seconds: 1,
+            preferredTimescale: 600
+        )
+
+        guard let cgImage = try? generator.copyCGImage(
+            at: timestamp,
+            actualTime: nil
+        ) else {
+            return nil
+        }
+
+        return UIImage(cgImage: cgImage)
     }
 }
 
@@ -900,6 +976,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
     private func loadTechnicalMetadata(
         for item: AVPlayerItem
     ) async {
+        // Capture the URL before awaiting asset metadata so a queue transition
+        // can't make an older item's size lookup read the newer item's file.
+        let metadataURL = currentURL
+
         do {
             let tracks = try await item.asset.load(.tracks)
 
@@ -909,7 +989,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
                 where: { $0.mediaType == .video }
             ) {
                 let naturalSize = try await videoTrack.load(.naturalSize)
+                guard player.currentItem === item else { return }
+
                 let transform = try await videoTrack.load(.preferredTransform)
+                guard player.currentItem === item else { return }
 
                 let transformedSize = naturalSize.applying(transform)
 
@@ -925,9 +1008,11 @@ private final class KinetiqPlaybackModel: ObservableObject {
                 resolutionText = "No video track"
             }
 
-            let resourceValues = try? currentURL.resourceValues(
+            let resourceValues = try? metadataURL.resourceValues(
                 forKeys: [.fileSizeKey]
             )
+
+            guard player.currentItem === item else { return }
 
             if let fileSize = resourceValues?.fileSize {
                 fileSizeText = ByteCountFormatter.string(
@@ -1233,8 +1318,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
 @MainActor
 private final class KinetiqPictureInPictureController:
     NSObject,
-    ObservableObject,
-    AVPictureInPictureControllerDelegate {
+    ObservableObject {
 
     @Published private(set) var isPossible = false
     @Published private(set) var isActive = false
@@ -1246,61 +1330,104 @@ private final class KinetiqPictureInPictureController:
     func attach(to layer: AVPlayerLayer) {
         guard attachedLayer !== layer else { return }
 
-        attachedLayer = layer
+        possibleObservation?.invalidate()
+        possibleObservation = nil
 
-        guard AVPictureInPictureController.isPictureInPictureSupported else {
-            isPossible = false
+        controller?.delegate = nil
+        controller = nil
+
+        attachedLayer = layer
+        isPossible = false
+        isActive = false
+
+        // This is a type method, not a Boolean property.
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
             return
         }
 
-        let pictureInPictureController = AVPictureInPictureController(
-            playerLayer: layer
-        )
+        // Apple's player-layer initializer is failable.
+        guard let pictureInPictureController =
+            AVPictureInPictureController(playerLayer: layer) else {
+            return
+        }
 
         pictureInPictureController.delegate = self
         pictureInPictureController
             .canStartPictureInPictureAutomaticallyFromInline = true
 
+        // Keep a strong reference for the entire PiP lifecycle.
         controller = pictureInPictureController
 
         possibleObservation = pictureInPictureController.observe(
             \.isPictureInPicturePossible,
             options: [.initial, .new]
-        ) { [weak self] observedController, _ in
-            DispatchQueue.main.async {
-                self?.isPossible =
-                    observedController.isPictureInPicturePossible
+        ) { [weak self] _, change in
+            let possible = change.newValue ?? false
+
+            Task { @MainActor [weak self] in
+                self?.isPossible = possible
             }
         }
     }
 
     func start() {
-        guard isPossible else { return }
-        controller?.startPictureInPicture()
+        guard let controller,
+              controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive else {
+            return
+        }
+
+        controller.startPictureInPicture()
     }
 
     func stop() {
-        guard isActive else { return }
-        controller?.stopPictureInPicture()
-    }
+        guard let controller,
+              controller.isPictureInPictureActive else {
+            return
+        }
 
-    func pictureInPictureControllerDidStartPictureInPicture(
+        controller.stopPictureInPicture()
+    }
+}
+
+// AVKit delegate callbacks aren't assumed to arrive on the main actor.
+// Each state update explicitly hops to MainActor before touching @Published.
+extension KinetiqPictureInPictureController:
+    @preconcurrency AVPictureInPictureControllerDelegate {
+
+    nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        isActive = true
+        Task { @MainActor [weak self] in
+            self?.isActive = true
+        }
     }
 
-    func pictureInPictureControllerDidStopPictureInPicture(
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        isActive = false
+        Task { @MainActor [weak self] in
+            self?.isActive = false
+        }
     }
 
-    func pictureInPictureController(
+    nonisolated func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
-        isActive = false
+        Task { @MainActor [weak self] in
+            self?.isActive = false
+        }
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler
+            completionHandler: @escaping (Bool) -> Void
+    ) {
+        // The full-screen player remains presented behind PiP. Confirm that
+        // the existing player interface can be restored without recreating it.
+        completionHandler(true)
     }
 }
 
@@ -1575,6 +1702,18 @@ private struct LocalVideoPlayerView: View {
                     }
                 } else {
                     scheduleAutoHide()
+                }
+            }
+            .onChange(of: pictureInPicture.isActive) { _, isActive in
+                if isActive {
+                    cancelAutoHide()
+                    activePanel = nil
+
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = false
+                    }
+                } else {
+                    revealControls()
                 }
             }
         }
