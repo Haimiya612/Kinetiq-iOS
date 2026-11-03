@@ -58,7 +58,7 @@ final class PlaybackQueueController: ObservableObject {
         }
 
         if !load(entry, autoplay: autoplay) {
-            _ = advanceToAvailableEntry(autoplay: autoplay)
+            _ = advanceToAvailableEntry(autoplay: autoplay, repeatingCurrent: false)
         }
     }
 
@@ -99,11 +99,15 @@ final class PlaybackQueueController: ObservableObject {
 
     @discardableResult
     func next() -> PlaybackQueueEntry? {
-        advanceToAvailableEntry(autoplay: true)
+        // A manual Next skips the current item even while Repeat One is on.
+        advanceToAvailableEntry(autoplay: true, repeatingCurrent: false)
     }
 
     @discardableResult
-    private func advanceToAvailableEntry(autoplay: Bool) -> PlaybackQueueEntry? {
+    private func advanceToAvailableEntry(
+        autoplay: Bool,
+        repeatingCurrent: Bool = false
+    ) -> PlaybackQueueEntry? {
         guard !queue.entries.isEmpty else {
             player.pause()
             isActive = false
@@ -112,7 +116,7 @@ final class PlaybackQueueController: ObservableObject {
 
         // One pass prevents an invalid item from trapping repeat-all/repeat-one.
         for _ in 0..<queue.entries.count {
-            guard let entry = queue.advance() else {
+            guard let entry = queue.advance(repeatingCurrent: repeatingCurrent) else {
                 player.pause()
                 isActive = false
                 return nil
@@ -190,7 +194,7 @@ final class PlaybackQueueController: ObservableObject {
                 }
 
                 self.onItemFinished?()
-                _ = self.next()
+                _ = self.advanceToAvailableEntry(autoplay: true, repeatingCurrent: true)
             }
         }
     }
@@ -239,7 +243,7 @@ final class PlaybackQueueController: ObservableObject {
         }
 
         if !load(replacement) {
-            _ = advanceToAvailableEntry(autoplay: true)
+            _ = advanceToAvailableEntry(autoplay: true, repeatingCurrent: false)
         }
     }
 

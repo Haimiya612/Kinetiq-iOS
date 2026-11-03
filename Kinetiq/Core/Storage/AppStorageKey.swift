@@ -370,11 +370,38 @@ final class PlaybackQueueStore: ObservableObject {
     }
 
     func move(from source: IndexSet, to destination: Int) {
-        entries.move(fromOffsets: source, toOffset: destination)
+        guard !source.isEmpty, !entries.isEmpty else { return }
 
-        if let currentID = currentEntry?.id,
-           let updatedIndex = entries.firstIndex(where: { $0.id == currentID }) {
+        // Preserve the playing item's identity before changing the array.
+        let activeID = currentEntry?.id
+        let validOffsets = source.filter { entries.indices.contains($0) }
+        guard !validOffsets.isEmpty else { return }
+
+        let movingOffsets = Set(validOffsets)
+        let movingEntries = validOffsets.sorted().map { entries[$0] }
+        let remainingEntries = entries.enumerated()
+            .filter { !movingOffsets.contains($0.offset) }
+            .map(\.element)
+
+        // SwiftUI's move API treats the destination as an insertion offset
+        // in the original collection. Adjust it for removed elements.
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            remainingEntries.count
+        )
+
+        var reorderedEntries = remainingEntries
+        reorderedEntries.insert(contentsOf: movingEntries, at: insertionIndex)
+        entries = reorderedEntries
+
+        if let activeID,
+           let updatedIndex = entries.firstIndex(where: { $0.id == activeID }) {
             currentIndex = updatedIndex
+        } else if entries.isEmpty {
+            currentIndex = 0
+        } else {
+            currentIndex = min(currentIndex, entries.count - 1)
         }
 
         persist()
@@ -389,9 +416,14 @@ final class PlaybackQueueStore: ObservableObject {
     // MARK: Navigation
 
     @discardableResult
-    func advance() -> PlaybackQueueEntry? {
+    func advance(repeatingCurrent: Bool = true) -> PlaybackQueueEntry? {
         guard !entries.isEmpty else { return nil }
-        if repeatMode == .one { return currentEntry }
+
+        // Repeat One applies to natural end-of-item transitions, not to a
+        // user's explicit Next action or recovery from a missing file.
+        if repeatMode == .one, repeatingCurrent {
+            return currentEntry
+        }
 
         if currentIndex + 1 < entries.count {
             currentIndex += 1
@@ -399,7 +431,7 @@ final class PlaybackQueueStore: ObservableObject {
             return currentEntry
         }
 
-        guard repeatMode == .all else { return nil }
+        guard repeatMode != .off else { return nil }
         currentIndex = 0
         persist()
         return currentEntry
