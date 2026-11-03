@@ -27,8 +27,11 @@ final class PlaybackQueueController: ObservableObject {
     ) {
         self.player = player
         self.queue = queue
+
         player.automaticallyWaitsToMinimizeStalling = true
+
         currentEntry = queue.currentEntry
+
         observePlaybackCompletion()
     }
 
@@ -50,7 +53,10 @@ final class PlaybackQueueController: ObservableObject {
             return
         }
 
-        queue.replaceQueue(with: entries, startingAt: mediaID)
+        queue.replaceQueue(
+            with: entries,
+            startingAt: mediaID
+        )
 
         guard let entry = queue.currentEntry else {
             playbackError = "The selected video could not be found."
@@ -58,7 +64,10 @@ final class PlaybackQueueController: ObservableObject {
         }
 
         if !load(entry, autoplay: autoplay) {
-            _ = advanceToAvailableEntry(autoplay: autoplay, repeatingCurrent: false)
+            _ = advanceToAvailableEntry(
+                autoplay: autoplay,
+                repeatingCurrent: false
+            )
         }
     }
 
@@ -70,7 +79,9 @@ final class PlaybackQueueController: ObservableObject {
         autoplay: Bool = true
     ) -> Bool {
         guard entry.fileURL.isFileURL,
-              FileManager.default.fileExists(atPath: entry.fileURL.path) else {
+              FileManager.default.fileExists(
+                atPath: entry.fileURL.path
+              ) else {
             playbackError = "This file is no longer available."
             isActive = false
             return false
@@ -82,8 +93,14 @@ final class PlaybackQueueController: ObservableObject {
 
         isStopped = false
         playbackError = nil
+
         player.pause()
-        player.replaceCurrentItem(with: AVPlayerItem(url: entry.fileURL))
+
+        // Always create a new AVPlayerItem. This is also the recovery path
+        // for a previously failed item.
+        player.replaceCurrentItem(
+            with: AVPlayerItem(url: entry.fileURL)
+        )
 
         currentEntry = entry
         isActive = true
@@ -95,12 +112,27 @@ final class PlaybackQueueController: ObservableObject {
         return true
     }
 
+    // MARK: Recovery
+
+    @discardableResult
+    func retryCurrent() -> Bool {
+        guard let entry = currentEntry ?? queue.currentEntry else {
+            playbackError = "There is no current video to retry."
+            return false
+        }
+
+        return load(entry, autoplay: true)
+    }
+
     // MARK: Next / Previous
 
     @discardableResult
     func next() -> PlaybackQueueEntry? {
         // A manual Next skips the current item even while Repeat One is on.
-        advanceToAvailableEntry(autoplay: true, repeatingCurrent: false)
+        advanceToAvailableEntry(
+            autoplay: true,
+            repeatingCurrent: false
+        )
     }
 
     @discardableResult
@@ -116,7 +148,9 @@ final class PlaybackQueueController: ObservableObject {
 
         // One pass prevents an invalid item from trapping repeat-all/repeat-one.
         for _ in 0..<queue.entries.count {
-            guard let entry = queue.advance(repeatingCurrent: repeatingCurrent) else {
+            guard let entry = queue.advance(
+                repeatingCurrent: repeatingCurrent
+            ) else {
                 player.pause()
                 isActive = false
                 return nil
@@ -130,6 +164,7 @@ final class PlaybackQueueController: ObservableObject {
         player.pause()
         isActive = false
         playbackError = "None of the queue items are available anymore."
+
         return nil
     }
 
@@ -139,18 +174,33 @@ final class PlaybackQueueController: ObservableObject {
         restartThreshold: Double = 3
     ) -> PlaybackQueueEntry? {
         if currentTime > restartThreshold {
-            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.seek(
+                to: .zero,
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+
             return currentEntry
         }
 
         guard !queue.entries.isEmpty else {
-            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.seek(
+                to: .zero,
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+
             return currentEntry
         }
 
         for _ in 0..<queue.entries.count {
             guard let entry = queue.goToPrevious() else {
-                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                player.seek(
+                    to: .zero,
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+
                 return currentEntry
             }
 
@@ -162,6 +212,7 @@ final class PlaybackQueueController: ObservableObject {
         player.pause()
         isActive = false
         playbackError = "None of the previous queue items are available."
+
         return nil
     }
 
@@ -194,7 +245,11 @@ final class PlaybackQueueController: ObservableObject {
                 }
 
                 self.onItemFinished?()
-                _ = self.advanceToAvailableEntry(autoplay: true, repeatingCurrent: true)
+
+                _ = self.advanceToAvailableEntry(
+                    autoplay: true,
+                    repeatingCurrent: true
+                )
             }
         }
     }
@@ -202,7 +257,11 @@ final class PlaybackQueueController: ObservableObject {
     // MARK: Playback Controls
 
     func play() {
-        guard !isStopped, player.currentItem != nil else { return }
+        guard !isStopped,
+              player.currentItem != nil else {
+            return
+        }
+
         playbackError = nil
         player.play()
         isActive = true
@@ -233,6 +292,7 @@ final class PlaybackQueueController: ObservableObject {
 
     func remove(mediaID: String) {
         let removingCurrent = currentEntry?.id == mediaID
+
         queue.remove(mediaID: mediaID)
 
         guard removingCurrent else { return }
@@ -243,7 +303,10 @@ final class PlaybackQueueController: ObservableObject {
         }
 
         if !load(replacement) {
-            _ = advanceToAvailableEntry(autoplay: true, repeatingCurrent: false)
+            _ = advanceToAvailableEntry(
+                autoplay: true,
+                repeatingCurrent: false
+            )
         }
     }
 
@@ -264,12 +327,16 @@ final class PlaybackQueueController: ObservableObject {
 
     func stop() {
         guard !isStopped else { return }
+
         isStopped = true
+
         player.pause()
         player.replaceCurrentItem(with: nil)
+
         isActive = false
         currentEntry = nil
         playbackError = nil
+
         onItemFinished = nil
     }
 }

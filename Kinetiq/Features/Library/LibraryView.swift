@@ -10,8 +10,120 @@ import Combine
 
 private struct LocalMedia: Identifiable {
     let url: URL
+
     var id: String { url.lastPathComponent }
     var title: String { url.deletingPathExtension().lastPathComponent }
+}
+
+// MARK: - Thumbnail Cache
+
+private final class MediaThumbnailCache {
+    static let shared = MediaThumbnailCache()
+
+    private let cache = NSCache<NSString, UIImage>()
+    private let queue = DispatchQueue(
+        label: "com.kinetiq.media-thumbnails",
+        qos: .utility,
+        attributes: .concurrent
+    )
+
+    private init() {
+        cache.countLimit = 150
+    }
+
+    func image(for url: URL) async -> UIImage? {
+        let key = url.path as NSString
+
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                if let cached = self.cache.object(forKey: key) {
+                    continuation.resume(returning: cached)
+                    return
+                }
+
+                let asset = AVURLAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 720, height: 720)
+
+                let timestamp = CMTime(seconds: 1, preferredTimescale: 600)
+
+                let image: UIImage?
+
+                if let cgImage = try? generator.copyCGImage(
+                    at: timestamp,
+                    actualTime: nil
+                ) {
+                    image = UIImage(cgImage: cgImage)
+                    if let image {
+                        self.cache.setObject(image, forKey: key)
+                    }
+                } else {
+                    image = nil
+                }
+
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    func invalidate(_ url: URL) {
+        cache.removeObject(forKey: url.path as NSString)
+    }
+
+    func clear() {
+        cache.removeAllObjects()
+    }
+}
+
+// MARK: - Thumbnail View
+
+private struct MediaThumbnailView: View {
+    let url: URL
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            KinetiqPalette.cyan.opacity(0.23),
+                            KinetiqPalette.violet.opacity(0.23)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 21, weight: .bold))
+                    .foregroundStyle(KinetiqPalette.cyan)
+            }
+        }
+        .frame(width: 76, height: 76)
+        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .task(id: url) {
+            let generatedImage = await MediaThumbnailCache.shared.image(for: url)
+
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.2)) {
+                image = generatedImage
+            }
+        }
+    }
 }
 
 // MARK: - Photo Transfer
@@ -21,10 +133,18 @@ private struct PickedMovie: Transferable {
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .movie) { received in
-            let fileExtension = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let fileExtension = received.file.pathExtension.isEmpty
+                ? "mov"
+                : received.file.pathExtension
+
             let temporaryURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(UUID().uuidString).\(fileExtension)")
-            try FileManager.default.copyItem(at: received.file, to: temporaryURL)
+
+            try FileManager.default.copyItem(
+                at: received.file,
+                to: temporaryURL
+            )
+
             return PickedMovie(url: temporaryURL)
         }
     }
@@ -45,6 +165,7 @@ struct LibraryView: View {
     @State private var appeared = false
 
     @StateObject private var playbackHistory = PlaybackHistoryStore.shared
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(requestedMediaID: Binding<String?> = .constant(nil)) {
@@ -52,33 +173,51 @@ struct LibraryView: View {
     }
 
     private var mediaDirectory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("KinetiqMedia", isDirectory: true)
+        FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        .appendingPathComponent("KinetiqMedia", isDirectory: true)
     }
 
     private var playbackQueueEntries: [PlaybackQueueEntry] {
         media.map {
-            PlaybackQueueEntry(id: $0.id, title: $0.title, fileURL: $0.url)
+            PlaybackQueueEntry(
+                id: $0.id,
+                title: $0.title,
+                fileURL: $0.url
+            )
         }
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(uiColor: .systemBackground).ignoresSafeArea()
-                if media.isEmpty { emptyState } else { mediaList }
+                Color(uiColor: .systemBackground)
+                    .ignoresSafeArea()
+
+                if media.isEmpty {
+                    emptyState
+                } else {
+                    mediaList
+                }
             }
             .navigationTitle("Library")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingSourcePicker = true } label: {
+                    Button {
+                        showingSourcePicker = true
+                    } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 36, height: 36)
                             .background(
                                 LinearGradient(
-                                    colors: [KinetiqPalette.cyan, KinetiqPalette.violet],
+                                    colors: [
+                                        KinetiqPalette.cyan,
+                                        KinetiqPalette.violet
+                                    ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 ),
@@ -88,11 +227,18 @@ struct LibraryView: View {
                     .accessibilityLabel("Import media")
                 }
             }
-            .confirmationDialog("Add to your library", isPresented: $showingSourcePicker, titleVisibility: .visible) {
+            .confirmationDialog(
+                "Add to your library",
+                isPresented: $showingSourcePicker,
+                titleVisibility: .visible
+            ) {
                 Button {
                     showingPhotoPicker = true
                 } label: {
-                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                    Label(
+                        "Photo Library",
+                        systemImage: "photo.on.rectangle"
+                    )
                 }
 
                 Button {
@@ -107,7 +253,12 @@ struct LibraryView: View {
             }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie],
+                allowedContentTypes: [
+                    .movie,
+                    .video,
+                    .mpeg4Movie,
+                    .quickTimeMovie
+                ],
                 allowsMultipleSelection: true,
                 onCompletion: handleImport
             )
@@ -120,7 +271,9 @@ struct LibraryView: View {
             )
             .onChange(of: selectedPhotoItems) { _, newItems in
                 guard !newItems.isEmpty else { return }
-                Task { await importPhotos(newItems) }
+                Task {
+                    await importPhotos(newItems)
+                }
             }
             .onChange(of: requestedMediaID) { _, _ in
                 openRequestedMediaIfAvailable()
@@ -129,10 +282,13 @@ struct LibraryView: View {
                 openRequestedMediaIfAvailable()
             }
             .fullScreenCover(item: $selectedMedia) { item in
-                LocalVideoPlayerView(url: item.url, queueEntries: playbackQueueEntries)
-                    .preferredColorScheme(.dark)
-                    .presentationBackground(.black)
-                    .ignoresSafeArea()
+                LocalVideoPlayerView(
+                    url: item.url,
+                    queueEntries: playbackQueueEntries
+                )
+                .preferredColorScheme(.dark)
+                .presentationBackground(.black)
+                .ignoresSafeArea()
             }
             .alert(
                 "Import Error",
@@ -141,17 +297,20 @@ struct LibraryView: View {
                     set: { if !$0 { errorMessage = nil } }
                 )
             ) {
-                Button("OK", role: .cancel) { errorMessage = nil }
+                Button("OK", role: .cancel) {
+                    errorMessage = nil
+                }
             } message: {
                 Text(errorMessage ?? "Something went wrong.")
             }
             .onAppear {
                 loadMedia()
                 openRequestedMediaIfAvailable()
+
                 withAnimation(
                     reduceMotion
-                    ? .easeInOut(duration: 0.2)
-                    : .spring(response: 0.6, dampingFraction: 0.85)
+                        ? .easeInOut(duration: 0.2)
+                        : .spring(response: 0.6, dampingFraction: 0.85)
                 ) {
                     appeared = true
                 }
@@ -189,7 +348,10 @@ struct LibraryView: View {
                     .font(.system(size: 43, weight: .light))
                     .foregroundStyle(
                         LinearGradient(
-                            colors: [KinetiqPalette.cyan, KinetiqPalette.violet],
+                            colors: [
+                                KinetiqPalette.cyan,
+                                KinetiqPalette.violet
+                            ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -200,14 +362,18 @@ struct LibraryView: View {
                 Text("Your library starts here.")
                     .font(.system(size: 23, weight: .bold, design: .rounded))
 
-                Text("Bring your own media into Kinetiq.\nYour imported videos stay on your device.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(4)
+                Text(
+                    "Bring your own media into Kinetiq.\nYour imported videos stay on your device."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
             }
 
-            Button { showingSourcePicker = true } label: {
+            Button {
+                showingSourcePicker = true
+            } label: {
                 Label("Import videos", systemImage: "plus")
                     .font(.system(.headline, design: .rounded))
                     .foregroundStyle(.white)
@@ -215,7 +381,11 @@ struct LibraryView: View {
                     .padding(.vertical, 15)
                     .background(
                         LinearGradient(
-                            colors: [KinetiqPalette.cyan, KinetiqPalette.blue, KinetiqPalette.violet],
+                            colors: [
+                                KinetiqPalette.cyan,
+                                KinetiqPalette.blue,
+                                KinetiqPalette.violet
+                            ],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
@@ -238,19 +408,34 @@ struct LibraryView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("YOUR COLLECTION")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .font(
+                                .system(
+                                    size: 10,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
                             .tracking(2)
                             .foregroundStyle(KinetiqPalette.cyan)
 
                         Text("\(media.count) videos")
-                            .font(.system(size: 25, weight: .bold, design: .rounded))
+                            .font(
+                                .system(
+                                    size: 25,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
                     }
+
                     Spacer()
                 }
                 .padding(.bottom, 8)
 
                 ForEach(media) { item in
-                    Button { selectedMedia = item } label: {
+                    Button {
+                        selectedMedia = item
+                    } label: {
                         mediaCard(item)
                     }
                     .buttonStyle(.plain)
@@ -258,7 +443,10 @@ struct LibraryView: View {
                         Button(role: .destructive) {
                             deleteMedia(item)
                         } label: {
-                            Label("Remove from library", systemImage: "trash")
+                            Label(
+                                "Remove from library",
+                                systemImage: "trash"
+                            )
                         }
                     }
                 }
@@ -271,30 +459,25 @@ struct LibraryView: View {
 
     private func mediaCard(_ item: LocalMedia) -> some View {
         HStack(spacing: 15) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 17)
-                    .fill(
-                        LinearGradient(
-                            colors: [KinetiqPalette.cyan.opacity(0.2), KinetiqPalette.violet.opacity(0.2)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                Image(systemName: "play.fill")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundStyle(KinetiqPalette.cyan)
-            }
-            .frame(width: 76, height: 76)
+            MediaThumbnailView(url: item.url)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title)
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .font(
+                        .system(.subheadline, design: .rounded)
+                            .weight(.bold)
+                    )
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
                 Text(item.url.pathExtension.uppercased())
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .font(
+                        .system(
+                            size: 10,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
                     .tracking(1)
                     .foregroundStyle(.secondary)
 
@@ -311,9 +494,12 @@ struct LibraryView: View {
                             .tint(KinetiqPalette.accent)
                     }
                 } else {
-                    Label("On this device", systemImage: "iphone")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Label(
+                        "On this device",
+                        systemImage: "iphone"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -336,6 +522,7 @@ struct LibraryView: View {
         switch result {
         case .success(let urls):
             importFiles(urls)
+
         case .failure(let error):
             errorMessage = error.localizedDescription
         }
@@ -350,14 +537,25 @@ struct LibraryView: View {
 
             for sourceURL in urls {
                 let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+
                 defer {
-                    if hasAccess { sourceURL.stopAccessingSecurityScopedResource() }
+                    if hasAccess {
+                        sourceURL.stopAccessingSecurityScopedResource()
+                    }
                 }
 
-                let fileExtension = sourceURL.pathExtension.isEmpty ? "mp4" : sourceURL.pathExtension
+                let fileExtension = sourceURL.pathExtension.isEmpty
+                    ? "mp4"
+                    : sourceURL.pathExtension
+
                 let filename = UUID().uuidString + "." + fileExtension
-                let destinationURL = mediaDirectory.appendingPathComponent(filename)
-                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                let destinationURL = mediaDirectory
+                    .appendingPathComponent(filename)
+
+                try FileManager.default.copyItem(
+                    at: sourceURL,
+                    to: destinationURL
+                )
             }
 
             loadMedia()
@@ -372,7 +570,9 @@ struct LibraryView: View {
     private func importPhotos(_ items: [PhotosPickerItem]) async {
         for item in items {
             do {
-                guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                guard let movie = try await item.loadTransferable(
+                    type: PickedMovie.self
+                ) else {
                     continue
                 }
 
@@ -403,7 +603,9 @@ struct LibraryView: View {
             media = files
                 .filter { !$0.lastPathComponent.hasPrefix(".") }
                 .sorted {
-                    $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+                    $0.lastPathComponent.localizedStandardCompare(
+                        $1.lastPathComponent
+                    ) == .orderedAscending
                 }
                 .map { LocalMedia(url: $0) }
         } catch {
@@ -414,7 +616,10 @@ struct LibraryView: View {
     private func deleteMedia(_ item: LocalMedia) {
         do {
             try FileManager.default.removeItem(at: item.url)
+
+            MediaThumbnailCache.shared.invalidate(item.url)
             playbackHistory.remove(mediaID: item.id)
+
             loadMedia()
         } catch {
             errorMessage = error.localizedDescription
@@ -455,16 +660,20 @@ private final class KinetiqPlaybackModel: ObservableObject {
     @Published var player: AVPlayer
     @Published var currentURL: URL
     @Published var currentTitle: String
+
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
+
     @Published var isPlaying = false
     @Published var isBuffering = true
     @Published var playbackError: String?
 
     @Published var audioOptions: [AVMediaSelectionOption] = []
     @Published var subtitleOptions: [AVMediaSelectionOption] = []
+
     @Published var selectedAudio: AVMediaSelectionOption?
     @Published var selectedSubtitle: AVMediaSelectionOption?
+
     @Published var hasAudioSelection = false
     @Published var hasSubtitleSelection = false
 
@@ -472,16 +681,22 @@ private final class KinetiqPlaybackModel: ObservableObject {
     @Published var aspectFill = false
     @Published var sleepTimerMinutes: Int?
 
+    @Published var resolutionText = "Analyzing…"
+    @Published var fileSizeText = "Calculating…"
+
     let queueController: PlaybackQueueController
 
     private var timeObserver: Any?
     private var statusObservation: NSKeyValueObservation?
     private var sleepTask: Task<Void, Never>?
+
     private var audioGroup: AVMediaSelectionGroup?
     private var subtitleGroup: AVMediaSelectionGroup?
+
     private var queueEntryObservation: AnyCancellable?
     private var queueActivityObservation: AnyCancellable?
     private var queueErrorObservation: AnyCancellable?
+
     private var lastSavedPosition: Double = 0
     private var hasRestoredProgress = false
 
@@ -495,11 +710,13 @@ private final class KinetiqPlaybackModel: ObservableObject {
         self.currentTitle = url.deletingPathExtension().lastPathComponent
 
         let entries = queueEntries.isEmpty
-            ? [PlaybackQueueEntry(
-                id: url.lastPathComponent,
-                title: url.deletingPathExtension().lastPathComponent,
-                fileURL: url
-            )]
+            ? [
+                PlaybackQueueEntry(
+                    id: url.lastPathComponent,
+                    title: url.deletingPathExtension().lastPathComponent,
+                    fileURL: url
+                )
+            ]
             : queueEntries
 
         controller.startQueue(
@@ -509,24 +726,32 @@ private final class KinetiqPlaybackModel: ObservableObject {
         )
 
         if let entry = controller.currentEntry {
-            self.currentURL = entry.fileURL
-            self.currentTitle = entry.title
+            currentURL = entry.fileURL
+            currentTitle = entry.title
         }
 
         controller.onItemFinished = { [weak self] in
             guard let self else { return }
-            PlaybackHistoryStore.shared.remove(mediaID: self.currentMediaID)
+            PlaybackHistoryStore.shared.remove(
+                mediaID: self.currentMediaID
+            )
         }
 
         configurePlayer()
     }
 
     private var currentMediaID: String {
-        queueController.currentEntry?.id ?? currentURL.lastPathComponent
+        queueController.currentEntry?.id
+            ?? currentURL.lastPathComponent
     }
 
-    var formattedCurrentTime: String { Self.formatTime(currentTime) }
-    var formattedDuration: String { Self.formatTime(duration) }
+    var formattedCurrentTime: String {
+        Self.formatTime(currentTime)
+    }
+
+    var formattedDuration: String {
+        Self.formatTime(duration)
+    }
 
     // MARK: Observation
 
@@ -535,15 +760,20 @@ private final class KinetiqPlaybackModel: ObservableObject {
         observeCurrentItem(player.currentItem)
 
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            forInterval: CMTime(
+                seconds: 0.5,
+                preferredTimescale: 600
+            ),
             queue: .main
         ) { [weak self] time in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+
                 let seconds = time.seconds
 
                 if seconds.isFinite {
                     self.currentTime = seconds
+
                     if self.duration > 0,
                        abs(seconds - self.lastSavedPosition) >= 5 {
                         self.saveProgress()
@@ -566,7 +796,9 @@ private final class KinetiqPlaybackModel: ObservableObject {
             .sink { [weak self] active in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if !active { self.isPlaying = false }
+                    if !active {
+                        self.isPlaying = false
+                    }
                 }
             }
 
@@ -587,7 +819,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
             return
         }
 
-        statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
+        statusObservation = item.observe(
+            \.status,
+            options: [.initial, .new]
+        ) { [weak self] observedItem, _ in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.player.currentItem === observedItem else {
@@ -597,15 +832,27 @@ private final class KinetiqPlaybackModel: ObservableObject {
                 switch observedItem.status {
                 case .readyToPlay:
                     self.isBuffering = false
+
                     let loadedDuration = observedItem.duration.seconds
-                    self.duration = loadedDuration.isFinite ? loadedDuration : 0
+                    self.duration = loadedDuration.isFinite
+                        ? loadedDuration
+                        : 0
+
                     self.restorePlaybackProgressIfNeeded()
-                    Task { await self.loadMediaOptions(for: observedItem) }
+
+                    Task {
+                        await self.loadMediaOptions(for: observedItem)
+                    }
+
+                    Task {
+                        await self.loadTechnicalMetadata(for: observedItem)
+                    }
 
                 case .failed:
                     self.isBuffering = false
                     self.playbackError = observedItem.error?.localizedDescription
                         ?? "Unable to play this video."
+
                     self.queueController.pause()
 
                 default:
@@ -620,38 +867,109 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
         currentURL = entry.fileURL
         currentTitle = entry.title
+
         currentTime = 0
         duration = 0
+
         isBuffering = true
         playbackError = nil
+
+        resolutionText = "Analyzing…"
+        fileSizeText = "Calculating…"
+
         audioOptions = []
         subtitleOptions = []
+
         selectedAudio = nil
         selectedSubtitle = nil
+
         hasAudioSelection = false
         hasSubtitleSelection = false
+
         audioGroup = nil
         subtitleGroup = nil
+
         lastSavedPosition = 0
         hasRestoredProgress = false
 
         observeCurrentItem(player.currentItem)
     }
 
+    // MARK: Technical Metadata
+
+    private func loadTechnicalMetadata(
+        for item: AVPlayerItem
+    ) async {
+        do {
+            let tracks = try await item.asset.load(.tracks)
+
+            guard player.currentItem === item else { return }
+
+            if let videoTrack = tracks.first(
+                where: { $0.mediaType == .video }
+            ) {
+                let naturalSize = try await videoTrack.load(.naturalSize)
+                let transform = try await videoTrack.load(.preferredTransform)
+
+                let transformedSize = naturalSize.applying(transform)
+
+                let width = Int(abs(transformedSize.width).rounded())
+                let height = Int(abs(transformedSize.height).rounded())
+
+                if width > 0, height > 0 {
+                    resolutionText = "\(width) × \(height)"
+                } else {
+                    resolutionText = "Unavailable"
+                }
+            } else {
+                resolutionText = "No video track"
+            }
+
+            let resourceValues = try? currentURL.resourceValues(
+                forKeys: [.fileSizeKey]
+            )
+
+            if let fileSize = resourceValues?.fileSize {
+                fileSizeText = ByteCountFormatter.string(
+                    fromByteCount: Int64(fileSize),
+                    countStyle: .file
+                )
+            } else {
+                fileSizeText = "Unavailable"
+            }
+        } catch {
+            guard player.currentItem === item else { return }
+
+            resolutionText = "Unavailable"
+            fileSizeText = "Unavailable"
+        }
+    }
+
     // MARK: Resume and History
 
     private func restorePlaybackProgressIfNeeded() {
         guard !hasRestoredProgress else { return }
+
         hasRestoredProgress = true
+
         guard duration > 0 else { return }
 
-        let savedPosition = PlaybackHistoryStore.shared.resumePosition(for: currentMediaID)
-        guard savedPosition >= 8, savedPosition < duration * 0.97 else { return }
+        let savedPosition = PlaybackHistoryStore.shared
+            .resumePosition(for: currentMediaID)
+
+        guard savedPosition >= 8,
+              savedPosition < duration * 0.97 else {
+            return
+        }
 
         currentTime = savedPosition
         lastSavedPosition = savedPosition
+
         player.seek(
-            to: CMTime(seconds: savedPosition, preferredTimescale: 600),
+            to: CMTime(
+                seconds: savedPosition,
+                preferredTimescale: 600
+            ),
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
@@ -671,30 +989,43 @@ private final class KinetiqPlaybackModel: ObservableObject {
             position: currentTime,
             duration: duration
         )
+
         lastSavedPosition = currentTime
     }
 
     // MARK: Audio and Subtitle Tracks
 
-    private func loadMediaOptions(for item: AVPlayerItem) async {
+    private func loadMediaOptions(
+        for item: AVPlayerItem
+    ) async {
         do {
-            let audio = try await item.asset.loadMediaSelectionGroup(for: .audible)
-            let subtitles = try await item.asset.loadMediaSelectionGroup(for: .legible)
+            let audio = try await item.asset.loadMediaSelectionGroup(
+                for: .audible
+            )
+
+            let subtitles = try await item.asset.loadMediaSelectionGroup(
+                for: .legible
+            )
 
             guard player.currentItem === item else { return }
 
             audioGroup = audio
             subtitleGroup = subtitles
+
             audioOptions = audio?.options ?? []
             subtitleOptions = subtitles?.options ?? []
+
             hasAudioSelection = audio != nil
             hasSubtitleSelection = subtitles?.allowsEmptySelection ?? false
 
             if let audio {
-                selectedAudio = item.currentMediaSelection.selectedMediaOption(in: audio)
+                selectedAudio = item.currentMediaSelection
+                    .selectedMediaOption(in: audio)
             }
+
             if let subtitles {
-                selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitles)
+                selectedSubtitle = item.currentMediaSelection
+                    .selectedMediaOption(in: subtitles)
             }
         } catch {
             guard player.currentItem === item else { return }
@@ -704,12 +1035,14 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     func selectAudio(_ option: AVMediaSelectionOption?) {
         guard let group = audioGroup else { return }
+
         player.currentItem?.select(option, in: group)
         selectedAudio = option
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
         guard let group = subtitleGroup else { return }
+
         player.currentItem?.select(option, in: group)
         selectedSubtitle = option
     }
@@ -717,9 +1050,18 @@ private final class KinetiqPlaybackModel: ObservableObject {
     // MARK: Playback Controls
 
     func play() {
+        if player.currentItem?.status == .failed {
+            retryPlayback()
+            return
+        }
+
         playbackError = nil
         queueController.play()
-        if playbackRate != 1 { player.rate = playbackRate }
+
+        if playbackRate != 1 {
+            player.rate = playbackRate
+        }
+
         isPlaying = true
     }
 
@@ -730,13 +1072,40 @@ private final class KinetiqPlaybackModel: ObservableObject {
     }
 
     func togglePlayback() {
-        if isPlaying { pause() } else { play() }
+        if isPlaying {
+            pause()
+        } else {
+            play()
+        }
+    }
+
+    func retryPlayback() {
+        playbackError = nil
+        isBuffering = true
+
+        guard queueController.retryCurrent() else {
+            playbackError = queueController.playbackError
+                ?? "Kinetiq could not restart this video."
+
+            isPlaying = false
+            isBuffering = false
+            return
+        }
+
+        isPlaying = true
     }
 
     func seek(to seconds: Double) {
-        let safeTime = min(max(seconds, 0), max(duration, 0))
+        let safeTime = min(
+            max(seconds, 0),
+            max(duration, 0)
+        )
+
         player.seek(
-            to: CMTime(seconds: safeTime, preferredTimescale: 600),
+            to: CMTime(
+                seconds: safeTime,
+                preferredTimescale: 600
+            ),
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
@@ -752,7 +1121,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
     }
 
     func previous() {
-        if currentTime <= 3 { saveProgress() }
+        if currentTime <= 3 {
+            saveProgress()
+        }
+
         _ = queueController.previous(currentTime: currentTime)
     }
 
@@ -773,7 +1145,10 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     func setRate(_ rate: Float) {
         playbackRate = rate
-        if isPlaying { player.rate = rate }
+
+        if isPlaying {
+            player.rate = rate
+        }
     }
 
     // MARK: Sleep Timer
@@ -781,13 +1156,17 @@ private final class KinetiqPlaybackModel: ObservableObject {
     func setSleepTimer(_ minutes: Int?) {
         sleepTask?.cancel()
         sleepTask = nil
+
         sleepTimerMinutes = minutes
+
         guard let minutes else { return }
 
         sleepTask = Task { @MainActor in
             do {
                 try await Task.sleep(for: .seconds(minutes * 60))
+
                 guard !Task.isCancelled else { return }
+
                 pause()
                 sleepTimerMinutes = nil
             } catch {
@@ -800,6 +1179,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     func stop() {
         saveProgress()
+
         sleepTask?.cancel()
         sleepTask = nil
 
@@ -810,9 +1190,11 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
         statusObservation?.invalidate()
         statusObservation = nil
+
         queueEntryObservation = nil
         queueActivityObservation = nil
         queueErrorObservation = nil
+
         queueController.stop()
         isPlaying = false
     }
@@ -820,44 +1202,172 @@ private final class KinetiqPlaybackModel: ObservableObject {
     // MARK: Time Formatting
 
     static func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        guard seconds.isFinite, seconds >= 0 else {
+            return "00:00"
+        }
+
         let total = Int(seconds)
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         let remainingSeconds = total % 60
 
         if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+            return String(
+                format: "%d:%02d:%02d",
+                hours,
+                minutes,
+                remainingSeconds
+            )
         }
-        return String(format: "%02d:%02d", minutes, remainingSeconds)
+
+        return String(
+            format: "%02d:%02d",
+            minutes,
+            remainingSeconds
+        )
     }
+}
+
+// MARK: - Picture in Picture
+
+@MainActor
+private final class KinetiqPictureInPictureController:
+    NSObject,
+    ObservableObject,
+    AVPictureInPictureControllerDelegate {
+
+    @Published private(set) var isPossible = false
+    @Published private(set) var isActive = false
+
+    private weak var attachedLayer: AVPlayerLayer?
+    private var controller: AVPictureInPictureController?
+    private var possibleObservation: NSKeyValueObservation?
+
+    func attach(to layer: AVPlayerLayer) {
+        guard attachedLayer !== layer else { return }
+
+        attachedLayer = layer
+
+        guard AVPictureInPictureController.isPictureInPictureSupported else {
+            isPossible = false
+            return
+        }
+
+        let pictureInPictureController = AVPictureInPictureController(
+            playerLayer: layer
+        )
+
+        pictureInPictureController.delegate = self
+        pictureInPictureController
+            .canStartPictureInPictureAutomaticallyFromInline = true
+
+        controller = pictureInPictureController
+
+        possibleObservation = pictureInPictureController.observe(
+            \.isPictureInPicturePossible,
+            options: [.initial, .new]
+        ) { [weak self] observedController, _ in
+            DispatchQueue.main.async {
+                self?.isPossible =
+                    observedController.isPictureInPicturePossible
+            }
+        }
+    }
+
+    func start() {
+        guard isPossible else { return }
+        controller?.startPictureInPicture()
+    }
+
+    func stop() {
+        guard isActive else { return }
+        controller?.stopPictureInPicture()
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        isActive = true
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        isActive = false
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        isActive = false
+    }
+}
+
+// MARK: - AirPlay Route Picker
+
+private struct KinetiqAirPlayPicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.tintColor = .white
+        view.activeTintColor = .systemTeal
+        view.prioritizesVideoDevices = true
+        return view
+    }
+
+    func updateUIView(
+        _ uiView: AVRoutePickerView,
+        context: Context
+    ) {}
 }
 
 // MARK: - AVPlayer Layer Surface
 
 private final class KinetiqPlayerUIView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+
+    var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
 }
 
 private struct KinetiqPlayerSurface: UIViewRepresentable {
     let player: AVPlayer
     let aspectFill: Bool
+    let pictureInPicture: KinetiqPictureInPictureController
 
     func makeUIView(context: Context) -> KinetiqPlayerUIView {
         let view = KinetiqPlayerUIView()
+
         view.backgroundColor = .black
         view.playerLayer.player = player
-        view.playerLayer.videoGravity = aspectFill ? .resizeAspectFill : .resizeAspect
+        view.playerLayer.videoGravity = aspectFill
+            ? .resizeAspectFill
+            : .resizeAspect
+
+        pictureInPicture.attach(to: view.playerLayer)
+
         return view
     }
 
-    func updateUIView(_ uiView: KinetiqPlayerUIView, context: Context) {
+    func updateUIView(
+        _ uiView: KinetiqPlayerUIView,
+        context: Context
+    ) {
         uiView.playerLayer.player = player
-        uiView.playerLayer.videoGravity = aspectFill ? .resizeAspectFill : .resizeAspect
+        uiView.playerLayer.videoGravity = aspectFill
+            ? .resizeAspectFill
+            : .resizeAspect
+
+        pictureInPicture.attach(to: uiView.playerLayer)
     }
 
-    static func dismantleUIView(_ uiView: KinetiqPlayerUIView, coordinator: ()) {
+    static func dismantleUIView(
+        _ uiView: KinetiqPlayerUIView,
+        coordinator: ()
+    ) {
         uiView.playerLayer.player = nil
     }
 }
@@ -866,22 +1376,38 @@ private struct KinetiqPlayerSurface: UIViewRepresentable {
 
 private struct LocalVideoPlayerView: View {
     let url: URL
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @StateObject private var model: KinetiqPlaybackModel
+    @StateObject private var pictureInPicture =
+        KinetiqPictureInPictureController()
+
     @State private var controlsVisible = true
     @State private var activePanel: PlayerPanel?
+
     @State private var isSeeking = false
     @State private var seekPosition: Double = 0
+
+    @State private var seekFeedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
+
     @State private var autoHideTask: Task<Void, Never>?
 
     private let autoHideDelay: Duration = .seconds(3.4)
 
-    init(url: URL, queueEntries: [PlaybackQueueEntry]) {
+    init(
+        url: URL,
+        queueEntries: [PlaybackQueueEntry]
+    ) {
         self.url = url
+
         _model = StateObject(
-            wrappedValue: KinetiqPlaybackModel(url: url, queueEntries: queueEntries)
+            wrappedValue: KinetiqPlaybackModel(
+                url: url,
+                queueEntries: queueEntries
+            )
         )
     }
 
@@ -892,21 +1418,33 @@ private struct LocalVideoPlayerView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color.black
+                    .ignoresSafeArea()
 
-                KinetiqPlayerSurface(player: model.player, aspectFill: model.aspectFill)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(.black)
+                KinetiqPlayerSurface(
+                    player: model.player,
+                    aspectFill: model.aspectFill,
+                    pictureInPicture: pictureInPicture
+                )
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+                .background(.black)
 
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggleControls)
-                    .accessibilityLabel("Show or hide playback controls")
+                    .accessibilityLabel(
+                        "Show or hide playback controls"
+                    )
 
                 if controlsVisible {
-                    controlOverlay(safeAreaInsets: geometry.safeAreaInsets)
-                        .transition(.opacity)
-                        .zIndex(2)
+                    controlOverlay(
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .transition(.opacity)
+                    .zIndex(2)
                 }
 
                 if model.isBuffering && model.playbackError == nil {
@@ -918,24 +1456,85 @@ private struct LocalVideoPlayerView: View {
                         .zIndex(3)
                 }
 
+                if let seekFeedback {
+                    Text(seekFeedback)
+                        .font(
+                            .system(
+                                size: 15,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 17)
+                        .padding(.vertical, 11)
+                        .background(
+                            .ultraThinMaterial,
+                            in: Capsule()
+                        )
+                        .position(
+                            x: geometry.size.width / 2,
+                            y: geometry.size.height / 2
+                        )
+                        .allowsHitTesting(false)
+                        .transition(.opacity.combined(with: .scale))
+                        .zIndex(4)
+                }
+
                 if let error = model.playbackError {
-                    playbackErrorOverlay(error).zIndex(4)
+                    playbackErrorOverlay(error)
+                        .zIndex(5)
                 }
 
                 if let activePanel {
-                    optionsOverlay(for: activePanel, safeAreaInsets: geometry.safeAreaInsets)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(5)
+                    optionsOverlay(
+                        for: activePanel,
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .transition(
+                        .move(edge: .bottom)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(6)
                 }
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height
+            )
             .background(.black)
             .clipped()
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { value in
+                        guard activePanel == nil else { return }
+
+                        let isLeftSide =
+                            value.location.x < geometry.size.width / 2
+
+                        let amount: Double = isLeftSide ? -10 : 10
+
+                        model.skip(by: amount)
+
+                        showSeekFeedback(
+                            isLeftSide
+                                ? "−10 seconds"
+                                : "+10 seconds"
+                        )
+
+                        revealControls()
+                    }
+            )
             .animation(
-                reduceMotion ? .easeInOut(duration: 0.15) : .easeInOut(duration: 0.24),
+                reduceMotion
+                    ? .easeInOut(duration: 0.15)
+                    : .easeInOut(duration: 0.24),
                 value: controlsVisible
             )
-            .animation(.spring(response: 0.34, dampingFraction: 0.88), value: activePanel)
+            .animation(
+                .spring(response: 0.34, dampingFraction: 0.88),
+                value: activePanel
+            )
             .onAppear {
                 model.play()
                 revealControls()
@@ -943,9 +1542,17 @@ private struct LocalVideoPlayerView: View {
             .onDisappear {
                 autoHideTask?.cancel()
                 autoHideTask = nil
+
+                feedbackTask?.cancel()
+                feedbackTask = nil
+
                 model.stop()
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.willResignActiveNotification
+                )
+            ) { _ in
                 model.saveProgress()
             }
             .onChange(of: model.isPlaying) { _, playing in
@@ -953,6 +1560,7 @@ private struct LocalVideoPlayerView: View {
                     scheduleAutoHide()
                 } else {
                     cancelAutoHide()
+
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = true
                     }
@@ -961,6 +1569,7 @@ private struct LocalVideoPlayerView: View {
             .onChange(of: activePanel) { _, panel in
                 if panel != nil {
                     cancelAutoHide()
+
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = true
                     }
@@ -975,9 +1584,35 @@ private struct LocalVideoPlayerView: View {
         .background(.black)
     }
 
+    // MARK: Seek Feedback
+
+    private func showSeekFeedback(_ message: String) {
+        feedbackTask?.cancel()
+
+        withAnimation(.easeInOut(duration: 0.15)) {
+            seekFeedback = message
+        }
+
+        feedbackTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(750))
+
+                guard !Task.isCancelled else { return }
+
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    seekFeedback = nil
+                }
+            } catch {
+                // A newer seek interaction replaced this feedback.
+            }
+        }
+    }
+
     // MARK: Overlay Layout
 
-    private func controlOverlay(safeAreaInsets: EdgeInsets) -> some View {
+    private func controlOverlay(
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         ZStack {
             LinearGradient(
                 stops: [
@@ -992,57 +1627,136 @@ private struct LocalVideoPlayerView: View {
             .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                topControls.padding(.top, max(safeAreaInsets.top, 14))
+                topControls
+                    .padding(.top, max(safeAreaInsets.top, 14))
+
                 Spacer(minLength: 18)
+
                 centreControls
+
                 Spacer(minLength: 18)
-                bottomControls.padding(.bottom, max(safeAreaInsets.bottom, 15))
+
+                bottomControls
+                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
             }
             .padding(.horizontal, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    // MARK: Top Controls
+
     private var topControls: some View {
-        HStack(spacing: 13) {
-            Button { dismiss() } label: {
+        HStack(spacing: 11) {
+            Button {
+                dismiss()
+            } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 42, height: 42)
-                    .background(.black.opacity(0.34), in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                    .background(
+                        .black.opacity(0.34),
+                        in: Circle()
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(.white.opacity(0.14), lineWidth: 1)
+                    )
             }
             .accessibilityLabel("Close player")
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("NOW PLAYING")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .font(
+                        .system(
+                            size: 9,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
                     .tracking(1.8)
                     .foregroundStyle(KinetiqPalette.cyan)
 
                 Text(model.currentTitle)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(
+                        .system(
+                            size: 14,
+                            weight: .semibold,
+                            design: .rounded
+                        )
+                    )
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
+
+            KinetiqAirPlayPicker()
+                .frame(width: 40, height: 40)
+                .background(
+                    .black.opacity(0.34),
+                    in: Circle()
+                )
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.14), lineWidth: 1)
+                )
+                .accessibilityLabel("AirPlay")
+
+            if pictureInPicture.isPossible {
+                Button {
+                    pictureInPicture.start()
+                } label: {
+                    Image(systemName: "pip")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(
+                            .black.opacity(0.34),
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(
+                                    .white.opacity(0.14),
+                                    lineWidth: 1
+                                )
+                        )
+                }
+                .accessibilityLabel("Start Picture in Picture")
+            }
 
             Button {
                 model.aspectFill.toggle()
                 scheduleAutoHide()
             } label: {
-                Image(systemName: model.aspectFill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(.black.opacity(0.34), in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                Image(
+                    systemName: model.aspectFill
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(
+                    .black.opacity(0.34),
+                    in: Circle()
+                )
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.14), lineWidth: 1)
+                )
             }
-            .accessibilityLabel(model.aspectFill ? "Fit video to screen" : "Fill screen with video")
+            .accessibilityLabel(
+                model.aspectFill
+                    ? "Fit video to screen"
+                    : "Fill screen with video"
+            )
         }
     }
+
+    // MARK: Centre Controls
 
     private var centreControls: some View {
         HStack(spacing: 13) {
@@ -1060,6 +1774,7 @@ private struct LocalVideoPlayerView: View {
 
             Button {
                 model.skip(by: -10)
+                showSeekFeedback("−10 seconds")
                 scheduleAutoHide()
             } label: {
                 Image(systemName: "gobackward.10")
@@ -1072,29 +1787,47 @@ private struct LocalVideoPlayerView: View {
 
             Button {
                 model.togglePlayback()
+
                 if model.isPlaying {
                     scheduleAutoHide()
                 } else {
                     cancelAutoHide()
+
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = true
                     }
                 }
             } label: {
-                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 25, weight: .bold))
-                    .foregroundStyle(.white)
-                    .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 72, height: 72)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().fill(.black.opacity(0.18)))
-                    .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.28), radius: 18, y: 7)
+                Image(
+                    systemName: model.isPlaying
+                        ? "pause.fill"
+                        : "play.fill"
+                )
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 72, height: 72)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(
+                    Circle().fill(.black.opacity(0.18))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.24), lineWidth: 1)
+                )
+                .shadow(
+                    color: .black.opacity(0.28),
+                    radius: 18,
+                    y: 7
+                )
             }
-            .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(
+                model.isPlaying ? "Pause" : "Play"
+            )
 
             Button {
                 model.skip(by: 10)
+                showSeekFeedback("+10 seconds")
                 scheduleAutoHide()
             } label: {
                 Image(systemName: "goforward.10")
@@ -1119,6 +1852,8 @@ private struct LocalVideoPlayerView: View {
         }
         .buttonStyle(.plain)
     }
+
+    // MARK: Bottom Controls
 
     private var bottomControls: some View {
         VStack(spacing: 12) {
@@ -1146,11 +1881,21 @@ private struct LocalVideoPlayerView: View {
                 .accessibilityLabel("Playback position")
 
                 HStack {
-                    Text(KinetiqPlaybackModel.formatTime(displayedTime))
+                    Text(
+                        KinetiqPlaybackModel.formatTime(displayedTime)
+                    )
+
                     Spacer()
+
                     Text(model.formattedDuration)
                 }
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(
+                    .system(
+                        size: 10,
+                        weight: .semibold,
+                        design: .monospaced
+                    )
+                )
                 .foregroundStyle(.white.opacity(0.88))
             }
 
@@ -1162,19 +1907,37 @@ private struct LocalVideoPlayerView: View {
         HStack(spacing: 1) {
             ForEach(PlayerPanel.allCases) { panel in
                 Button {
-                    activePanel = activePanel == panel ? nil : panel
+                    activePanel = activePanel == panel
+                        ? nil
+                        : panel
+
                     controlsVisible = true
                     cancelAutoHide()
                 } label: {
                     VStack(spacing: 5) {
                         Image(systemName: panel.symbol)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(
+                                .system(
+                                    size: 15,
+                                    weight: .semibold
+                                )
+                            )
+
                         Text(panel.rawValue)
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(
+                                .system(
+                                    size: 8,
+                                    weight: .semibold
+                                )
+                            )
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                     }
-                    .foregroundStyle(activePanel == panel ? KinetiqPalette.cyan : .white.opacity(0.92))
+                    .foregroundStyle(
+                        activePanel == panel
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.92)
+                    )
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
                     .contentShape(Rectangle())
@@ -1186,20 +1949,34 @@ private struct LocalVideoPlayerView: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 5)
         .background(.ultraThinMaterial, in: Capsule())
-        .background(Capsule().fill(.black.opacity(0.27)))
-        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+        .background(
+            Capsule().fill(.black.opacity(0.27))
+        )
+        .overlay(
+            Capsule()
+                .stroke(.white.opacity(0.14), lineWidth: 1)
+        )
+        .shadow(
+            color: .black.opacity(0.22),
+            radius: 16,
+            y: 6
+        )
     }
 
     // MARK: Options Overlay
 
     @ViewBuilder
-    private func optionsOverlay(for panel: PlayerPanel, safeAreaInsets: EdgeInsets) -> some View {
+    private func optionsOverlay(
+        for panel: PlayerPanel,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         ZStack(alignment: .bottom) {
             Color.black.opacity(0.18)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-                .onTapGesture { activePanel = nil }
+                .onTapGesture {
+                    activePanel = nil
+                }
 
             if panel == .queue {
                 PlaybackQueuePanel(
@@ -1212,24 +1989,39 @@ private struct LocalVideoPlayerView: View {
                     onRemove: { entry in
                         model.removeQueueEntry(entry)
                     },
-                    onClose: { activePanel = nil }
+                    onClose: {
+                        activePanel = nil
+                    }
                 )
                 .padding(.horizontal, 10)
-                .padding(.bottom, max(safeAreaInsets.bottom, 8))
+                .padding(
+                    .bottom,
+                    max(safeAreaInsets.bottom, 8)
+                )
             } else {
-                PlayerOptionsSheet(panel: panel, model: model) {
+                PlayerOptionsSheet(
+                    panel: panel,
+                    model: model
+                ) {
                     activePanel = nil
                 }
                 .padding(.horizontal, 10)
-                .padding(.bottom, max(safeAreaInsets.bottom, 8))
+                .padding(
+                    .bottom,
+                    max(safeAreaInsets.bottom, 8)
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
     }
 
-    private func playbackErrorOverlay(_ error: String) -> some View {
-        VStack(spacing: 10) {
+    // MARK: Playback Error
+
+    private func playbackErrorOverlay(
+        _ error: String
+    ) -> some View {
+        VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 28))
                 .foregroundStyle(.orange)
@@ -1243,20 +2035,54 @@ private struct LocalVideoPlayerView: View {
                 .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.center)
 
-            Button("Try again") {
-                model.play()
-                revealControls()
+            HStack(spacing: 10) {
+                Button {
+                    model.retryPlayback()
+                    revealControls()
+                } label: {
+                    Label(
+                        "Try again",
+                        systemImage: "arrow.clockwise"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(
+                        KinetiqPalette.cyan,
+                        in: Capsule()
+                    )
+                }
+
+                Button {
+                    model.next()
+                    revealControls()
+                } label: {
+                    Label(
+                        "Skip",
+                        systemImage: "forward.end.fill"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(
+                        .white.opacity(0.13),
+                        in: Capsule()
+                    )
+                }
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(KinetiqPalette.cyan, in: Capsule())
             .padding(.top, 5)
         }
         .padding(24)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.white.opacity(0.12), lineWidth: 1))
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
         .padding(30)
     }
 
@@ -1265,6 +2091,7 @@ private struct LocalVideoPlayerView: View {
     private func toggleControls() {
         if controlsVisible {
             cancelAutoHide()
+
             withAnimation(.easeInOut(duration: 0.22)) {
                 controlsVisible = false
             }
@@ -1277,16 +2104,23 @@ private struct LocalVideoPlayerView: View {
         withAnimation(.easeInOut(duration: 0.22)) {
             controlsVisible = true
         }
+
         scheduleAutoHide()
     }
 
     private func scheduleAutoHide() {
         cancelAutoHide()
-        guard model.isPlaying, activePanel == nil, !isSeeking else { return }
+
+        guard model.isPlaying,
+              activePanel == nil,
+              !isSeeking else {
+            return
+        }
 
         autoHideTask = Task { @MainActor in
             do {
                 try await Task.sleep(for: autoHideDelay)
+
                 guard !Task.isCancelled,
                       model.isPlaying,
                       activePanel == nil,
@@ -1313,10 +2147,20 @@ private struct LocalVideoPlayerView: View {
 
 private struct PlayerOptionsSheet: View {
     let panel: PlayerPanel
+
     @ObservedObject var model: KinetiqPlaybackModel
+
     let onClose: () -> Void
 
-    private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    private let speeds: [Float] = [
+        0.5,
+        0.75,
+        1.0,
+        1.25,
+        1.5,
+        1.75,
+        2.0
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1330,8 +2174,15 @@ private struct PlayerOptionsSheet: View {
                 HStack(spacing: 10) {
                     Image(systemName: panel.symbol)
                         .foregroundStyle(KinetiqPalette.cyan)
+
                     Text(panel.rawValue)
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .font(
+                            .system(
+                                size: 17,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
                         .foregroundStyle(.white)
                 }
 
@@ -1342,14 +2193,19 @@ private struct PlayerOptionsSheet: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white.opacity(0.8))
                         .frame(width: 32, height: 32)
-                        .background(.white.opacity(0.10), in: Circle())
+                        .background(
+                            .white.opacity(0.10),
+                            in: Circle()
+                        )
                 }
                 .accessibilityLabel("Close options")
             }
             .padding(.horizontal, 19)
             .padding(.bottom, 14)
 
-            Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
+            Rectangle()
+                .fill(.white.opacity(0.10))
+                .frame(height: 1)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1357,16 +2213,35 @@ private struct PlayerOptionsSheet: View {
                 }
                 .padding(18)
             }
-            .frame(maxHeight: 370)
+            .frame(maxHeight: 390)
         }
         .background(.ultraThinMaterial)
-        .background(Color(red: 0.035, green: 0.045, blue: 0.065).opacity(0.90))
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
+        .background(
+            Color(
+                red: 0.035,
+                green: 0.045,
+                blue: 0.065
+            )
+            .opacity(0.90)
+        )
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+        )
         .overlay(alignment: .top) {
-            UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24)
-                .stroke(.white.opacity(0.13), lineWidth: 1)
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+            .stroke(.white.opacity(0.13), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.32), radius: 25, y: -5)
+        .shadow(
+            color: .black.opacity(0.32),
+            radius: 25,
+            y: -5
+        )
     }
 
     @ViewBuilder
@@ -1376,16 +2251,28 @@ private struct PlayerOptionsSheet: View {
             unavailableContent(
                 symbol: "list.number",
                 title: "No episode list",
-                message: "This is a standalone local video. Episode navigation will be available when a catalogue or module provides episode information."
+                message: """
+                This is a standalone local video. Episode navigation will \
+                become available when a catalogue or module provides \
+                episode information.
+                """
             )
 
         case .servers:
             VStack(alignment: .leading, spacing: 12) {
-                optionRow(title: "On this device", subtitle: "Local file", symbol: "iphone", selected: true)
-                Text("Alternative servers and stream sources will appear here when a connected source provides them.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.58))
-                    .padding(.top, 4)
+                optionRow(
+                    title: "On this device",
+                    subtitle: "Local file",
+                    symbol: "iphone",
+                    selected: true
+                )
+
+                Text(
+                    "Alternative servers and stream sources will appear here when a connected source provides them."
+                )
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.58))
+                .padding(.top, 4)
             }
 
         case .audio:
@@ -1393,7 +2280,9 @@ private struct PlayerOptionsSheet: View {
                 unavailableContent(
                     symbol: "waveform",
                     title: "No alternate audio tracks",
-                    message: "This file does not expose selectable audio tracks."
+                    message: """
+                    This file does not expose selectable audio tracks.
+                    """
                 )
             } else {
                 optionRow(
@@ -1405,7 +2294,10 @@ private struct PlayerOptionsSheet: View {
                     model.selectAudio(nil)
                 }
 
-                ForEach(Array(model.audioOptions.enumerated()), id: \.offset) { _, option in
+                ForEach(
+                    Array(model.audioOptions.enumerated()),
+                    id: \.offset
+                ) { _, option in
                     optionRow(
                         title: option.displayName,
                         subtitle: option.locale?.identifier ?? "Audio track",
@@ -1422,18 +2314,35 @@ private struct PlayerOptionsSheet: View {
                 sectionLabel("PLAYBACK SPEED")
 
                 LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())],
+                    columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ],
                     spacing: 9
                 ) {
                     ForEach(speeds, id: \.self) { speed in
-                        Button { model.setRate(speed) } label: {
+                        Button {
+                            model.setRate(speed)
+                        } label: {
                             Text(String(format: "%.2fx", speed))
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(model.playbackRate == speed ? .black : .white)
+                                .font(
+                                    .system(
+                                        size: 13,
+                                        weight: .bold
+                                    )
+                                )
+                                .foregroundStyle(
+                                    model.playbackRate == speed
+                                        ? .black
+                                        : .white
+                                )
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                                 .background(
-                                    model.playbackRate == speed ? KinetiqPalette.cyan : .white.opacity(0.09),
+                                    model.playbackRate == speed
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
                                     in: RoundedRectangle(cornerRadius: 11)
                                 )
                         }
@@ -1441,7 +2350,11 @@ private struct PlayerOptionsSheet: View {
                     }
                 }
 
-                Rectangle().fill(.white.opacity(0.09)).frame(height: 1).padding(.vertical, 3)
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
                 sectionLabel("ASPECT RATIO")
 
                 optionRow(
@@ -1464,11 +2377,14 @@ private struct PlayerOptionsSheet: View {
             }
 
         case .subtitles:
-            if !model.hasSubtitleSelection && model.subtitleOptions.isEmpty {
+            if !model.hasSubtitleSelection
+                && model.subtitleOptions.isEmpty {
                 unavailableContent(
                     symbol: "captions.bubble",
                     title: "No subtitle tracks",
-                    message: "This file does not expose selectable embedded subtitles."
+                    message: """
+                    This file does not expose selectable embedded subtitles.
+                    """
                 )
             } else {
                 optionRow(
@@ -1480,7 +2396,10 @@ private struct PlayerOptionsSheet: View {
                     model.selectSubtitle(nil)
                 }
 
-                ForEach(Array(model.subtitleOptions.enumerated()), id: \.offset) { _, option in
+                ForEach(
+                    Array(model.subtitleOptions.enumerated()),
+                    id: \.offset
+                ) { _, option in
                     optionRow(
                         title: option.displayName,
                         subtitle: option.locale?.identifier ?? "Subtitle track",
@@ -1505,14 +2424,27 @@ private struct PlayerOptionsSheet: View {
 
                 HStack(spacing: 9) {
                     ForEach([15, 30, 45, 60], id: \.self) { minutes in
-                        Button { model.setSleepTimer(minutes) } label: {
+                        Button {
+                            model.setSleepTimer(minutes)
+                        } label: {
                             Text("\(minutes)m")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(model.sleepTimerMinutes == minutes ? .black : .white)
+                                .font(
+                                    .system(
+                                        size: 12,
+                                        weight: .bold
+                                    )
+                                )
+                                .foregroundStyle(
+                                    model.sleepTimerMinutes == minutes
+                                        ? .black
+                                        : .white
+                                )
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                                 .background(
-                                    model.sleepTimerMinutes == minutes ? KinetiqPalette.cyan : .white.opacity(0.09),
+                                    model.sleepTimerMinutes == minutes
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
                                     in: RoundedRectangle(cornerRadius: 10)
                                 )
                         }
@@ -1522,22 +2454,62 @@ private struct PlayerOptionsSheet: View {
 
                 if let minutes = model.sleepTimerMinutes {
                     HStack {
-                        Label("Timer set: \(minutes) minutes", systemImage: "moon.zzz.fill")
-                            .font(.caption)
-                            .foregroundStyle(KinetiqPalette.cyan)
+                        Label(
+                            "Timer set: \(minutes) minutes",
+                            systemImage: "moon.zzz.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(KinetiqPalette.cyan)
+
                         Spacer()
-                        Button("Cancel") { model.setSleepTimer(nil) }
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
+
+                        Button("Cancel") {
+                            model.setSleepTimer(nil)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
                     }
                 }
 
-                Rectangle().fill(.white.opacity(0.09)).frame(height: 1).padding(.vertical, 3)
-                sectionLabel("PLAYBACK INFORMATION")
-                informationRow("File", value: model.currentURL.lastPathComponent)
-                informationRow("Format", value: model.currentURL.pathExtension.uppercased())
-                informationRow("Duration", value: model.formattedDuration)
-                informationRow("Playback speed", value: String(format: "%.2fx", model.playbackRate))
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("MEDIA INFORMATION")
+
+                informationRow(
+                    "File",
+                    value: model.currentURL.lastPathComponent
+                )
+
+                informationRow(
+                    "Format",
+                    value: model.currentURL.pathExtension.uppercased()
+                )
+
+                informationRow(
+                    "Resolution",
+                    value: model.resolutionText
+                )
+
+                informationRow(
+                    "File size",
+                    value: model.fileSizeText
+                )
+
+                informationRow(
+                    "Duration",
+                    value: model.formattedDuration
+                )
+
+                informationRow(
+                    "Playback speed",
+                    value: String(
+                        format: "%.2fx",
+                        model.playbackRate
+                    )
+                )
             }
         }
     }
@@ -1546,7 +2518,13 @@ private struct PlayerOptionsSheet: View {
 
     private func sectionLabel(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .font(
+                .system(
+                    size: 10,
+                    weight: .bold,
+                    design: .rounded
+                )
+            )
             .tracking(1.3)
             .foregroundStyle(.white.opacity(0.48))
     }
@@ -1562,12 +2540,21 @@ private struct PlayerOptionsSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(selected ? KinetiqPalette.cyan : .white.opacity(0.65))
+                    .foregroundStyle(
+                        selected
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.65)
+                    )
                     .frame(width: 30)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(
+                            .system(
+                                size: 13,
+                                weight: .semibold
+                            )
+                        )
                         .foregroundStyle(.white)
                         .lineLimit(1)
 
@@ -1578,6 +2565,7 @@ private struct PlayerOptionsSheet: View {
                 }
 
                 Spacer(minLength: 5)
+
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(KinetiqPalette.cyan)
@@ -1585,21 +2573,29 @@ private struct PlayerOptionsSheet: View {
             }
             .padding(12)
             .background(
-                selected ? KinetiqPalette.cyan.opacity(0.12) : .white.opacity(0.055),
+                selected
+                    ? KinetiqPalette.cyan.opacity(0.12)
+                    : .white.opacity(0.055),
                 in: RoundedRectangle(cornerRadius: 12)
             )
         }
         .buttonStyle(.plain)
     }
 
-    private func unavailableContent(symbol: String, title: String, message: String) -> some View {
+    private func unavailableContent(
+        symbol: String,
+        title: String,
+        message: String
+    ) -> some View {
         VStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 29, weight: .light))
                 .foregroundStyle(KinetiqPalette.cyan)
+
             Text(title)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(.white)
+
             Text(message)
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.56))
@@ -1610,10 +2606,16 @@ private struct PlayerOptionsSheet: View {
         .padding(.vertical, 22)
     }
 
-    private func informationRow(_ title: String, value: String) -> some View {
+    private func informationRow(
+        _ title: String,
+        value: String
+    ) -> some View {
         HStack(alignment: .top) {
-            Text(title).foregroundStyle(.white.opacity(0.52))
+            Text(title)
+                .foregroundStyle(.white.opacity(0.52))
+
             Spacer(minLength: 12)
+
             Text(value)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.trailing)
