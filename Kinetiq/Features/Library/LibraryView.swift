@@ -571,7 +571,7 @@ struct LibraryView: View {
         do {
             try FileManager.default.removeItem(at: item.url)
 
-            MediaThumbnailCache.shared.invalidate(item.url)
+            LocalMediaThumbnailCache.shared.invalidate(mediaID: item.id)
             playbackHistory.remove(mediaID: item.id)
 
             loadMedia()
