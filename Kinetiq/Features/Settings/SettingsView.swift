@@ -1,4 +1,3 @@
-
 import SwiftUI
 import Foundation
 
@@ -213,7 +212,10 @@ struct SettingsView: View {
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
-    // The original key is retained to preserve existing user preferences.
+    @AppStorage(AppStorageKey.accentColor)
+    private var accentColorRawValue = AppAccentColor.kinetiq.rawValue
+
+    // Retained to preserve existing user preferences.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
     private var useLiquidGlassDock = false
 
@@ -235,13 +237,47 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // MARK: Appearance
+
                 Section("Appearance") {
-                    Picker("Theme", selection: $appearanceRawValue) {
-                        ForEach(AppAppearance.allCases) { appearance in
-                            Text(appearance.title).tag(appearance.rawValue)
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("Theme")
+                            .font(.subheadline.weight(.semibold))
+
+                        Picker("Theme", selection: $appearanceRawValue) {
+                            ForEach(AppAppearance.allCases) { appearance in
+                                Text(appearance.title)
+                                    .tag(appearance.rawValue)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
+                    .padding(.vertical, 4)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Accent colour")
+                            .font(.subheadline.weight(.semibold))
+
+                        LazyVGrid(
+                            columns: Array(
+                                repeating: GridItem(
+                                    .flexible(),
+                                    spacing: 12
+                                ),
+                                count: 3
+                            ),
+                            spacing: 14
+                        ) {
+                            ForEach(AppAccentColor.allCases) { accent in
+                                accentOption(accent)
+                            }
+                        }
+
+                        Text("Choose the colour used throughout Kinetiq's interface.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
 
                     Toggle(isOn: $useLiquidGlassDock) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -251,7 +287,10 @@ struct SettingsView: View {
                             Text("Show an interactive glass highlight that slides between the navigation tabs.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .fixedSize(
+                                    horizontal: false,
+                                    vertical: true
+                                )
                         }
                     }
                     .disabled(!supportsLiquidGlassDock)
@@ -262,6 +301,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                // MARK: What's New
 
                 Section("What's New") {
                     Button {
@@ -301,6 +342,8 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: About
+
                 Section("About Kinetiq") {
                     LabeledContent("Version", value: version)
                     LabeledContent("Platform", value: "iOS")
@@ -324,6 +367,56 @@ struct SettingsView: View {
                 WhatsNewView(releases: whatsNewStore.eligibleReleases)
             }
         }
+    }
+
+    // MARK: Accent Colour Option
+
+    private func accentOption(_ accent: AppAccentColor) -> some View {
+        let isSelected = accentColorRawValue == accent.rawValue
+
+        return Button {
+            accentColorRawValue = accent.rawValue
+        } label: {
+            VStack(spacing: 8) {
+                Circle()
+                    .fill(accent.accent)
+                    .frame(width: 34, height: 34)
+                    .overlay {
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(
+                                    .system(
+                                        size: 12,
+                                        weight: .bold
+                                    )
+                                )
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .overlay {
+                        Circle()
+                            .strokeBorder(
+                                isSelected
+                                    ? Color.primary.opacity(0.45)
+                                    : Color.primary.opacity(0.10),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    }
+
+                Text(accent.title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(accent.title) accent colour")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
