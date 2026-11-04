@@ -1,4 +1,3 @@
-
 import SwiftUI
 import UIKit
 
@@ -191,21 +190,21 @@ struct HomeView: View {
             }
 
             Menu {
+                Button(action: onModules) {
+                    Label(
+                        "Manage Modules",
+                        systemImage: "square.stack.3d.up.fill"
+                    )
+                }
+
+                Divider()
+
                 Button {
                     selectedSource = "Local Library"
                 } label: {
                     Label(
                         "Local Library",
                         systemImage: "iphone"
-                    )
-                }
-
-                Divider()
-
-                Button(action: onModules) {
-                    Label(
-                        "Manage Modules",
-                        systemImage: "square.stack.3d.up.fill"
                     )
                 }
             } label: {
