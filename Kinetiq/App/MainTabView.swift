@@ -60,7 +60,8 @@ struct MainTabView: View {
     let tagline: String
 
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
-    private var useLiquidGlassDock = false
+    @AppStorage(AppStorageKey.accentColor)
+private var accentColorRawValue = AppAccentColor.kinetiq.rawValue
 
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
