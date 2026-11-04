@@ -15,153 +15,18 @@ private struct LocalMedia: Identifiable {
     var title: String { url.deletingPathExtension().lastPathComponent }
 }
 
-// MARK: - Thumbnail Cache
 
-/// Coordinates thumbnail requests so multiple cells asking for the same
-/// file share one generation operation. Cache state and continuations are
-/// confined to stateQueue; different files can be generated concurrently.
-private final class MediaThumbnailCache: @unchecked Sendable {
-    static let shared = MediaThumbnailCache()
-
-    private let cache = NSCache<NSString, UIImage>()
-
-    private let stateQueue = DispatchQueue(
-        label: "com.kinetiq.media-thumbnails.state",
-        qos: .utility
-    )
-
-    private let generationQueue = DispatchQueue(
-        label: "com.kinetiq.media-thumbnails.generation",
-        qos: .utility,
-        attributes: .concurrent
-    )
-
-    // Accessed exclusively on stateQueue.
-    private var pendingRequests: [
-        String: [CheckedContinuation<UIImage?, Never>]
-    ] = [:]
-
-    // A generation invalidated while in flight must not repopulate the cache.
-    // Accessed exclusively on stateQueue.
-    private var invalidationVersions: [String: UInt64] = [:]
-
-    private init() {
-        cache.countLimit = 150
-        cache.totalCostLimit = 96 * 1024 * 1024
-    }
-
-    func image(for url: URL) async -> UIImage? {
-        let key = url.standardizedFileURL.path
-
-        return await withCheckedContinuation { continuation in
-            stateQueue.async { [self] in
-                if let cachedImage = cache.object(forKey: key as NSString) {
-                    continuation.resume(returning: cachedImage)
-                    return
-                }
-
-                if pendingRequests[key] != nil {
-                    pendingRequests[key, default: []].append(continuation)
-                    return
-                }
-
-                pendingRequests[key] = [continuation]
-                let requestVersion = invalidationVersions[key, default: 0]
-
-                generationQueue.async { [self] in
-                    let generatedImage = Self.generateImage(for: url)
-
-                    stateQueue.async { [self] in
-                        let isCurrentGeneration =
-                            invalidationVersions[key, default: requestVersion]
-                                == requestVersion
-
-                        if isCurrentGeneration, let generatedImage {
-                            let imageCost = generatedImage.cgImage.map {
-                                $0.bytesPerRow * $0.height
-                            } ?? 0
-
-                            cache.setObject(
-                                generatedImage,
-                                forKey: key as NSString,
-                                cost: imageCost
-                            )
-                        }
-
-                        invalidationVersions.removeValue(forKey: key)
-
-                        let waitingContinuations =
-                            pendingRequests.removeValue(forKey: key) ?? []
-
-                        let result = isCurrentGeneration
-                            ? generatedImage
-                            : nil
-
-                        waitingContinuations.forEach {
-                            $0.resume(returning: result)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    func invalidate(_ url: URL) {
-        let key = url.standardizedFileURL.path
-
-        stateQueue.async { [self] in
-            cache.removeObject(forKey: key as NSString)
-
-            if pendingRequests[key] != nil {
-                invalidationVersions[key, default: 0] &+= 1
-            }
-        }
-    }
-
-    func clear() {
-        stateQueue.async { [self] in
-            cache.removeAllObjects()
-
-            for key in pendingRequests.keys {
-                invalidationVersions[key, default: 0] &+= 1
-            }
-        }
-    }
-
-    private static func generateImage(for url: URL) -> UIImage? {
-        guard url.isFileURL,
-              FileManager.default.fileExists(atPath: url.path) else {
-            return nil
-        }
-
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 720, height: 720)
-
-        let timestamp = CMTime(
-            seconds: 1,
-            preferredTimescale: 600
-        )
-
-        guard let cgImage = try? generator.copyCGImage(
-            at: timestamp,
-            actualTime: nil
-        ) else {
-            return nil
-        }
-
-        return UIImage(cgImage: cgImage)
-    }
-}
-
-// MARK: - Thumbnail View
+// MARK: - Shared Local Thumbnail View
 
 private struct MediaThumbnailView: View {
+    let mediaID: String
     let url: URL
 
     @State private var image: UIImage?
+
+    private var requestID: String {
+        "\(mediaID)|\(url.standardizedFileURL.path)"
+    }
 
     var body: some View {
         ZStack {
@@ -189,14 +54,24 @@ private struct MediaThumbnailView: View {
             }
         }
         .frame(width: 76, height: 76)
-        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .task(id: url) {
-            let generatedImage = await MediaThumbnailCache.shared.image(for: url)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+        )
+        .task(id: requestID) {
+            image = nil
+
+            let loadedImage = await LocalMediaThumbnailCache.shared.image(
+                for: mediaID,
+                url: url
+            )
 
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: 0.2)) {
-                image = generatedImage
+                image = loadedImage
             }
         }
     }
