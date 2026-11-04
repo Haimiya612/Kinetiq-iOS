@@ -123,7 +123,7 @@ struct HomeView: View {
         .padding(.top, 10)
         .background(Color(uiColor: .systemBackground))
         .onAppear {
-            ContinueWatchingThumbnailCache.shared.removeOrphans()
+            LocalMediaThumbnailCache.shared.removeOrphans()
 
             withAnimation(
                 reduceMotion
@@ -137,7 +137,7 @@ struct HomeView: View {
             // A completed item can disappear from Continue Watching while
             // its local file remains. Only files actually removed from the
             // library have their thumbnails cleaned up.
-            ContinueWatchingThumbnailCache.shared.removeOrphans()
+            LocalMediaThumbnailCache.shared.removeOrphans()
         }
     }
 
