@@ -117,7 +117,10 @@ private var accentColorRawValue = AppAccentColor.kinetiq.rawValue
             bottomBar
         }
         .background(Color(uiColor: .systemBackground))
-        .tint(KinetiqPalette.accent)
+        .tint(
+    AppAccentColor(rawValue: accentColorRawValue)?.accent
+        ?? KinetiqPalette.accent
+)
         .sheet(item: $activeSheet) { destination in
             NavigationStack {
                 Group {
