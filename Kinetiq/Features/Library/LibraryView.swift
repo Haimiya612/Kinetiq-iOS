@@ -410,7 +410,10 @@ struct LibraryView: View {
 
     private func mediaCard(_ item: LocalMedia) -> some View {
         HStack(spacing: 15) {
-            MediaThumbnailView(url: item.url)
+            MediaThumbnailView(
+    mediaID: item.id,
+    url: item.url
+)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title)
