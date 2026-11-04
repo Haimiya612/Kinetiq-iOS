@@ -48,7 +48,7 @@
 		C3BF014E9D607325F8CAE143 /* Media */ = {isa = PBXGroup; children = (A19D8F2C7B4E6103D5A8C921); path = "Media"; sourceTree = "<group>"; };
 		708542948A3B222AF87CBF1B /* Core */ = {isa = PBXGroup; children = (C9D7D0E74DDECF62B41191D2, A5637D0A1DBF2F8D62B2D542, D5A3CF29701CC263A9F07C42, C3BF014E9D607325F8CAE143); path = "Core"; sourceTree = "<group>"; };
 		7320576F8E69F075631E6571 /* Home */ = {isa = PBXGroup; children = (4CF48A039D9B227303186594); path = "Home"; sourceTree = "<group>"; };
-		F85BA4F58B43CB35B1CD34E8 /* Library */ = {isa = PBXGroup; children = (B5BEB1824C58F7ECC8DFF776, D5F8A1C24B6E7390E8FFDF3F, 7A1A2A3A4A5A4A6A7A8A9A01, 7A1A2A3A4A5A4A6A7A8A9A03); path = "Library"; sourceTree = "<group>"; };
+		F85BA4F58B43CB35B1CD34E8 /* Library */ = {isa = PBXGroup; children = (B5BEB1824C58F7ECC8DFF776, D5F8A1C24B6E7390A2C4D817, 7A1A2A3A4A5A4A6A7A8A9A01, 7A1A2A3A4A5A4A6A7A8A9A03); path = "Library"; sourceTree = "<group>"; };
 		DD1705967C5691C0E5DD98B9 /* Settings */ = {isa = PBXGroup; children = (62F24690A6F558F597D89A8D); path = "Settings"; sourceTree = "<group>"; };
 		FCE84E5E95C48F4756FFFB6D /* Features */ = {isa = PBXGroup; children = (7320576F8E69F075631E6571, F85BA4F58B43CB35B1CD34E8, DD1705967C5691C0E5DD98B9); path = "Features"; sourceTree = "<group>"; };
 		6A5258272E3BC28683FAF7BF /* Resources */ = {isa = PBXGroup; children = (6C36FFE920F24CEDB7CFDBFC); path = "Resources"; sourceTree = "<group>"; };
