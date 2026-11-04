@@ -2,6 +2,7 @@ import Foundation
 import Combine
 
 enum AppStorageKey {
+    static let appearance = "kinetiq.appearance.mode"
     static let accentColor = "kinetiq.appearance.accentColor"
     static let lastLaunchTagline = "kinetiq.brand.lastLaunchTagline"
     static let playbackHistory = "kinetiq.playbackHistory.v1"
