@@ -93,7 +93,7 @@ struct HomeView: View {
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
     let onOpenLibrary: () -> Void
 
-        @State private var selectedMode: HomeMediaMode = .video
+    @State private var selectedMode: HomeMediaMode = .video
     @State private var appeared = false
 
     @StateObject private var moduleSourceStore = ModuleSourceStore.shared
