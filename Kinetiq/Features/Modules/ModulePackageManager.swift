@@ -88,7 +88,7 @@ private struct ModulePackageCaps: Decodable {
 
 // MARK: - Validated Package
 
-private struct ValidatedModulePackage {
+fileprivate struct ValidatedModulePackage {
     let manifestData: Data
     let scriptData: Data
     let name: String
@@ -185,7 +185,7 @@ enum ModulePackageError: LocalizedError {
 
 enum ModulePackageValidator {
 
-    static func validateArchive(
+    fileprivate static func validateArchive(
         at archiveURL: URL,
         for source: ModuleSourceOption
     ) throws -> ValidatedModulePackage {
