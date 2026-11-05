@@ -105,7 +105,7 @@ struct MainTabView: View {
                         title: "Downloads",
                         subtitle: "Keep your media available offline with Kinetiq's download manager.",
                         symbol: "arrow.down.circle.fill",
-                        accent: KinetiqPalette.blue
+                        accent: KinetiqPalette.accent
                     )
 
                 case .settings:
