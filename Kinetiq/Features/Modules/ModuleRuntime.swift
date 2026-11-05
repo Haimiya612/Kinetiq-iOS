@@ -1633,9 +1633,9 @@ struct ModuleBrowserView: View {
             )
 
             if results.isEmpty {
-                errorMessage =
-                    "The source returned no anime for "\(query)"."
-            }
+    errorMessage =
+        "The source returned no anime for \"\(query)\"."
+}
         } catch {
             errorMessage = error.localizedDescription
         }
