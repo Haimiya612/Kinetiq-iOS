@@ -725,10 +725,7 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         handler: String,
         arguments: [Any]
     ) async throws -> Any {
-        guard JSONSerialization.isValidJSONObject(
-            arguments,
-            options: [.fragmentsAllowed]
-        ) else {
+        guard JSONSerialization.isValidJSONObject(arguments) else {
             throw ModuleRuntimeError.invalidArguments
         }
 
