@@ -519,11 +519,16 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
 
         XCTAssertNotNil(firstImage)
 
-        let persisted = await waitForFileCount(
-            2,
+        let persisted = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
-        XCTAssertTrue(persisted, "The generated thumbnail should be saved as an image and metadata file.")
+
+        XCTAssertTrue(
+            persisted,
+            "The generated thumbnail should be saved as an image and metadata file."
+        )
 
         // A new cache instance simulates an app restart.
         let restoredCache = LocalMediaThumbnailCache(
@@ -571,17 +576,27 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
 
         XCTAssertNotNil(firstImage)
 
-        let initialPersistence = await waitForFileCount(
-            2,
+        let initialPersistence = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
-        XCTAssertTrue(initialPersistence)
+
+        XCTAssertTrue(
+            initialPersistence,
+            "The initial thumbnail and metadata must both be persisted before the media is changed."
+        )
+
+        let metadataFiles = try FileManager.default.contentsOfDirectory(
+            at: environment.thumbnailDirectory,
+            includingPropertiesForKeys: nil
+        )
 
         let metadataURL = try XCTUnwrap(
-            FileManager.default.contentsOfDirectory(
-                at: environment.thumbnailDirectory,
-                includingPropertiesForKeys: nil
-            ).first { $0.pathExtension == "json" }
+            metadataFiles.first {
+                $0.pathExtension.lowercased() == "json"
+            },
+            "The cache metadata file should exist after persistence completes."
         )
 
         let originalMetadata = try Data(contentsOf: metadataURL)
@@ -609,7 +624,10 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
             from: originalMetadata
         )
 
-        XCTAssertTrue(metadataUpdated)
+        XCTAssertTrue(
+            metadataUpdated,
+            "The persisted metadata must be updated for the new file fingerprint."
+        )
     }
 
     func testInvalidatingDeletedMediaRemovesDiskArtifacts() async throws {
@@ -634,10 +652,12 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
 
         XCTAssertNotNil(generatedImage)
 
-        let persisted = await waitForFileCount(
-            2,
+        let persisted = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
+
         XCTAssertTrue(persisted)
 
         try FileManager.default.removeItem(at: mediaURL)
@@ -647,8 +667,9 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         )
         await invalidation.value
 
-        let artifactsRemoved = await waitForFileCount(
-            0,
+        let artifactsRemoved = await waitForCacheArtifacts(
+            expectedImages: 0,
+            expectedMetadata: 0,
             in: environment.thumbnailDirectory
         )
 
@@ -691,10 +712,12 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         XCTAssertNotNil(retainedImage)
         XCTAssertNotNil(deletedImage)
 
-        let allPersisted = await waitForFileCount(
-            4,
+        let allPersisted = await waitForCacheArtifacts(
+            expectedImages: 2,
+            expectedMetadata: 2,
             in: environment.thumbnailDirectory
         )
+
         XCTAssertTrue(allPersisted)
 
         try FileManager.default.removeItem(at: deletedURL)
@@ -702,8 +725,9 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         let cleanup = cache.removeOrphans()
         await cleanup.value
 
-        let orphanRemoved = await waitForFileCount(
-            2,
+        let orphanRemoved = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
 
@@ -735,10 +759,12 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
 
         XCTAssertNotNil(generatedImage)
 
-        let persisted = await waitForFileCount(
-            2,
+        let persisted = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
+
         XCTAssertTrue(persisted)
 
         let suite = "KinetiqThumbnailHistoryTests.\(UUID().uuidString)"
@@ -771,8 +797,9 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         let cleanup = cache.removeOrphans()
         await cleanup.value
 
-        let thumbnailRetained = await waitForFileCount(
-            2,
+        let thumbnailRetained = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
 
@@ -840,10 +867,12 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
             "Concurrent requests for the same media revision should share one generation."
         )
 
-        let persisted = await waitForFileCount(
-            2,
+        let persisted = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
+
         XCTAssertTrue(persisted)
     }
 
@@ -893,10 +922,12 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
 
         XCTAssertNotNil(generatedImage)
 
-        let persisted = await waitForFileCount(
-            2,
+        let persisted = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
+
         XCTAssertTrue(persisted)
 
         try FileManager.default.removeItem(at: environment.mediaDirectory)
@@ -904,8 +935,9 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         let cleanup = cache.removeOrphans()
         await cleanup.value
 
-        let cachePreserved = await waitForFileCount(
-            2,
+        let cachePreserved = await waitForCacheArtifacts(
+            expectedImages: 1,
+            expectedMetadata: 1,
             in: environment.thumbnailDirectory
         )
 
@@ -998,42 +1030,67 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
         }
     }
 
-    private func waitForFileCount(
-        _ expectedCount: Int,
+    /// Waits for completed cache artifacts only.
+    ///
+    /// Atomic writes can temporarily create staging files in the directory.
+    /// Counting every directory entry can therefore report that persistence
+    /// is complete before the final .jpg or .json file is visible.
+    private func waitForCacheArtifacts(
+        expectedImages: Int,
+        expectedMetadata: Int,
         in directory: URL,
-        timeout: TimeInterval = 3
+        timeout: TimeInterval = 5
     ) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
-            let count = (
-                try? FileManager.default.contentsOfDirectory(
-                    at: directory,
-                    includingPropertiesForKeys: nil
-                ).count
-            ) ?? 0
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ) else {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                continue
+            }
 
-            if count == expectedCount {
+            let imageCount = files.filter {
+                $0.pathExtension.lowercased() == "jpg"
+            }.count
+
+            let metadataCount = files.filter {
+                $0.pathExtension.lowercased() == "json"
+            }.count
+
+            if imageCount == expectedImages,
+               metadataCount == expectedMetadata {
                 return true
             }
 
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        let finalCount = (
-            try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil
-            ).count
-        ) ?? 0
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return false
+        }
 
-        return finalCount == expectedCount
+        let imageCount = files.filter {
+            $0.pathExtension.lowercased() == "jpg"
+        }.count
+
+        let metadataCount = files.filter {
+            $0.pathExtension.lowercased() == "json"
+        }.count
+
+        return imageCount == expectedImages
+            && metadataCount == expectedMetadata
     }
 
     private func waitForMetadataChange(
         in directory: URL,
         from originalData: Data,
-        timeout: TimeInterval = 3
+        timeout: TimeInterval = 5
     ) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
 
@@ -1046,14 +1103,14 @@ final class LocalMediaThumbnailCacheTests: XCTestCase {
             ) ?? []
 
             if let metadataURL = files.first(where: {
-                $0.pathExtension == "json"
+                $0.pathExtension.lowercased() == "json"
             }),
             let currentData = try? Data(contentsOf: metadataURL),
             currentData != originalData {
                 return true
             }
 
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
 
         return false
