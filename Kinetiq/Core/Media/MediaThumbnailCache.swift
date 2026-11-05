@@ -29,6 +29,7 @@ private struct LocalThumbnailLoadResult {
 /// - Removing an item from Continue Watching does not remove artwork.
 /// - Deleting the local media file invalidates its artwork.
 final class LocalMediaThumbnailCache: @unchecked Sendable {
+
     static let shared = LocalMediaThumbnailCache()
 
     private let memoryCache = NSCache<NSString, UIImage>()
@@ -190,7 +191,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
                             // The serial disk queue ensures a later deletion
                             // cannot be undone by an older generation.
                             if let jpegData = result.jpegData {
-                                diskQueue.async {
+                                diskQueue.async { [self] in
                                     Self.persist(
                                         jpegData,
                                         fingerprint: fingerprint,
@@ -246,7 +247,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
                         forKey: mediaID as NSString
                     )
 
-                    diskQueue.async {
+                    diskQueue.async { [self] in
                         Self.removeDiskArtifacts(
                             for: mediaID,
                             thumbnailDirectory: thumbnailDirectory
@@ -326,7 +327,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
                         validMediaIDs.map(Self.cacheStem)
                     )
 
-                    diskQueue.async {
+                    diskQueue.async { [self] in
                         guard fileManager.fileExists(
                             atPath: thumbnailDirectory.path
                         ),
@@ -377,21 +378,31 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
               let values = try? url.resourceValues(
                 forKeys: [
                     .isRegularFileKey,
-                    .isSymbolicLinkKey,
-                    .fileSizeKey,
-                    .contentModificationDateKey
+                    .isSymbolicLinkKey
                 ]
               ),
               values.isRegularFile == true,
-              values.isSymbolicLink != true,
-              let fileSize = values.fileSize,
-              let modificationDate = values.contentModificationDate else {
+              values.isSymbolicLink != true else {
+            return nil
+        }
+
+        // Do not use URL.resourceValues for size or modification time here.
+        // URL resource values can be cached by Foundation. That becomes
+        // problematic when a media file is atomically replaced at the same
+        // path: a previously used URL may still report its old attributes.
+        //
+        // FileManager reads the current attributes from the filesystem.
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: url.path
+        ),
+        let fileSize = attributes[.size] as? NSNumber,
+        let modificationDate = attributes[.modificationDate] as? Date else {
             return nil
         }
 
         return LocalThumbnailFingerprint(
             mediaID: mediaID,
-            fileSize: Int64(fileSize),
+            fileSize: fileSize.int64Value,
             modificationDate: modificationDate.timeIntervalSince1970
         )
     }
