@@ -533,41 +533,12 @@ struct ModuleSourcesView: View {
                                 .foregroundStyle(.secondary)
                             } else {
                                 ForEach(store.sources(in: repository)) { source in
-                                    Button {
+                                    ModuleSourceListRow(
+                                        source: source,
+                                        isSelected: store.isSelected(source.id)
+                                    ) {
                                         store.selectSource(source.id)
-                                    } label: {
-                                        HStack(spacing: 12) {
-                                            Image(systemName: source.symbol)
-                                                .font(.system(size: 16, weight: .semibold))
-                                                .foregroundStyle(KinetiqPalette.accent)
-                                                .frame(width: 34, height: 34)
-                                                .background(
-                                                    KinetiqPalette.accent.opacity(0.12),
-                                                    in: RoundedRectangle(
-                                                        cornerRadius: 10
-                                                    )
-                                                )
-
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text(source.title)
-                                                    .font(.subheadline.weight(.semibold))
-                                                    .foregroundStyle(.primary)
-
-                                                Text(source.subtitle)
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                            }
-
-                                            Spacer()
-
-                                            if store.isSelected(source.id) {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                    .foregroundStyle(KinetiqPalette.accent)
-                                            }
-                                        }
-                                        .contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.plain)
                                 }
                             }
 
@@ -647,7 +618,7 @@ struct ModuleSourcesView: View {
                 Text("Source Selection")
             } footer: {
                 Text(
-                    "Selecting a module changes the active source in Home. This build handles repository catalogues and source selection; downloading, executing module packages and playback are separate integration steps."
+                    "Selecting a module changes the active source in Home. Video package installation downloads the ZIP, verifies its SHA-256 checksum, and inspects its local manifest and JavaScript handlers. Module execution, browsing, and playback are the next integration step."
                 )
             }
         }
