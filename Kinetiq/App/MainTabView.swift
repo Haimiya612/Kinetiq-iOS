@@ -59,7 +59,7 @@ private enum HomeSheet: String, Identifiable {
 struct MainTabView: View {
     let tagline: String
 
-        @AppStorage("kinetiq.appearance.liquidGlassButtons")
+    @AppStorage("kinetiq.appearance.liquidGlassButtons")
     private var useLiquidGlassDock = false
 
     @AppStorage(AppStorageKey.accentColor)
@@ -120,9 +120,9 @@ struct MainTabView: View {
         }
         .background(Color(uiColor: .systemBackground))
         .tint(
-    AppAccentColor(rawValue: accentColorRawValue)?.accent
-        ?? KinetiqPalette.accent
-)
+            AppAccentColor(rawValue: accentColorRawValue)?.accent
+                ?? KinetiqPalette.accent
+        )
         .sheet(item: $activeSheet) { destination in
             NavigationStack {
                 Group {
@@ -131,12 +131,7 @@ struct MainTabView: View {
                         DiscoverView()
 
                     case .modules:
-                        KinetiqPlaceholderView(
-                            title: "Module Sources",
-                            subtitle: "Connect your own video and manga sources. The secure Kinetiq module engine is being built.",
-                            symbol: "square.stack.3d.up.fill",
-                            accent: KinetiqPalette.violet
-                        )
+                        ModuleSourcesView()
                     }
                 }
                 .navigationTitle(destination.title)

@@ -50,6 +50,10 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
         qos: .utility
     )
 
+    private let localMediaDirectory: URL
+    private let thumbnailDirectory: URL
+    private let frameGenerator: (URL) -> UIImage?
+
     // All state below is accessed exclusively on stateQueue.
     private var pendingRequests: [
         String: [CheckedContinuation<UIImage?, Never>]
@@ -59,7 +63,35 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
     private var latestFingerprints: [String: LocalThumbnailFingerprint] = [:]
     private var memoryFingerprints: [String: LocalThumbnailFingerprint] = [:]
 
+    // MARK: Initialization
+
     private init() {
+        localMediaDirectory = Self.defaultLocalMediaDirectory
+        thumbnailDirectory = Self.defaultThumbnailDirectory
+        frameGenerator = { url in
+            Self.generateFrame(from: url)
+        }
+
+        configureMemoryCache()
+    }
+
+    /// Injectable initializer used by the unit tests.
+    ///
+    /// Tests receive their own media and cache directories and can provide
+    /// a deterministic frame generator without needing real video files.
+    init(
+        localMediaDirectory: URL,
+        thumbnailDirectory: URL,
+        frameGenerator: @escaping (URL) -> UIImage?
+    ) {
+        self.localMediaDirectory = localMediaDirectory
+        self.thumbnailDirectory = thumbnailDirectory
+        self.frameGenerator = frameGenerator
+
+        configureMemoryCache()
+    }
+
+    private func configureMemoryCache() {
         memoryCache.countLimit = 150
         memoryCache.totalCostLimit = 96 * 1024 * 1024
     }
@@ -78,7 +110,8 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
             stateQueue.async { [self] in
                 guard let fingerprint = Self.fingerprint(
                     for: mediaID,
-                    url: url
+                    url: url,
+                    localMediaDirectory: localMediaDirectory
                 ) else {
                     continuation.resume(returning: nil)
                     return
@@ -160,7 +193,8 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
                                 diskQueue.async {
                                     Self.persist(
                                         jpegData,
-                                        fingerprint: fingerprint
+                                        fingerprint: fingerprint,
+                                        thumbnailDirectory: thumbnailDirectory
                                     )
                                 }
                             }
@@ -188,22 +222,39 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     /// Call only after the corresponding local media file has been deleted
     /// or intentionally replaced.
-    func invalidate(mediaID: String) {
-        guard !mediaID.isEmpty else { return }
+    ///
+    /// The returned task completes after the disk artifacts are removed.
+    @discardableResult
+    func invalidate(mediaID: String) -> Task<Void, Never> {
+        guard !mediaID.isEmpty else {
+            return Task {}
+        }
 
-        stateQueue.async { [self] in
-            // Prevent an in-flight generation from restoring deleted artwork.
-            invalidationVersions[mediaID, default: 0] &+= 1
+        return Task {
+            await withCheckedContinuation {
+                (continuation: CheckedContinuation<Void, Never>) in
 
-            latestFingerprints.removeValue(forKey: mediaID)
-            memoryFingerprints.removeValue(forKey: mediaID)
+                stateQueue.async { [self] in
+                    // Prevent an in-flight generation from restoring
+                    // deleted artwork.
+                    invalidationVersions[mediaID, default: 0] &+= 1
 
-            memoryCache.removeObject(
-                forKey: mediaID as NSString
-            )
+                    latestFingerprints.removeValue(forKey: mediaID)
+                    memoryFingerprints.removeValue(forKey: mediaID)
 
-            diskQueue.async {
-                Self.removeDiskArtifacts(for: mediaID)
+                    memoryCache.removeObject(
+                        forKey: mediaID as NSString
+                    )
+
+                    diskQueue.async {
+                        Self.removeDiskArtifacts(
+                            for: mediaID,
+                            thumbnailDirectory: thumbnailDirectory
+                        )
+
+                        continuation.resume()
+                    }
+                }
             }
         }
     }
@@ -215,79 +266,97 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
     ///
     /// A missing or temporarily inaccessible directory is not treated as
     /// an empty library. Existing artwork is preserved in that situation.
-    func removeOrphans() {
-        stateQueue.async { [self] in
-            let fileManager = FileManager.default
-            let mediaDirectory = Self.localMediaDirectory
+    ///
+    /// The returned task completes after cleanup has finished.
+    @discardableResult
+    func removeOrphans() -> Task<Void, Never> {
+        Task {
+            await withCheckedContinuation {
+                (continuation: CheckedContinuation<Void, Never>) in
 
-            guard fileManager.fileExists(
-                atPath: mediaDirectory.path
-            ),
-            let mediaFiles = try? fileManager.contentsOfDirectory(
-                at: mediaDirectory,
-                includingPropertiesForKeys: [.isRegularFileKey]
-            ) else {
-                return
-            }
+                stateQueue.async { [self] in
+                    let fileManager = FileManager.default
 
-            let validMediaIDs = Set(
-                mediaFiles.compactMap { fileURL -> String? in
-                    guard let values = try? fileURL.resourceValues(
-                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                    guard fileManager.fileExists(
+                        atPath: localMediaDirectory.path
                     ),
-                    values.isRegularFile == true,
-                    values.isSymbolicLink != true else {
-                        return nil
+                    let mediaFiles = try? fileManager.contentsOfDirectory(
+                        at: localMediaDirectory,
+                        includingPropertiesForKeys: [.isRegularFileKey]
+                    ) else {
+                        continuation.resume()
+                        return
                     }
 
-                    return fileURL.lastPathComponent
-                }
-            )
+                    let validMediaIDs = Set(
+                        mediaFiles.compactMap { fileURL -> String? in
+                            guard let values = try? fileURL.resourceValues(
+                                forKeys: [
+                                    .isRegularFileKey,
+                                    .isSymbolicLinkKey
+                                ]
+                            ),
+                            values.isRegularFile == true,
+                            values.isSymbolicLink != true else {
+                                return nil
+                            }
 
-            // Invalidate in-flight requests for files that no longer exist.
-            let staleIDs = latestFingerprints.keys.filter {
-                !validMediaIDs.contains($0)
-            }
+                            return fileURL.lastPathComponent
+                        }
+                    )
 
-            for mediaID in staleIDs {
-                invalidationVersions[mediaID, default: 0] &+= 1
-
-                latestFingerprints.removeValue(forKey: mediaID)
-                memoryFingerprints.removeValue(forKey: mediaID)
-
-                memoryCache.removeObject(
-                    forKey: mediaID as NSString
-                )
-            }
-
-            let validCacheStems = Set(
-                validMediaIDs.map(Self.cacheStem)
-            )
-
-            diskQueue.async {
-                guard fileManager.fileExists(
-                    atPath: Self.thumbnailDirectory.path
-                ),
-                let cachedFiles = try? fileManager.contentsOfDirectory(
-                    at: Self.thumbnailDirectory,
-                    includingPropertiesForKeys: nil
-                ) else {
-                    return
-                }
-
-                for fileURL in cachedFiles {
-                    let fileExtension = fileURL.pathExtension.lowercased()
-
-                    guard fileExtension == "jpg"
-                            || fileExtension == "json" else {
-                        continue
+                    // Invalidate in-flight requests for files that no longer
+                    // exist.
+                    let staleIDs = latestFingerprints.keys.filter {
+                        !validMediaIDs.contains($0)
                     }
 
-                    let stem = fileURL.deletingPathExtension()
-                        .lastPathComponent
+                    for mediaID in staleIDs {
+                        invalidationVersions[mediaID, default: 0] &+= 1
 
-                    if !validCacheStems.contains(stem) {
-                        try? fileManager.removeItem(at: fileURL)
+                        latestFingerprints.removeValue(forKey: mediaID)
+                        memoryFingerprints.removeValue(forKey: mediaID)
+
+                        memoryCache.removeObject(
+                            forKey: mediaID as NSString
+                        )
+                    }
+
+                    let validCacheStems = Set(
+                        validMediaIDs.map(Self.cacheStem)
+                    )
+
+                    diskQueue.async {
+                        guard fileManager.fileExists(
+                            atPath: thumbnailDirectory.path
+                        ),
+                        let cachedFiles = try? fileManager.contentsOfDirectory(
+                            at: thumbnailDirectory,
+                            includingPropertiesForKeys: nil
+                        ) else {
+                            continuation.resume()
+                            return
+                        }
+
+                        for fileURL in cachedFiles {
+                            let fileExtension =
+                                fileURL.pathExtension.lowercased()
+
+                            guard fileExtension == "jpg"
+                                    || fileExtension == "json" else {
+                                continue
+                            }
+
+                            let stem = fileURL
+                                .deletingPathExtension()
+                                .lastPathComponent
+
+                            if !validCacheStems.contains(stem) {
+                                try? fileManager.removeItem(at: fileURL)
+                            }
+                        }
+
+                        continuation.resume()
                     }
                 }
             }
@@ -298,7 +367,8 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     private static func fingerprint(
         for mediaID: String,
-        url: URL
+        url: URL,
+        localMediaDirectory: URL
     ) -> LocalThumbnailFingerprint? {
         guard url.isFileURL,
               url.lastPathComponent == mediaID,
@@ -340,7 +410,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     // MARK: Storage Locations
 
-    private static var localMediaDirectory: URL {
+    private static var defaultLocalMediaDirectory: URL {
         FileManager.default.urls(
             for: .documentDirectory,
             in: .userDomainMask
@@ -351,7 +421,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
         )
     }
 
-    private static var thumbnailDirectory: URL {
+    private static var defaultThumbnailDirectory: URL {
         FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -377,14 +447,20 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
         .joined()
     }
 
-    private static func imageURL(for mediaID: String) -> URL {
-        thumbnailDirectory
+    private static func imageURL(
+        for mediaID: String,
+        in directory: URL
+    ) -> URL {
+        directory
             .appendingPathComponent(cacheStem(for: mediaID))
             .appendingPathExtension("jpg")
     }
 
-    private static func metadataURL(for mediaID: String) -> URL {
-        thumbnailDirectory
+    private static func metadataURL(
+        for mediaID: String,
+        in directory: URL
+    ) -> URL {
+        directory
             .appendingPathComponent(cacheStem(for: mediaID))
             .appendingPathExtension("json")
     }
@@ -400,7 +476,8 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
         let cachedImage = diskQueue.sync {
             Self.loadDiskImage(
                 for: mediaID,
-                fingerprint: fingerprint
+                fingerprint: fingerprint,
+                thumbnailDirectory: thumbnailDirectory
             )
         }
 
@@ -411,7 +488,7 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
             )
         }
 
-        guard let generatedImage = Self.generateFrame(from: url),
+        guard let generatedImage = frameGenerator(url),
               let jpegData = generatedImage.jpegData(
                 compressionQuality: 0.88
               ) else {
@@ -426,10 +503,18 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     private static func loadDiskImage(
         for mediaID: String,
-        fingerprint: LocalThumbnailFingerprint
+        fingerprint: LocalThumbnailFingerprint,
+        thumbnailDirectory: URL
     ) -> UIImage? {
-        let metadataURL = metadataURL(for: mediaID)
-        let imageURL = imageURL(for: mediaID)
+        let metadataURL = metadataURL(
+            for: mediaID,
+            in: thumbnailDirectory
+        )
+
+        let imageURL = imageURL(
+            for: mediaID,
+            in: thumbnailDirectory
+        )
 
         guard let metadataData = try? Data(contentsOf: metadataURL),
               let storedFingerprint = try? JSONDecoder().decode(
@@ -446,7 +531,8 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     private static func persist(
         _ jpegData: Data,
-        fingerprint: LocalThumbnailFingerprint
+        fingerprint: LocalThumbnailFingerprint,
+        thumbnailDirectory: URL
     ) {
         let fileManager = FileManager.default
 
@@ -462,14 +548,20 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
             try? directoryURL.setResourceValues(resourceValues)
 
             try jpegData.write(
-                to: imageURL(for: fingerprint.mediaID),
+                to: imageURL(
+                    for: fingerprint.mediaID,
+                    in: thumbnailDirectory
+                ),
                 options: .atomic
             )
 
             let metadataData = try JSONEncoder().encode(fingerprint)
 
             try metadataData.write(
-                to: metadataURL(for: fingerprint.mediaID),
+                to: metadataURL(
+                    for: fingerprint.mediaID,
+                    in: thumbnailDirectory
+                ),
                 options: .atomic
             )
         } catch {
@@ -526,13 +618,22 @@ final class LocalMediaThumbnailCache: @unchecked Sendable {
 
     // MARK: Disk Cleanup
 
-    private static func removeDiskArtifacts(for mediaID: String) {
+    private static func removeDiskArtifacts(
+        for mediaID: String,
+        thumbnailDirectory: URL
+    ) {
         try? FileManager.default.removeItem(
-            at: imageURL(for: mediaID)
+            at: imageURL(
+                for: mediaID,
+                in: thumbnailDirectory
+            )
         )
 
         try? FileManager.default.removeItem(
-            at: metadataURL(for: mediaID)
+            at: metadataURL(
+                for: mediaID,
+                in: thumbnailDirectory
+            )
         )
     }
 }

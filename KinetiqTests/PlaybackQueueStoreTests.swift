@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Kinetiq
 
 // MARK: - Playback Queue Tests
@@ -486,5 +487,594 @@ final class PlaybackHistoryStoreTests: XCTestCase {
             defaults,
             suite
         )
+    }
+}
+
+// MARK: - Local Media Thumbnail Cache Tests
+
+final class LocalMediaThumbnailCacheTests: XCTestCase {
+
+    func testThumbnailPersistsAcrossCacheInstances() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "persistent.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let counter = ThumbnailGenerationCounter()
+        let generatedImage = makeTestImage()
+
+        let firstCache = makeCache(
+            environment: environment,
+            counter: counter,
+            image: generatedImage
+        )
+
+        let firstImage = await firstCache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(firstImage)
+
+        let persisted = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(persisted, "The generated thumbnail should be saved as an image and metadata file.")
+
+        // A new cache instance simulates an app restart.
+        let restoredCache = LocalMediaThumbnailCache(
+            localMediaDirectory: environment.mediaDirectory,
+            thumbnailDirectory: environment.thumbnailDirectory
+        ) { _ in
+            counter.increment()
+            return nil
+        }
+
+        let restoredImage = await restoredCache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(restoredImage)
+        XCTAssertEqual(
+            counter.value,
+            1,
+            "The restored cache should load the saved thumbnail instead of generating it again."
+        )
+    }
+
+    func testChangedMediaFileRegeneratesThumbnail() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "changed.mp4",
+            in: environment.mediaDirectory,
+            contents: "original"
+        )
+
+        let counter = ThumbnailGenerationCounter()
+        let cache = makeCache(
+            environment: environment,
+            counter: counter,
+            image: makeTestImage()
+        )
+
+        let firstImage = await cache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(firstImage)
+
+        let initialPersistence = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(initialPersistence)
+
+        let metadataURL = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: environment.thumbnailDirectory,
+                includingPropertiesForKeys: nil
+            ).first { $0.pathExtension == "json" }
+        )
+
+        let originalMetadata = try Data(contentsOf: metadataURL)
+
+        // Change the file size so its fingerprint must change.
+        try Data("updated media contents that are longer".utf8).write(
+            to: mediaURL,
+            options: .atomic
+        )
+
+        let updatedImage = await cache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(updatedImage)
+        XCTAssertEqual(
+            counter.value,
+            2,
+            "A changed media file must not reuse the old generated frame."
+        )
+
+        let metadataUpdated = await waitForMetadataChange(
+            in: environment.thumbnailDirectory,
+            from: originalMetadata
+        )
+
+        XCTAssertTrue(metadataUpdated)
+    }
+
+    func testInvalidatingDeletedMediaRemovesDiskArtifacts() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "deleted.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let cache = makeCache(
+            environment: environment,
+            counter: ThumbnailGenerationCounter(),
+            image: makeTestImage()
+        )
+
+        let generatedImage = await cache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(generatedImage)
+
+        let persisted = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(persisted)
+
+        try FileManager.default.removeItem(at: mediaURL)
+
+        let invalidation = cache.invalidate(
+            mediaID: mediaURL.lastPathComponent
+        )
+        await invalidation.value
+
+        let artifactsRemoved = await waitForFileCount(
+            0,
+            in: environment.thumbnailDirectory
+        )
+
+        XCTAssertTrue(
+            artifactsRemoved,
+            "Deleting local media and invalidating it must remove both thumbnail files."
+        )
+    }
+
+    func testOrphanCleanupRemovesOnlyDeletedMediaThumbnails() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let retainedURL = try makeMediaFile(
+            named: "retained.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let deletedURL = try makeMediaFile(
+            named: "orphan.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let cache = makeCache(
+            environment: environment,
+            counter: ThumbnailGenerationCounter(),
+            image: makeTestImage()
+        )
+
+        let retainedImage = await cache.image(
+            for: retainedURL.lastPathComponent,
+            url: retainedURL
+        )
+
+        let deletedImage = await cache.image(
+            for: deletedURL.lastPathComponent,
+            url: deletedURL
+        )
+
+        XCTAssertNotNil(retainedImage)
+        XCTAssertNotNil(deletedImage)
+
+        let allPersisted = await waitForFileCount(
+            4,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(allPersisted)
+
+        try FileManager.default.removeItem(at: deletedURL)
+
+        let cleanup = cache.removeOrphans()
+        await cleanup.value
+
+        let orphanRemoved = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+
+        XCTAssertTrue(
+            orphanRemoved,
+            "Cleanup should remove only the deleted media item's thumbnail and metadata."
+        )
+    }
+
+    func testRemovingContinueWatchingEntryDoesNotDeleteThumbnail() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "completed.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let cache = makeCache(
+            environment: environment,
+            counter: ThumbnailGenerationCounter(),
+            image: makeTestImage()
+        )
+
+        let generatedImage = await cache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(generatedImage)
+
+        let persisted = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(persisted)
+
+        let suite = "KinetiqThumbnailHistoryTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let history = PlaybackHistoryStore(defaults: defaults)
+
+        history.save(
+            mediaID: mediaURL.lastPathComponent,
+            title: "Completed Movie",
+            position: 40,
+            duration: 100
+        )
+
+        XCTAssertNotNil(history.entry(for: mediaURL.lastPathComponent))
+
+        // Completing playback removes the history entry, not the media file.
+        history.save(
+            mediaID: mediaURL.lastPathComponent,
+            title: "Completed Movie",
+            position: 97,
+            duration: 100
+        )
+
+        XCTAssertNil(history.entry(for: mediaURL.lastPathComponent))
+
+        // HomeView runs orphan cleanup when Continue Watching changes.
+        let cleanup = cache.removeOrphans()
+        await cleanup.value
+
+        let thumbnailRetained = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+
+        XCTAssertTrue(
+            thumbnailRetained,
+            "A thumbnail must remain while its local media file still exists."
+        )
+    }
+
+    func testConcurrentRequestsShareOneGeneration() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "concurrent.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let counter = ThumbnailGenerationCounter()
+        let generatedImage = makeTestImage()
+
+        let cache = LocalMediaThumbnailCache(
+            localMediaDirectory: environment.mediaDirectory,
+            thumbnailDirectory: environment.thumbnailDirectory
+        ) { _ in
+            counter.increment()
+
+            // Keep generation open long enough for concurrent requests
+            // to join the same pending operation.
+            Thread.sleep(forTimeInterval: 0.2)
+
+            return generatedImage
+        }
+
+        let mediaID = mediaURL.lastPathComponent
+
+        let results = await withTaskGroup(
+            of: Bool.self,
+            returning: [Bool].self
+        ) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    await cache.image(
+                        for: mediaID,
+                        url: mediaURL
+                    ) != nil
+                }
+            }
+
+            var values: [Bool] = []
+
+            for await value in group {
+                values.append(value)
+            }
+
+            return values
+        }
+
+        XCTAssertEqual(results.count, 16)
+        XCTAssertTrue(results.allSatisfy { $0 })
+
+        XCTAssertEqual(
+            counter.value,
+            1,
+            "Concurrent requests for the same media revision should share one generation."
+        )
+
+        let persisted = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(persisted)
+    }
+
+    func testFilesOutsideManagedMediaDirectoryAreRejected() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let outsideURL = environment.root.appendingPathComponent("outside.mp4")
+        try Data("not managed media".utf8).write(to: outsideURL)
+
+        let counter = ThumbnailGenerationCounter()
+
+        let cache = makeCache(
+            environment: environment,
+            counter: counter,
+            image: makeTestImage()
+        )
+
+        let result = await cache.image(
+            for: outsideURL.lastPathComponent,
+            url: outsideURL
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(counter.value, 0)
+    }
+
+    func testMissingMediaDirectoryDoesNotDeleteExistingCache() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+
+        let mediaURL = try makeMediaFile(
+            named: "preserved.mp4",
+            in: environment.mediaDirectory
+        )
+
+        let cache = makeCache(
+            environment: environment,
+            counter: ThumbnailGenerationCounter(),
+            image: makeTestImage()
+        )
+
+        let generatedImage = await cache.image(
+            for: mediaURL.lastPathComponent,
+            url: mediaURL
+        )
+
+        XCTAssertNotNil(generatedImage)
+
+        let persisted = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+        XCTAssertTrue(persisted)
+
+        try FileManager.default.removeItem(at: environment.mediaDirectory)
+
+        let cleanup = cache.removeOrphans()
+        await cleanup.value
+
+        let cachePreserved = await waitForFileCount(
+            2,
+            in: environment.thumbnailDirectory
+        )
+
+        XCTAssertTrue(
+            cachePreserved,
+            "An inaccessible media directory must not be treated as an empty library."
+        )
+    }
+
+    // MARK: Test Helpers
+
+    private struct TestEnvironment {
+        let root: URL
+        let mediaDirectory: URL
+        let thumbnailDirectory: URL
+    }
+
+    private func makeEnvironment() throws -> TestEnvironment {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "KinetiqThumbnailTests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+
+        let mediaDirectory = root.appendingPathComponent(
+            "KinetiqMedia",
+            isDirectory: true
+        )
+
+        let thumbnailDirectory = root.appendingPathComponent(
+            "Thumbnails",
+            isDirectory: true
+        )
+
+        try FileManager.default.createDirectory(
+            at: mediaDirectory,
+            withIntermediateDirectories: true
+        )
+
+        try FileManager.default.createDirectory(
+            at: thumbnailDirectory,
+            withIntermediateDirectories: true
+        )
+
+        return TestEnvironment(
+            root: root,
+            mediaDirectory: mediaDirectory,
+            thumbnailDirectory: thumbnailDirectory
+        )
+    }
+
+    private func makeMediaFile(
+        named name: String,
+        in directory: URL,
+        contents: String = "test video payload"
+    ) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+
+        try Data(contents.utf8).write(
+            to: url,
+            options: .atomic
+        )
+
+        return url
+    }
+
+    private func makeCache(
+        environment: TestEnvironment,
+        counter: ThumbnailGenerationCounter,
+        image: UIImage
+    ) -> LocalMediaThumbnailCache {
+        LocalMediaThumbnailCache(
+            localMediaDirectory: environment.mediaDirectory,
+            thumbnailDirectory: environment.thumbnailDirectory
+        ) { _ in
+            counter.increment()
+            return image
+        }
+    }
+
+    private func makeTestImage() -> UIImage {
+        let size = CGSize(width: 16, height: 16)
+        let renderer = UIGraphicsImageRenderer(size: size)
+
+        return renderer.image { context in
+            context.cgContext.setFillColor(UIColor.systemBlue.cgColor)
+            context.cgContext.fill(
+                CGRect(origin: .zero, size: size)
+            )
+        }
+    }
+
+    private func waitForFileCount(
+        _ expectedCount: Int,
+        in directory: URL,
+        timeout: TimeInterval = 3
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            let count = (
+                try? FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil
+                ).count
+            ) ?? 0
+
+            if count == expectedCount {
+                return true
+            }
+
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        let finalCount = (
+            try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ).count
+        ) ?? 0
+
+        return finalCount == expectedCount
+    }
+
+    private func waitForMetadataChange(
+        in directory: URL,
+        from originalData: Data,
+        timeout: TimeInterval = 3
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            let files = (
+                try? FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: nil
+                )
+            ) ?? []
+
+            if let metadataURL = files.first(where: {
+                $0.pathExtension == "json"
+            }),
+            let currentData = try? Data(contentsOf: metadataURL),
+            currentData != originalData {
+                return true
+            }
+
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        return false
+    }
+}
+
+// MARK: - Thread-Safe Test Counter
+
+private final class ThumbnailGenerationCounter {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        storage += 1
     }
 }
