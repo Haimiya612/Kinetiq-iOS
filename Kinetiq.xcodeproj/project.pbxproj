@@ -32,8 +32,11 @@
 		7A1A2A3A4A5A4A6A7A8A9A04 /* PlaybackQueuePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1A2A3A4A5A4A6A7A8A9A03 /* PlaybackQueuePanel.swift */; };
 		62F24690A6F558F597D89A8D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsView.swift"; sourceTree = "<group>"; };
 		A41E8D0C7B6F5A293817C204 /* ModuleSourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModuleSourcesView.swift"; sourceTree = "<group>"; };
+		EA61CFD28B7E4039A15D62C0 /* ModulePackageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModulePackageManager.swift"; sourceTree = "<group>"; };
 		906EC18EB6F0116F310AC1DB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F24690A6F558F597D89A8D /* SettingsView.swift */; };
 		B52F9E1D8C7A6B304928D315 /* ModuleSourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41E8D0C7B6F5A293817C204 /* ModuleSourcesView.swift */; };
+		F0B37A91C5D642E8A13F76B4 /* ModulePackageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA61CFD28B7E4039A15D62C0 /* ModulePackageManager.swift */; };
+		C1F46B0E5D9A7283B2E4F6C8 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B0E35A9D4C8F6172A1D3E5B7 /* ZIPFoundation */; };
 		827B9CB8A2ECE9CC3308B6FB /* TaglineSelectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TaglineSelectorTests.swift"; sourceTree = "<group>"; };
 		0F6810B113D77F527ACB84A7 /* TaglineSelectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 827B9CB8A2ECE9CC3308B6FB /* TaglineSelectorTests.swift */; };
 		7A1A2A3A4A5A4A6A7A8A9A05 /* PlaybackQueueStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PlaybackQueueStoreTests.swift"; sourceTree = "<group>"; };
@@ -41,7 +44,7 @@
 		6C36FFE920F24CEDB7CFDBFC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		222F0DBFFE5EB23DCD3FD16F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6C36FFE920F24CEDB7CFDBFC /* Assets.xcassets */; };
 		AC932B5842DD245F688B9722 /* Kinetiq.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kinetiq.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		F4909F29EDD95ADA67F1D3DB /* KinetiqTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KinetiqTests.xctest; };
+		F4909F29EDD95ADA67F1D3DB /* KinetiqTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KinetiqTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 
 		3520A1CCC52A9804A94001B5 /* App */ = {isa = PBXGroup; children = (36D0350FC46BA94E12A99245, 80D2AEB940B8C833A3EFC28B); path = "App"; sourceTree = "<group>"; };
 		C9D7D0E74DDECF62B41191D2 /* Brand */ = {isa = PBXGroup; children = (E4DD767164D8D4DE831F000C, 598B33452D95643634BE69A3); path = "Brand"; sourceTree = "<group>"; };
@@ -52,7 +55,7 @@
 		7320576F8E69F075631E6571 /* Home */ = {isa = PBXGroup; children = (4CF48A039D9B227303186594); path = "Home"; sourceTree = "<group>"; };
 		F85BA4F58B43CB35B1CD34E8 /* Library */ = {isa = PBXGroup; children = (B5BEB1824C58F7ECC8DFF776, D5F8A1C24B6E7390A2C4D817, 7A1A2A3A4A5A4A6A7A8A9A01, 7A1A2A3A4A5A4A6A7A8A9A03); path = "Library"; sourceTree = "<group>"; };
 		DD1705967C5691C0E5DD98B9 /* Settings */ = {isa = PBXGroup; children = (62F24690A6F558F597D89A8D); path = "Settings"; sourceTree = "<group>"; };
-		C63A0F2E9D8B7C415A39E426 /* Modules */ = {isa = PBXGroup; children = (A41E8D0C7B6F5A293817C204); path = Modules; sourceTree = "<group>"; };
+		C63A0F2E9D8B7C415A39E426 /* Modules */ = {isa = PBXGroup; children = (A41E8D0C7B6F5A293817C204, EA61CFD28B7E4039A15D62C0); path = Modules; sourceTree = "<group>"; };
 		FCE84E5E95C48F4756FFFB6D /* Features */ = {isa = PBXGroup; children = (7320576F8E69F075631E6571, F85BA4F58B43CB35B1CD34E8, C63A0F2E9D8B7C415A39E426, DD1705967C5691C0E5DD98B9); path = "Features"; sourceTree = "<group>"; };
 		6A5258272E3BC28683FAF7BF /* Resources */ = {isa = PBXGroup; children = (6C36FFE920F24CEDB7CFDBFC); path = "Resources"; sourceTree = "<group>"; };
 		77411DC22593C8882D069FA3 /* Kinetiq */ = {isa = PBXGroup; children = (3520A1CCC52A9804A94001B5, 708542948A3B222AF87CBF1B, FCE84E5E95C48F4756FFFB6D, 6A5258272E3BC28683FAF7BF); path = "Kinetiq"; sourceTree = "<group>"; };
@@ -60,8 +63,8 @@
 		5151B46607EBC8890D8DFCC2 /* Products */ = {isa = PBXGroup; children = (AC932B5842DD245F688B9722, F4909F29EDD95ADA67F1D3DB); name = Products; sourceTree = "<group>"; };
 		ADCF10F76EBF2A74473E9DC4 = {isa = PBXGroup; children = (77411DC22593C8882D069FA3, E5C8E3C8B51E9CDD6EEC601B, 5151B46607EBC8890D8DFCC2); sourceTree = "<group>"; };
 
-		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, B2AE903D8C5F7214E6B9D032, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7C2E9A4D1B6F8035C7A9E241, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB, B52F9E1D8C7A6B304928D315); runOnlyForDeploymentPostprocessing = 0; };
-		F001BC2AF9EB5498B3360756 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, B2AE903D8C5F7214E6B9D032, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7C2E9A4D1B6F8035C7A9E241, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB, B52F9E1D8C7A6B304928D315, F0B37A91C5D642E8A13F76B4); runOnlyForDeploymentPostprocessing = 0; };
+		F001BC2AF9EB5498B3360756 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C1F46B0E5D9A7283B2E4F6C8); runOnlyForDeploymentPostprocessing = 0; };
 		E28FAD8F60ECDED9B4AD087A /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222F0DBFFE5EB23DCD3FD16F); runOnlyForDeploymentPostprocessing = 0; };
 		29BEEA3D856852A8CC3247ED /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (0F6810B113D77F527ACB84A7, 7A1A2A3A4A5A4A6A7A8A9A06); runOnlyForDeploymentPostprocessing = 0; };
 		D6B208DB47DA230159E08E40 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -74,13 +77,32 @@
 		B41A663912C5AD2A1D96567A /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.kinetiq.player.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Kinetiq.app/Kinetiq"; ENABLE_TESTABILITY = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
 		116C7F1B65D647B9F0FAA412 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.kinetiq.player.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Kinetiq.app/Kinetiq"; SWIFT_OPTIMIZATION_LEVEL = "-O";}; name = Release; };
 		12D04D787E90C9B967248BFD /* Project */ = {isa = XCConfigurationList; buildConfigurations = (877A6BA951A2EA0025A2ABE8, 959134B361DD7E21ADEA3164); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		32995943DE67267A65D32CA9 /* Build configuration list for PBXNativeTarget Kinetiq */ = {isa = XCConfigurationList; buildConfigurations = (3CF6A4F2E05B3AAE7E2CBFEE, 23FB2CAEB38545C3793097DD); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		32995943DE67267A65A9 /* Build configuration list for PBXNativeTarget Kinetiq */ = {isa = XCConfigurationList; buildConfigurations = (3CF6A4F2E05B3AAE7E2CBFEE, 23FB2CAEB38545C3793097DD); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		F722E0DC847BA009AE0DBB50 /* Build configuration list for PBXNativeTarget KinetiqTests */ = {isa = XCConfigurationList; buildConfigurations = (B41A663912C5AD2A1D96567A, 116C7F1B65D647B9F0FAA412); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		BF53ADBD30240EC0A6624B4F /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 98F54143AB4E86B28C3AFEE0; proxyType = 1; remoteGlobalIDString = B33C2132C3E9E932BEF74427; remoteInfo = Kinetiq; };
 		57F82461730AA2167B8E5D9A /* Kinetiq */ = {isa = PBXTargetDependency; target = B33C2132C3E9E932BEF74427; targetProxy = BF53ADBD30240EC0A6624B4F /* PBXContainerItemProxy */; };
-		B33C2132C3E9E932BEF74427 /* Kinetiq */ = {isa = PBXNativeTarget; buildConfigurationList = 32995943DE67267A65D32CA9; buildPhases = (8682261519D15BD64A9E5D31, F001BC2AF9EB5498B3360756, E28FAD8F60ECDED9B4AD087A); buildRules = (); dependencies = (); name = Kinetiq; productName = Kinetiq; productReference = AC932B5842DD245F688B9722; productType = "com.apple.product-type.application"; };
+		B33C2132C3E9E932BEF74427 /* Kinetiq */ = {isa = PBXNativeTarget; buildConfigurationList = 32995943DE67267A65A9 /* Build configuration list for PBXNativeTarget "Kinetiq" */; buildPhases = (8682261519D15BD64A9E5D31, F001BC2AF9EB5498B3360756, E28FAD8F60ECDED9B4AD087A); buildRules = (); dependencies = (); packageProductDependencies = (B0E35A9D4C8F6172A1D3E5B7 /* ZIPFoundation */); name = Kinetiq; productName = Kinetiq; productReference = AC932B5842DD245F688B9722; productType = "com.apple.product-type.application"; };
 		092E5DEEF3C4CDA3849F63B9 /* KinetiqTests */ = {isa = PBXNativeTarget; buildConfigurationList = F722E0DC847BA009AE0DBB50; buildPhases = (29BEEA3D856852A8CC3247ED, D6B208DB47DA230159E08E40, 96B4702EF39C73C4DCF44E6C); buildRules = (); dependencies = (57F82461730AA2167B8E5D9A); name = KinetiqTests; productName = KinetiqTests; productReference = F4909F29EDD95ADA67F1D3DB; productType = "com.apple.product-type.bundle.unit-test"; };
-		98F54143AB4E86B28C3AFEE0 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2630; LastUpgradeCheck = 2630; TargetAttributes = {B33C2132C3E9E932BEF74427 = {CreatedOnToolsVersion = 26.3; }; 092E5DEEF3C4CDA3849F63B9 = {CreatedOnToolsVersion = 26.3; TestTargetID = B33C2132C3E9E932BEF74427; }; }; }; buildConfigurationList = 12D04D787E90C9B967248BFD; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = ADCF10F76EBF2A74473E9DC4; productRefGroup = 5151B46607EBC8890D8DFCC2; projectDirPath = ""; projectRoot = ""; targets = (B33C2132C3E9E932BEF74427, 092E5DEEF3C4CDA3849F63B9); };
+		98F54143AB4E86B28C3AFEE0 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2630; LastUpgradeCheck = 2630; TargetAttributes = {B33C2132C3E9E932BEF74427 = {CreatedOnToolsVersion = 26.3; }; 092E5DEEF3C4CDA3849F63B9 = {CreatedOnToolsVersion = 26.3; TestTargetID = B33C2132C3E9E932BEF74427; }; }; }; buildConfigurationList = 12D04D787E90C9B967248BFD; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = ADCF10F76EBF2A74473E9DC4; productRefGroup = 5151B46607EBC8890D8DFCC2; packageReferences = (A9D24F8C3E7B4156A0C2D9F1 /* XCRemoteSwiftPackageReference "ZIPFoundation" */); projectDirPath = ""; projectRoot = ""; targets = (B33C2132C3E9E932BEF74427, 092E5DEEF3C4CDA3849F63B9); };
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A9D24F8C3E7B4156A0C2D9F1 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B0E35A9D4C8F6172A1D3E5B7 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A9D24F8C3E7B4156A0C2D9F1 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
 }
