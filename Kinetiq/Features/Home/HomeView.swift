@@ -110,8 +110,12 @@ struct HomeView: View {
                     header
 
                     if !moduleSourceStore.isLocalLibrarySelected {
-                        selectedModulePlaceholder
-                    } else if selectedMode == .video {
+    if let activeSource = moduleSourceStore.activeSource {
+        ModuleBrowserView(source: activeSource)
+    } else {
+        selectedModulePlaceholder
+    }
+} else if selectedMode == .video {
                         videoContent
                     } else {
                         mangaPlaceholder
