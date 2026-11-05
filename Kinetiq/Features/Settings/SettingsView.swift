@@ -302,6 +302,35 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: Modules & Sources
+
+                Section("Modules & Sources") {
+                    NavigationLink {
+                        ModuleSourcesView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "square.stack.3d.up.fill")
+                                .font(.title3)
+                                .foregroundStyle(KinetiqPalette.accent)
+                                .frame(width: 38, height: 38)
+                                .background(
+                                    KinetiqPalette.accent.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 12)
+                                )
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Manage Modules & Sources")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+
+                                Text("Add repository.json links and choose active modules.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 // MARK: What's New
 
                 Section("What's New") {

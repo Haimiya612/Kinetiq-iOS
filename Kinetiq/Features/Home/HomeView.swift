@@ -93,9 +93,10 @@ struct HomeView: View {
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
     let onOpenLibrary: () -> Void
 
-    @State private var selectedMode: HomeMediaMode = .video
-    @State private var selectedSource = "Local Library"
+        @State private var selectedMode: HomeMediaMode = .video
     @State private var appeared = false
+
+    @StateObject private var moduleSourceStore = ModuleSourceStore.shared
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -108,7 +109,9 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 27) {
                     header
 
-                    if selectedMode == .video {
+                    if !moduleSourceStore.isLocalLibrarySelected {
+                        selectedModulePlaceholder
+                    } else if selectedMode == .video {
                         videoContent
                     } else {
                         mangaPlaceholder
@@ -121,6 +124,9 @@ struct HomeView: View {
         }
         .padding(.top, 10)
         .background(Color(uiColor: .systemBackground))
+        .task {
+            await moduleSourceStore.loadSavedRepositoriesIfNeeded()
+        }
         .onAppear {
             LocalMediaThumbnailCache.shared.removeOrphans()
 
@@ -190,6 +196,7 @@ struct HomeView: View {
             }
 
             Menu {
+                // Manage Modules always remains at the top.
                 Button(action: onModules) {
                     Label(
                         "Manage Modules",
@@ -199,17 +206,47 @@ struct HomeView: View {
 
                 Divider()
 
+                // Connected repository modules appear beneath the manager.
+                ForEach(moduleSourceStore.repositories) { repository in
+                    Section(repository.name) {
+                        let sources = moduleSourceStore.sources(in: repository)
+
+                        if sources.isEmpty {
+                            Text("No modules available")
+                        } else {
+                            ForEach(sources) { source in
+                                Button {
+                                    moduleSourceStore.selectSource(source.id)
+                                } label: {
+                                    Label(
+                                        source.title,
+                                        systemImage: moduleSourceStore.isSelected(source.id)
+                                            ? "checkmark.circle.fill"
+                                            : source.symbol
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Local Library deliberately remains at the bottom.
+                Divider()
+
                 Button {
-                    selectedSource = "Local Library"
+                    moduleSourceStore.selectLocalLibrary()
                 } label: {
                     Label(
                         "Local Library",
-                        systemImage: "iphone"
+                        systemImage: moduleSourceStore.isLocalLibrarySelected
+                            ? "checkmark.circle.fill"
+                            : "iphone"
                     )
                 }
+
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "iphone")
+                    Image(systemName: moduleSourceStore.activeSourceSymbol)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(KinetiqPalette.accent)
                         .frame(width: 37, height: 37)
@@ -222,7 +259,7 @@ struct HomeView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(selectedSource)
+                        Text(moduleSourceStore.activeSourceTitle)
                             .font(
                                 .system(
                                     size: 14,
@@ -231,10 +268,12 @@ struct HomeView: View {
                                 )
                             )
                             .foregroundStyle(.primary)
+                            .lineLimit(1)
 
-                        Text("Personal media on this device")
+                        Text(moduleSourceStore.activeSourceSubtitle)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
                     Spacer()
@@ -267,10 +306,95 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
-                "Active source: \(selectedSource). Choose a source or manage modules."
+                "Active source: \(moduleSourceStore.activeSourceTitle). Choose a source or manage modules."
             )
         }
         .padding(.horizontal, 21)
+    }
+
+    // MARK: Selected Module Placeholder
+
+    private var selectedModulePlaceholder: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Image(systemName: moduleSourceStore.activeSourceSymbol)
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(KinetiqPalette.accent)
+                .frame(width: 62, height: 62)
+                .background(
+                    KinetiqPalette.accent.opacity(0.12),
+                    in: RoundedRectangle(
+                        cornerRadius: 19,
+                        style: .continuous
+                    )
+                )
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("SOURCE SELECTED")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.8)
+                    .foregroundStyle(KinetiqPalette.accent)
+
+                Text(moduleSourceStore.activeSourceTitle)
+                    .font(.system(size: 27, weight: .bold, design: .rounded))
+                    .tracking(-0.8)
+
+                Text(
+                    "This source is connected to Kinetiq's repository catalogue. Module browsing and playback will appear here when the module runtime is integrated."
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: onModules) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                    Text("Manage Sources")
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .padding(15)
+                .background(
+                    Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(
+                        cornerRadius: 17,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(
+            LinearGradient(
+                colors: [
+                    KinetiqPalette.accent.opacity(0.13),
+                    KinetiqPalette.violet.opacity(0.07),
+                    Color(uiColor: .secondarySystemGroupedBackground)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(
+                cornerRadius: 25,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 25,
+                style: .continuous
+            )
+            .strokeBorder(
+                Color.primary.opacity(0.05),
+                lineWidth: 0.8
+            )
+        }
+        .padding(.top, 12)
     }
 
     // MARK: Video / Manga Switcher
