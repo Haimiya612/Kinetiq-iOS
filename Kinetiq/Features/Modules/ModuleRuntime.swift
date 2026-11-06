@@ -1750,6 +1750,208 @@ enum ModuleRuntimeTrustStore {
     }
 }
 
+
+// MARK: - Native Anime Collection (Batch 03)
+
+/// Only title/artwork identifiers and user choices are stored here.
+/// Signed stream URLs, headers, cookies, and playback sessions are never saved.
+struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
+    let sourceID: String
+    let sourceName: String
+    let animeID: String
+    let title: String
+    let href: String
+    let artworkURL: String?
+    var isFavorite: Bool
+    var savedAt: Date
+    var latestEpisodeID: String?
+    var latestEpisodeNumber: String?
+    var latestLanguage: String?
+    var latestEpisodeDate: Date?
+
+    var id: String { String(sourceID.utf8.count) + ":" + sourceID + animeID }
+
+    var anime: ModuleAnimeItem {
+        ModuleAnimeItem(
+            id: animeID,
+            title: title,
+            href: href,
+            imageURL: artworkURL.flatMap(URL.init(string:))
+        )
+    }
+}
+
+/// Local-only, bounded persistence with a separate namespace per module source.
+/// `Recently Played` reflects resolved episode selections, not AVPlayer position.
+@MainActor
+final class ModuleAnimeCollectionStore: ObservableObject {
+    static let shared = ModuleAnimeCollectionStore()
+
+    @Published private(set) var entries: [ModuleAnimeCollectionEntry] = []
+
+    private let storageKey = "kinetiq.modules.animeCollection.v1"
+    private let maximumEntries = 400
+
+    private init() {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let restored = try? JSONDecoder().decode(
+                [ModuleAnimeCollectionEntry].self,
+                from: data
+              ) else { return }
+
+        // An untrusted module must not be able to explode persisted state.
+        var seen = Set<String>()
+        entries = restored.filter { record in
+            guard record.sourceID.count <= 1200,
+                  record.animeID.count <= 1500,
+                  !record.sourceID.isEmpty,
+                  !record.animeID.isEmpty,
+                  !record.title.isEmpty,
+                  record.title.count <= 400,
+                  record.href.count <= 2500,
+                  seen.insert(record.id).inserted else {
+                return false
+            }
+            return record.isFavorite || record.latestEpisodeID != nil
+        }
+        .prefix(maximumEntries)
+        .map { $0 }
+    }
+
+    func favorites(for sourceID: String) -> [ModuleAnimeCollectionEntry] {
+        entries.filter { $0.sourceID == sourceID && $0.isFavorite }
+            .sorted { $0.savedAt > $1.savedAt }
+    }
+
+    func recentEpisodes(for sourceID: String) -> [ModuleAnimeCollectionEntry] {
+        entries.filter { $0.sourceID == sourceID && $0.latestEpisodeDate != nil }
+            .sorted { ($0.latestEpisodeDate ?? .distantPast) > ($1.latestEpisodeDate ?? .distantPast) }
+    }
+
+    func isFavorite(sourceID: String, animeID: String) -> Bool {
+        entries.first { $0.sourceID == sourceID && $0.animeID == animeID }?.isFavorite ?? false
+    }
+
+    func toggleFavorite(
+        sourceID: String,
+        sourceName: String,
+        anime: ModuleAnimeItem
+    ) {
+        let key = String(sourceID.utf8.count) + ":" + sourceID + anime.id
+        guard isValid(sourceID: sourceID, anime: anime) else { return }
+        if let index = entries.firstIndex(where: { $0.id == key }) {
+            entries[index].isFavorite.toggle()
+            if entries[index].isFavorite { entries[index].savedAt = Date() }
+            if !entries[index].isFavorite && entries[index].latestEpisodeID == nil {
+                entries.remove(at: index)
+            }
+        } else {
+            entries.insert(
+                ModuleAnimeCollectionEntry(
+                    sourceID: sourceID,
+                    sourceName: String(sourceName.prefix(180)),
+                    animeID: anime.id,
+                    title: anime.title,
+                    href: anime.href,
+                    artworkURL: validArtworkURL(anime.imageURL),
+                    isFavorite: true,
+                    savedAt: Date(),
+                    latestEpisodeID: nil,
+                    latestEpisodeNumber: nil,
+                    latestLanguage: nil,
+                    latestEpisodeDate: nil
+                ),
+                at: 0
+            )
+        }
+        persist()
+    }
+
+    /// Called only when an episode's stream successfully resolves.
+    func recordEpisode(
+        sourceID: String,
+        sourceName: String,
+        anime: ModuleAnimeItem,
+        episode: ModuleAnimeEpisode,
+        language: String
+    ) {
+        guard isValid(sourceID: sourceID, anime: anime),
+              !episode.id.isEmpty, episode.id.count <= 1500 else { return }
+
+        let key = String(sourceID.utf8.count) + ":" + sourceID + anime.id
+        if let index = entries.firstIndex(where: { $0.id == key }) {
+            entries[index].latestEpisodeID = episode.id
+            entries[index].latestEpisodeNumber = String(episode.number.prefix(100))
+            entries[index].latestLanguage = String(language.prefix(10))
+            entries[index].latestEpisodeDate = Date()
+        } else {
+            entries.insert(
+                ModuleAnimeCollectionEntry(
+                    sourceID: sourceID,
+                    sourceName: String(sourceName.prefix(180)),
+                    animeID: anime.id,
+                    title: anime.title,
+                    href: anime.href,
+                    artworkURL: validArtworkURL(anime.imageURL),
+                    isFavorite: false,
+                    savedAt: Date(),
+                    latestEpisodeID: episode.id,
+                    latestEpisodeNumber: String(episode.number.prefix(100)),
+                    latestLanguage: String(language.prefix(10)),
+                    latestEpisodeDate: Date()
+                ),
+                at: 0
+            )
+        }
+        persist()
+    }
+
+    func removeRecent(sourceID: String, animeID: String) {
+        guard let index = entries.firstIndex(where: {
+            $0.sourceID == sourceID && $0.animeID == animeID
+        }) else { return }
+        entries[index].latestEpisodeID = nil
+        entries[index].latestEpisodeNumber = nil
+        entries[index].latestLanguage = nil
+        entries[index].latestEpisodeDate = nil
+        if !entries[index].isFavorite { entries.remove(at: index) }
+        persist()
+    }
+
+    private func isValid(sourceID: String, anime: ModuleAnimeItem) -> Bool {
+        !sourceID.isEmpty && sourceID.count <= 1200 &&
+        !anime.id.isEmpty && anime.id.count <= 1500 &&
+        !anime.title.isEmpty && anime.title.count <= 400 &&
+        anime.href.count <= 2500
+    }
+
+    private func validArtworkURL(_ url: URL?) -> String? {
+        guard let url,
+              url.scheme?.lowercased() == "https",
+              url.absoluteString.count <= 3000 else { return nil }
+        return url.absoluteString
+    }
+
+    private func persist() {
+        // Keep favorites first when pruning; only old recents are evicted.
+        if entries.count > maximumEntries {
+            let favorites = entries.filter(\.isFavorite)
+            let recent = entries.filter { !$0.isFavorite }
+                .sorted { ($0.latestEpisodeDate ?? .distantPast) > ($1.latestEpisodeDate ?? .distantPast) }
+            entries = Array((favorites + recent).prefix(maximumEntries))
+        }
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+}
+
+private enum ModuleCatalogueSection: String, CaseIterable, Identifiable {
+    case search = "Search"
+    case favorites = "Favorites"
+    case recent = "Recent"
+    var id: String { rawValue }
+}
+
 // MARK: - Module Browser
 
 struct ModuleBrowserView: View {
@@ -1765,6 +1967,8 @@ struct ModuleBrowserView: View {
     @State private var results: [ModuleAnimeItem] = []
 
     @State private var selectedItem: ModuleAnimeItem?
+    @State private var catalogueSection: ModuleCatalogueSection = .search
+    @StateObject private var animeCollection = ModuleAnimeCollectionStore.shared
 
     @State private var isPreparingRuntime = false
     @State private var isSearching = false
@@ -1816,7 +2020,9 @@ struct ModuleBrowserView: View {
             if let runtime {
                 ModuleAnimeDetailsView(
                     item: item,
-                    runtime: runtime
+                    runtime: runtime,
+                    sourceID: source.id,
+                    sourceName: source.title
                 )
             }
         }
@@ -1972,37 +2178,137 @@ struct ModuleBrowserView: View {
 
     private var animeCatalogue: some View {
         VStack(spacing: 0) {
-            searchBar
-
-            if isSearching {
-                ProgressView("Searching \(source.title)…")
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 35)
-            } else if results.isEmpty {
-                ContentUnavailableView(
-                    "Search Anime",
-                    systemImage: "magnifyingglass",
-                    description: Text(
-                        "Enter an anime title to search this source."
-                    )
-                )
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(results) { item in
-                            Button {
-                                selectedItem = item
-                            } label: {
-                                animeRow(item)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 16)
-                    .padding(.bottom, 30)
+            Picker("Anime collection", selection: $catalogueSection) {
+                ForEach(ModuleCatalogueSection.allCases) { section in
+                    Text(section.rawValue).tag(section)
                 }
             }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .accessibilityLabel("Anime catalogue section")
+
+            switch catalogueSection {
+            case .search:
+                searchBar
+                if isSearching {
+                    ProgressView("Searching \(source.title)…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 35)
+                } else if results.isEmpty {
+                    ContentUnavailableView(
+                        "Search Anime",
+                        systemImage: "magnifyingglass",
+                        description: Text(
+                            "Enter an anime title to search this source."
+                        )
+                    )
+                } else {
+                    collectionScroll(results, showRecent: false)
+                }
+
+            case .favorites:
+                if animeCollection.favorites(for: source.id).isEmpty {
+                    ContentUnavailableView(
+                        "No Saved Anime",
+                        systemImage: "heart",
+                        description: Text("Tap a heart on an anime to save it from this source.")
+                    )
+                } else {
+                    collectionScroll(
+                        animeCollection.favorites(for: source.id).map(\.anime),
+                        showRecent: false
+                    )
+                }
+
+            case .recent:
+                if animeCollection.recentEpisodes(for: source.id).isEmpty {
+                    ContentUnavailableView(
+                        "No Recent Episodes",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("Episodes you open from this source appear here.")
+                    )
+                } else {
+                    collectionScroll(
+                        animeCollection.recentEpisodes(for: source.id).map(\.anime),
+                        showRecent: true
+                    )
+                }
+            }
+        }
+    }
+
+    private func collectionScroll(
+        _ items: [ModuleAnimeItem],
+        showRecent: Bool
+    ) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                ForEach(items) { item in
+                    HStack(spacing: 8) {
+                        Button {
+                            selectedItem = item
+                        } label: {
+                            animeRow(item)
+                        }
+                        .buttonStyle(.plain)
+
+                        VStack(spacing: 12) {
+                            Button {
+                                animeCollection.toggleFavorite(
+                                    sourceID: source.id,
+                                    sourceName: source.title,
+                                    anime: item
+                                )
+                            } label: {
+                                Image(systemName: animeCollection.isFavorite(
+                                    sourceID: source.id,
+                                    animeID: item.id
+                                ) ? "heart.fill" : "heart")
+                                .font(.system(size: 19, weight: .semibold))
+                                .foregroundStyle(KinetiqPalette.accent)
+                                .frame(width: 38, height: 44)
+                            }
+                            .accessibilityLabel(
+                                animeCollection.isFavorite(
+                                    sourceID: source.id,
+                                    animeID: item.id
+                                ) ? "Remove favorite" : "Save to favorites"
+                            )
+
+                            if showRecent {
+                                Button(role: .destructive) {
+                                    animeCollection.removeRecent(
+                                        sourceID: source.id,
+                                        animeID: item.id
+                                    )
+                                } label: {
+                                    Image(systemName: "xmark.circle")
+                                        .font(.system(size: 17))
+                                        .frame(width: 38, height: 40)
+                                }
+                                .accessibilityLabel("Remove recent episode")
+                            }
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if showRecent,
+                           let entry = animeCollection.recentEpisodes(for: source.id)
+                            .first(where: { $0.animeID == item.id }),
+                           let number = entry.latestEpisodeNumber {
+                            Text("Last opened: Episode \(number) • \((entry.latestLanguage ?? "sub").uppercased())")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 19)
+                                .padding(.bottom, 2)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 30)
         }
     }
 
@@ -2165,6 +2471,10 @@ struct ModuleAnimeDetailsView: View {
 
     let item: ModuleAnimeItem
     let runtime: SynthetiqModuleRuntime
+    let sourceID: String
+    let sourceName: String
+
+    @StateObject private var animeCollection = ModuleAnimeCollectionStore.shared
 
     @Environment(\.dismiss) private var dismiss
 
@@ -2193,7 +2503,21 @@ struct ModuleAnimeDetailsView: View {
             .navigationTitle(details?.title ?? item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        animeCollection.toggleFavorite(
+                            sourceID: sourceID,
+                            sourceName: sourceName,
+                            anime: item
+                        )
+                    } label: {
+                        Image(systemName: animeCollection.isFavorite(
+                            sourceID: sourceID,
+                            animeID: item.id
+                        ) ? "heart.fill" : "heart")
+                    }
+                    .accessibilityLabel("Toggle anime favorite")
+
                     Button("Done") {
                         dismiss()
                     }
@@ -2474,6 +2798,15 @@ struct ModuleAnimeDetailsView: View {
         )
 
         if didResolve {
+            // Store the episode selection only after stream resolution;
+            // playback position is deliberately not claimed as implemented.
+            animeCollection.recordEpisode(
+                sourceID: sourceID,
+                sourceName: sourceName,
+                anime: item,
+                episode: episode,
+                language: language
+            )
             selectedPlaybackSession = session
         } else {
             errorMessage = session.playbackError
