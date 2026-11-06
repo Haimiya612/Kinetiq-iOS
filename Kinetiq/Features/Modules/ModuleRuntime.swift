@@ -2753,6 +2753,15 @@ struct ModuleBrowserView: View {
 
 // MARK: - Anime Details and Episodes
 
+private enum ModuleEpisodeFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case unwatched = "Unwatched"
+    case watched = "Watched"
+
+    var id: String { rawValue }
+}
+
+@MainActor
 struct ModuleAnimeDetailsView: View {
 
     let item: ModuleAnimeItem
@@ -2766,6 +2775,8 @@ struct ModuleAnimeDetailsView: View {
 
     @State private var details: ModuleAnimeItem?
     @State private var episodes: [ModuleAnimeEpisode] = []
+    @State private var episodeSearch = ""
+    @State private var episodeFilter: ModuleEpisodeFilter = .all
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
     @State private var selectedPlaybackSession: ModuleEpisodePlaybackSession?
@@ -2840,20 +2851,40 @@ struct ModuleAnimeDetailsView: View {
 
     // MARK: Details Header
 
-    private var savedPlayback: ModuleAnimeCollectionEntry? {
-        animeCollection.entries.first {
-            $0.sourceID == sourceID && $0.animeID == item.id
+    private var continuation: ModuleEpisodeContinuation? {
+        animeCollection.continuation(
+            sourceID: sourceID, animeID: item.id, episodes: episodes
+        )
+    }
+
+    private var watchedEpisodeCount: Int {
+        episodes.filter { hasWatched($0) }.count
+    }
+
+    private var visibleEpisodes: [ModuleAnimeEpisode] {
+        let query = episodeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return episodes.filter { episode in
+            let matchesSearch = query.isEmpty ||
+                "Episode \(episode.number)".localizedCaseInsensitiveContains(query)
+            let watched = hasWatched(episode)
+            let matchesFilter = episodeFilter == .all ||
+                (episodeFilter == .watched && watched) ||
+                (episodeFilter == .unwatched && !watched)
+            return matchesSearch && matchesFilter
         }
     }
 
-    private var resumeEpisode: ModuleAnimeEpisode? {
-        guard let savedPlayback,
-              (savedPlayback.lastPlaybackPosition ?? 0) >= 3,
-              let episodeID = savedPlayback.latestEpisodeID else {
-            return nil
-        }
+    private func hasWatched(_ episode: ModuleAnimeEpisode) -> Bool {
+        animeCollection.hasWatched(sourceID: sourceID, animeID: item.id, episode: episode)
+    }
 
-        return episodes.first { $0.id == episodeID }
+    private func progress(
+        for episode: ModuleAnimeEpisode, language: String
+    ) -> ModuleEpisodeProgress? {
+        animeCollection.progress(
+            sourceID: sourceID, animeID: item.id,
+            episodeID: episode.id, language: language
+        )
     }
 
     private var detailsHeader: some View {
@@ -2881,23 +2912,28 @@ struct ModuleAnimeDetailsView: View {
                 .font(.system(size: 23, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let episode = resumeEpisode {
+            if let continuation {
                 Button {
-                    let requested = savedPlayback?.latestLanguage ?? "sub"
-                    let language = requested == "dub" && episode.dubAvailable
-                        ? "dub"
-                        : (episode.subAvailable ? "sub" : "dub")
-                    Task { await play(episode: episode, language: language) }
+                    Task {
+                        await play(
+                            episode: continuation.episode,
+                            language: continuation.language
+                        )
+                    }
                 } label: {
                     Label(
-                        "Continue Episode \(episode.number)",
+                        "\(continuation.isResume ? "Resume" : "Play") Episode \(continuation.episode.number) · \(continuation.language.uppercased())",
                         systemImage: "play.circle.fill"
                     )
                     .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(KinetiqPalette.accent)
-                .disabled(isResolvingStream)
+                .disabled(isResolvingStream || isLoading)
+            } else if !episodes.isEmpty, watchedEpisodeCount == episodes.count {
+                Label("All available episodes watched", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(KinetiqPalette.accent)
             }
 
             if isLoading {
@@ -2917,8 +2953,38 @@ struct ModuleAnimeDetailsView: View {
 
                 Spacer()
 
-                Text("\(episodes.count)")
+                Text("\(watchedEpisodeCount) / \(episodes.count) watched")
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if !episodes.isEmpty {
+                Picker("Episode filter", selection: $episodeFilter) {
+                    ForEach(ModuleEpisodeFilter.allCases) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Find episode number", text: $episodeSearch)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !episodeSearch.isEmpty {
+                        Button { episodeSearch = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .accessibilityLabel("Clear episode search")
+                    }
+                }
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 12))
+
+                Text("Watched in either Sub or Dub. Resume positions are saved separately.")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -2931,9 +2997,18 @@ struct ModuleAnimeDetailsView: View {
                     )
                 )
                 .frame(minHeight: 150)
+            } else if !isLoading && visibleEpisodes.isEmpty {
+                ContentUnavailableView(
+                    "No Matching Episodes",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("Try another number or episode filter.")
+                )
+                .frame(minHeight: 150)
             } else {
-                ForEach(episodes) { episode in
-                    episodeRow(episode)
+                LazyVStack(spacing: 10) {
+                    ForEach(visibleEpisodes) { episode in
+                        episodeRow(episode)
+                    }
                 }
             }
         }
@@ -2942,52 +3017,33 @@ struct ModuleAnimeDetailsView: View {
     private func episodeRow(
         _ episode: ModuleAnimeEpisode
     ) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Episode \(episode.number)")
-                    .font(.system(size: 14, weight: .semibold))
-
-                Text(
-                    [
-                        episode.subAvailable ? "Sub" : nil,
-                        episode.dubAvailable ? "Dub" : nil
-                    ]
-                    .compactMap { $0 }
-                    .joined(separator: " • ")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label(
+                    "Episode \(episode.number)",
+                    systemImage: hasWatched(episode) ? "checkmark.circle.fill" : "play.circle"
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
+                .font(.system(size: 14, weight: .semibold))
 
-            Spacer()
+                Spacer()
 
-            if episode.subAvailable {
-                Button("Sub") {
-                    Task {
-                        await play(
-                            episode: episode,
-                            language: "sub"
-                        )
-                    }
+                if episode.subAvailable { episodePlayButton(episode, language: "sub") }
+                if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
+
+                Menu {
+                    if episode.subAvailable { watchedAction(episode, language: "sub") }
+                    if episode.dubAvailable { watchedAction(episode, language: "dub") }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 19))
+                        .frame(minWidth: 36, minHeight: 44)
                 }
-                .buttonStyle(.bordered)
-                .tint(KinetiqPalette.accent)
-                .disabled(isResolvingStream)
+                .disabled(isResolvingStream || (!episode.subAvailable && !episode.dubAvailable))
+                .accessibilityLabel("Manage Episode \(episode.number) progress")
             }
 
-            if episode.dubAvailable {
-                Button("Dub") {
-                    Task {
-                        await play(
-                            episode: episode,
-                            language: "dub"
-                        )
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(KinetiqPalette.accent)
-                .disabled(isResolvingStream)
-            }
+            if episode.subAvailable { episodeProgressLabel(episode, language: "sub") }
+            if episode.dubAvailable { episodeProgressLabel(episode, language: "dub") }
         }
         .padding(13)
         .background(
@@ -2997,6 +3053,59 @@ struct ModuleAnimeDetailsView: View {
                 style: .continuous
             )
         )
+    }
+
+    private func episodePlayButton(
+        _ episode: ModuleAnimeEpisode, language: String
+    ) -> some View {
+        let saved = progress(for: episode, language: language)
+        let action = saved?.isCompleted == true ? "Replay" :
+            ((saved?.resumePosition ?? 0) > 0 ? "Resume" : "Play")
+        return Button(language == "sub" ? "Sub" : "Dub") {
+            Task { await play(episode: episode, language: language) }
+        }
+        .buttonStyle(.bordered)
+        .tint(KinetiqPalette.accent)
+        .disabled(isResolvingStream)
+        .accessibilityLabel("\(action) Episode \(episode.number), \(language.uppercased())")
+    }
+
+    @ViewBuilder
+    private func episodeProgressLabel(
+        _ episode: ModuleAnimeEpisode, language: String
+    ) -> some View {
+        if let saved = progress(for: episode, language: language) {
+            if saved.isCompleted {
+                Label("\(language.uppercased()) · Watched", systemImage: "checkmark.circle.fill")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(KinetiqPalette.accent)
+            } else if saved.resumePosition > 0 {
+                HStack(spacing: 10) {
+                    Text("\(language.uppercased()) · \(Int(saved.fraction * 100))%")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ProgressView(value: saved.fraction)
+                        .tint(KinetiqPalette.accent)
+                }
+            }
+        }
+    }
+
+    private func watchedAction(
+        _ episode: ModuleAnimeEpisode, language: String
+    ) -> some View {
+        let watched = progress(for: episode, language: language)?.isCompleted == true
+        return Button {
+            animeCollection.setWatched(
+                !watched, sourceID: sourceID, sourceName: sourceName,
+                anime: item, episode: episode, language: language
+            )
+        } label: {
+            Label(
+                "\(language.uppercased()): \(watched ? "Mark Unwatched (Reset Progress)" : "Mark Watched")",
+                systemImage: watched ? "arrow.counterclockwise" : "checkmark.circle"
+            )
+        }
     }
 
     // MARK: Load Details and Episodes

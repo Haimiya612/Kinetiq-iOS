@@ -186,6 +186,11 @@ struct KinetiqModulePlayerView: View {
                 feedbackTask?.cancel()
                 playback.stop()
             }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIApplication.willResignActiveNotification
+            )) { _ in
+                playback.persistCurrentProgress()
+            }
             .onChange(of: playback.isPlaying) { _, playing in
                 if playing {
                     scheduleAutoHide()
@@ -1412,6 +1417,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var lastLoadedEpisode: ModuleAnimeEpisode?
     private var lastLoadedLanguage = "sub"
     private var pendingResumePosition: Double = 0
+    private var isRestoringPosition = false
     private var lastSavedProgressAt = Date.distantPast
     private var isScrubbing = false
     private var hasStopped = false
@@ -1489,11 +1495,13 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.4, preferredTimescale: 600),
             queue: .main
-        ) { [weak self] time in
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
 
-                let seconds = time.seconds
+                // Read the active item rather than a time captured before
+                // an episode/server handoff reached this MainActor task.
+                let seconds = self.player.currentTime().seconds
                 guard seconds.isFinite, seconds >= 0 else { return }
 
                 self.currentTime = seconds
@@ -1550,7 +1558,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         // Failover between servers for the same episode retains the current
         // in-memory position, whereas a different episode uses saved progress.
         let previousEpisodeID = lastLoadedEpisode?.id
-        let previousPosition = currentTime
+        let previousLanguage = lastLoadedLanguage
+        let sampledPosition = player.currentTime().seconds
+        let previousPosition = sampledPosition.isFinite ? sampledPosition : currentTime
         if lastStreamID != nil {
             savePlaybackProgress(force: true)
         }
@@ -1572,7 +1582,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             storedPosition = 0
         }
 
-        if previousEpisodeID == session.currentEpisode?.id {
+        if previousEpisodeID == session.currentEpisode?.id &&
+           previousLanguage == session.selectedLanguage {
             // Preserve the pending seek during early server failures.
             pendingResumePosition = max(
                 previousPosition,
@@ -1584,6 +1595,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         }
 
         lastSavedProgressAt = .distantPast
+        isRestoringPosition = true
 
         let choices = Set(session.availableStreams.map(\.id))
         if choices != knownStreamChoices {
@@ -1705,10 +1717,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                             Task { @MainActor [weak self] in
                                 guard let self,
                                       self.player.currentItem === observedItem else { return }
+                                self.isRestoringPosition = false
                                 self.player.playImmediately(atRate: self.playbackRate)
                             }
                         }
                     } else {
+                        self.isRestoringPosition = false
                         self.player.playImmediately(atRate: self.playbackRate)
                     }
 
@@ -1969,6 +1983,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     func togglePlayback() {
         if player.timeControlStatus == .playing {
+            persistCurrentProgress()
             player.pause()
         } else {
             player.playImmediately(atRate: playbackRate)
@@ -1980,7 +1995,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func seek(to seconds: Double) {
-        guard duration > 0 else { return }
+        guard seconds.isFinite, duration > 0,
+              let item = player.currentItem else { return }
 
         let target = min(max(seconds, 0), duration)
         let time = CMTime(seconds: target, preferredTimescale: 600)
@@ -1989,7 +2005,13 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             to: time,
             toleranceBefore: .zero,
             toleranceAfter: .zero
-        )
+        ) { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard finished, let self,
+                      self.player.currentItem === item else { return }
+                self.persistCurrentProgress()
+            }
+        }
     }
 
     func setScrubbing(_ scrubbing: Bool) {
@@ -2114,17 +2136,27 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     // MARK: Independent Remote Playback History
 
+    func persistCurrentProgress() {
+        savePlaybackProgress(force: true)
+    }
+
     private func savePlaybackProgress(
         force: Bool,
         finished: Bool = false
     ) {
-        guard let sourceID = session.sourceID,
+        guard !isRestoringPosition,
+              let activeItem = player.currentItem,
+              activeItem.status == .readyToPlay,
+              let sourceID = session.sourceID,
               let anime = session.animeItem,
-              let episode = lastLoadedEpisode,
-              duration.isFinite, duration > 5,
-              currentTime.isFinite, currentTime >= 3 else {
+              let episode = lastLoadedEpisode else {
             return
         }
+
+        let length = activeItem.duration.seconds
+        let position = finished ? length : player.currentTime().seconds
+        guard length.isFinite, length > 5,
+              position.isFinite, position >= 3 else { return }
 
         let now = Date()
         if !force, now.timeIntervalSince(lastSavedProgressAt) < 7 {
@@ -2137,8 +2169,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             anime: anime,
             episode: episode,
             language: lastLoadedLanguage,
-            position: finished ? duration : currentTime,
-            duration: duration
+            position: position,
+            duration: length,
+            finished: finished
         )
         lastSavedProgressAt = now
     }

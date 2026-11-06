@@ -649,12 +649,53 @@ private struct KinetiqPlaceholderView: View {
         }
     }
 }
-// MARK: - Shared Remote Anime Collection (Batch 03B)
+// MARK: - Shared Remote Anime Collection (Batches 03B–03D)
 //
-// This is intentionally outside ModuleRuntime.swift. The module runtime only
-// resolves trusted content. MainTabView hosts the app-wide collection and UI.
-// A dedicated project-registered storage file is planned for architecture
-// cleanup; keeping these types here avoids unverified pbxproj identifiers.
+// Kept in this existing target member to avoid changing project identifiers.
+// Module JavaScript still resolves content; this store owns only local metadata.
+
+struct ModuleEpisodeProgress: Codable, Identifiable, Hashable {
+    let episodeID: String
+    var episodeNumber: String
+    let language: String
+    var position: Double
+    var duration: Double
+    var isWatched: Bool
+    var updatedAt: Date
+
+    var id: String { String(episodeID.utf8.count) + ":" + episodeID + language }
+
+    var fraction: Double {
+        guard position.isFinite, duration.isFinite,
+              position >= 0, duration > 0 else { return 0 }
+        return min(max(position / duration, 0), 1)
+    }
+
+    var isCompleted: Bool { isWatched || fraction >= 0.97 }
+
+    var resumePosition: Double {
+        guard !isCompleted, position.isFinite, duration.isFinite,
+              position >= 3, duration > 5, position < duration else { return 0 }
+        return position
+    }
+
+    var isValid: Bool {
+        !episodeID.isEmpty && episodeID.count <= 1500 &&
+        episodeNumber.count <= 100 && ["sub", "dub"].contains(language) &&
+        position.isFinite && duration.isFinite &&
+        position >= 0 && duration >= 0 && duration <= 10_000_000 &&
+        (duration == 0 ? position == 0 : position <= duration + 15) &&
+        updatedAt.timeIntervalSince1970.isFinite
+    }
+}
+
+struct ModuleEpisodeContinuation {
+    let episode: ModuleAnimeEpisode
+    let language: String
+    let resumePosition: Double
+
+    var isResume: Bool { resumePosition >= 3 }
+}
 
 struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
     let sourceID: String
@@ -669,22 +710,20 @@ struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
     var latestEpisodeNumber: String?
     var latestLanguage: String?
     var latestEpisodeDate: Date?
-
-    // Optional for compatibility with Batch 03A's saved JSON. Values are
-    // positions within an episode, never HTTP URLs, headers or tokens.
     var lastPlaybackPosition: Double?
     var lastPlaybackDuration: Double?
     var lastPlaybackDate: Date?
 
-    var id: String {
-        String(sourceID.utf8.count) + ":" + sourceID + animeID
-    }
+    // Optional fields preserve decoding of the existing 03A/03B/03C JSON.
+    // nil means not migrated; [] means an intentionally empty episode history.
+    var episodeProgress: [ModuleEpisodeProgress]? = nil
+    var isHiddenFromContinueWatching: Bool? = nil
+
+    var id: String { String(sourceID.utf8.count) + ":" + sourceID + animeID }
 
     var anime: ModuleAnimeItem {
         ModuleAnimeItem(
-            id: animeID,
-            title: title,
-            href: href,
+            id: animeID, title: title, href: href,
             imageURL: artworkURL.flatMap(URL.init(string:))
         )
     }
@@ -698,7 +737,12 @@ struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
     }
 
     var isCompleted: Bool {
-        playbackFraction >= 0.97
+        if let progress = episodeProgress?.first(where: {
+            $0.episodeID == latestEpisodeID && $0.language == latestLanguage
+        }) {
+            return progress.isCompleted
+        }
+        return playbackFraction >= 0.97
     }
 
     var playbackLabel: String {
@@ -708,45 +752,63 @@ struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
     }
 }
 
-/// Bounded, local-only, source-specific metadata persistence. The storage key
-/// matches Batch 03A, so existing favorites and recent episode selections
-/// survive migration without reset or source-name changes.
+/// Source-scoped progress lives with its title, never in the local-media queue.
+/// Stream URLs, headers and cookies are not part of the progress schema.
 @MainActor
 final class ModuleAnimeCollectionStore: ObservableObject {
     static let shared = ModuleAnimeCollectionStore()
 
     @Published private(set) var entries: [ModuleAnimeCollectionEntry] = []
 
+    private let defaults: UserDefaults
     private let storageKey = "kinetiq.modules.animeCollection.v1"
     private let maximumEntries = 400
+    private let maximumEpisodeRecords = 8_000
 
-    private init() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+    // Injectable defaults allow migration/persistence tests without touching
+    // the app's actual Favorites or playback history.
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        guard let data = defaults.data(forKey: storageKey),
               let restored = try? JSONDecoder().decode(
-                [ModuleAnimeCollectionEntry].self,
-                from: data
+                [ModuleAnimeCollectionEntry].self, from: data
               ) else { return }
 
         var seen = Set<String>()
-        entries = Array(restored.filter { record in
+        entries = restored.compactMap { record in
             guard Self.isSafe(record), seen.insert(record.id).inserted else {
-                return false
+                return nil
             }
-            return record.isFavorite || record.latestEpisodeID != nil
-        }.prefix(maximumEntries))
+            let migrated = Self.migrate(record)
+            return Self.shouldRetain(migrated) ? migrated : nil
+        }
+        trimToLimits()
+        // Persist the migration so an intentionally cleared record cannot
+        // be resurrected from the legacy single-episode summary later.
+        persist()
     }
 
     var favorites: [ModuleAnimeCollectionEntry] {
-        entries.filter(\.isFavorite)
-            .sorted { $0.savedAt > $1.savedAt }
+        entries.filter(\.isFavorite).sorted { $0.savedAt > $1.savedAt }
     }
 
     var continueWatching: [ModuleAnimeCollectionEntry] {
-        entries.filter {
-            $0.latestEpisodeID != nil &&
-            ($0.lastPlaybackPosition ?? 0) >= 3 &&
-            ($0.lastPlaybackDuration ?? 0) > 5 &&
-            $0.playbackFraction > 0
+        entries.compactMap { entry -> ModuleAnimeCollectionEntry? in
+            guard entry.isHiddenFromContinueWatching != true,
+                  let progress = entry.episodeProgress?
+                    .filter({ $0.resumePosition > 0 })
+                    .max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
+
+            // Project the most recently played unfinished episode without
+            // changing the separate Recent Episodes selection.
+            var card = entry
+            card.latestEpisodeID = progress.episodeID
+            card.latestEpisodeNumber = progress.episodeNumber
+            card.latestLanguage = progress.language
+            card.lastPlaybackPosition = progress.position
+            card.lastPlaybackDuration = progress.duration
+            card.lastPlaybackDate = progress.updatedAt
+            return card
         }
         .sorted {
             ($0.lastPlaybackDate ?? .distantPast) >
@@ -759,155 +821,165 @@ final class ModuleAnimeCollectionStore: ObservableObject {
     }
 
     func recentEpisodes(for sourceID: String) -> [ModuleAnimeCollectionEntry] {
-        entries.filter {
-            $0.sourceID == sourceID && $0.latestEpisodeDate != nil
-        }
-        .sorted {
-            ($0.latestEpisodeDate ?? .distantPast) >
-                ($1.latestEpisodeDate ?? .distantPast)
-        }
+        entries.filter { $0.sourceID == sourceID && $0.latestEpisodeDate != nil }
+            .sorted {
+                ($0.latestEpisodeDate ?? .distantPast) >
+                    ($1.latestEpisodeDate ?? .distantPast)
+            }
     }
 
     func isFavorite(sourceID: String, animeID: String) -> Bool {
-        entries.first {
-            $0.sourceID == sourceID && $0.animeID == animeID
-        }?.isFavorite ?? false
+        entry(sourceID: sourceID, animeID: animeID)?.isFavorite ?? false
     }
 
-    func toggleFavorite(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem
-    ) {
-        guard Self.isSafe(sourceID: sourceID, anime: anime) else { return }
-        let key = Self.identity(sourceID: sourceID, animeID: anime.id)
-
-        if let index = entries.firstIndex(where: { $0.id == key }) {
-            entries[index].isFavorite.toggle()
-            if entries[index].isFavorite { entries[index].savedAt = Date() }
-            if !entries[index].isFavorite && entries[index].latestEpisodeID == nil {
-                entries.remove(at: index)
-            }
-        } else {
-            entries.insert(
-                makeEntry(
-                    sourceID: sourceID,
-                    sourceName: sourceName,
-                    anime: anime,
-                    favorite: true
-                ), at: 0
-            )
+    func progress(
+        sourceID: String, animeID: String, episodeID: String, language: String
+    ) -> ModuleEpisodeProgress? {
+        entry(sourceID: sourceID, animeID: animeID)?.episodeProgress?.first {
+            $0.episodeID == episodeID && $0.language == language.lowercased()
         }
+    }
+
+    func hasWatched(
+        sourceID: String, animeID: String, episode: ModuleAnimeEpisode
+    ) -> Bool {
+        ["sub", "dub"].contains { language in
+            Self.supports(language, episode: episode) &&
+            progress(sourceID: sourceID, animeID: animeID,
+                     episodeID: episode.id, language: language)?.isCompleted == true
+        }
+    }
+
+    /// Prefer actual resumable progress, then the first unwatched playable
+    /// episode in the provider's order. Never invent episode numbers or URLs.
+    func continuation(
+        sourceID: String, animeID: String, episodes: [ModuleAnimeEpisode]
+    ) -> ModuleEpisodeContinuation? {
+        let saved = entry(sourceID: sourceID, animeID: animeID)
+        let progress = (saved?.episodeProgress ?? []).sorted {
+            $0.updatedAt > $1.updatedAt
+        }
+        for record in progress where record.resumePosition > 0 {
+            if let episode = episodes.first(where: {
+                $0.id == record.episodeID && Self.supports(record.language, episode: $0)
+            }) {
+                return ModuleEpisodeContinuation(
+                    episode: episode, language: record.language,
+                    resumePosition: record.resumePosition
+                )
+            }
+        }
+
+        for episode in episodes where !hasWatched(
+            sourceID: sourceID, animeID: animeID, episode: episode
+        ) {
+            let preferred = saved?.latestLanguage ?? "sub"
+            if let language = [preferred, "sub", "dub"].first(where: {
+                Self.supports($0, episode: episode)
+            }) {
+                return ModuleEpisodeContinuation(
+                    episode: episode, language: language, resumePosition: 0
+                )
+            }
+        }
+        return nil
+    }
+
+    func toggleFavorite(sourceID: String, sourceName: String, anime: ModuleAnimeItem) {
+        guard Self.isSafe(sourceID: sourceID, anime: anime) else { return }
+        let index = ensureEntry(sourceID: sourceID, sourceName: sourceName, anime: anime)
+        entries[index].isFavorite.toggle()
+        if entries[index].isFavorite { entries[index].savedAt = Date() }
+        if !Self.shouldRetain(entries[index]) { entries.remove(at: index) }
         persist()
     }
 
     func recordEpisode(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem,
-        episode: ModuleAnimeEpisode,
-        language: String
+        sourceID: String, sourceName: String, anime: ModuleAnimeItem,
+        episode: ModuleAnimeEpisode, language: String
     ) {
+        let language = language.lowercased()
         guard Self.isSafe(sourceID: sourceID, anime: anime),
-              !episode.id.isEmpty, episode.id.count <= 1500 else { return }
-
-        let key = Self.identity(sourceID: sourceID, animeID: anime.id)
-        if let index = entries.firstIndex(where: { $0.id == key }) {
-            if entries[index].latestEpisodeID != episode.id ||
-               entries[index].latestLanguage != language.lowercased() {
-                entries[index].lastPlaybackPosition = nil
-                entries[index].lastPlaybackDuration = nil
-                entries[index].lastPlaybackDate = nil
-            }
-            entries[index].latestEpisodeID = episode.id
-            entries[index].latestEpisodeNumber = String(episode.number.prefix(100))
-            entries[index].latestLanguage = String(language.lowercased().prefix(10))
-            entries[index].latestEpisodeDate = Date()
-        } else {
-            var newEntry = makeEntry(
-                sourceID: sourceID,
-                sourceName: sourceName,
-                anime: anime,
-                favorite: false
-            )
-            newEntry.latestEpisodeID = episode.id
-            newEntry.latestEpisodeNumber = String(episode.number.prefix(100))
-            newEntry.latestLanguage = String(language.lowercased().prefix(10))
-            newEntry.latestEpisodeDate = Date()
-            entries.insert(newEntry, at: 0)
-        }
+              Self.isSafe(episode: episode, language: language) else { return }
+        let index = ensureEntry(sourceID: sourceID, sourceName: sourceName, anime: anime)
+        selectEpisode(at: index, episode: episode, language: language)
         persist()
     }
 
     func recordPlayback(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem,
-        episode: ModuleAnimeEpisode,
-        language: String,
-        position: Double,
-        duration: Double
+        sourceID: String, sourceName: String, anime: ModuleAnimeItem,
+        episode: ModuleAnimeEpisode, language: String,
+        position: Double, duration: Double, finished: Bool = false
     ) {
+        let language = language.lowercased()
         guard position.isFinite, duration.isFinite,
               duration > 5, duration <= 10_000_000,
               position >= 3, position <= duration + 15,
               Self.isSafe(sourceID: sourceID, anime: anime),
-              !episode.id.isEmpty, episode.id.count <= 1500 else { return }
+              Self.isSafe(episode: episode, language: language) else { return }
 
-        let key = Self.identity(sourceID: sourceID, animeID: anime.id)
-        if !entries.contains(where: { $0.id == key }) {
-            recordEpisode(
-                sourceID: sourceID,
-                sourceName: sourceName,
-                anime: anime,
-                episode: episode,
-                language: language
-            )
-        }
-
-        guard let index = entries.firstIndex(where: { $0.id == key }) else {
-            return
-        }
-
-        let newLanguage = String(language.lowercased().prefix(10))
-        if entries[index].latestEpisodeID != episode.id ||
-           entries[index].latestLanguage != newLanguage {
-            entries[index].latestEpisodeID = episode.id
-            entries[index].latestEpisodeNumber = String(episode.number.prefix(100))
-            entries[index].latestLanguage = newLanguage
-            entries[index].latestEpisodeDate = Date()
-        }
-        entries[index].lastPlaybackPosition = min(position, duration)
-        entries[index].lastPlaybackDuration = duration
-        entries[index].lastPlaybackDate = Date()
+        let index = ensureEntry(sourceID: sourceID, sourceName: sourceName, anime: anime)
+        var records = entries[index].episodeProgress ?? []
+        let old = records.first { $0.episodeID == episode.id && $0.language == language }
+        let now = Date()
+        let record = ModuleEpisodeProgress(
+            episodeID: episode.id, episodeNumber: String(episode.number.prefix(100)),
+            language: language, position: finished ? duration : min(position, duration),
+            duration: duration,
+            isWatched: finished || old?.isCompleted == true || position / duration >= 0.97,
+            updatedAt: now
+        )
+        records.removeAll { $0.id == record.id }
+        records.append(record)
+        entries[index].episodeProgress = records
+        entries[index].isHiddenFromContinueWatching = false
+        selectEpisode(at: index, episode: episode, language: language)
         persist()
     }
 
     func resumePosition(
-        sourceID: String,
-        animeID: String,
-        episodeID: String,
-        language: String
+        sourceID: String, animeID: String, episodeID: String, language: String
     ) -> Double {
-        guard let entry = entries.first(where: {
-            $0.sourceID == sourceID && $0.animeID == animeID
-        }),
-        entry.latestEpisodeID == episodeID,
-        entry.latestLanguage == language.lowercased(),
-        let position = entry.lastPlaybackPosition,
-        let duration = entry.lastPlaybackDuration,
-        position.isFinite, duration.isFinite,
-        duration > 5, position >= 3, position < max(3, duration - 8) else {
-            return 0
+        progress(sourceID: sourceID, animeID: animeID,
+                 episodeID: episodeID, language: language)?.resumePosition ?? 0
+    }
+
+    /// Marking unwatched explicitly resets only this language's progress.
+    /// Merely opening/replaying a completed episode retains its watched mark.
+    func setWatched(
+        _ watched: Bool, sourceID: String, sourceName: String,
+        anime: ModuleAnimeItem, episode: ModuleAnimeEpisode, language: String
+    ) {
+        let language = language.lowercased()
+        guard Self.isSafe(sourceID: sourceID, anime: anime),
+              Self.isSafe(episode: episode, language: language) else { return }
+        let index = ensureEntry(sourceID: sourceID, sourceName: sourceName, anime: anime)
+        var records = entries[index].episodeProgress ?? []
+        let old = records.first { $0.episodeID == episode.id && $0.language == language }
+        let length = watched ? (old?.duration ?? 0) : 0
+        let record = ModuleEpisodeProgress(
+            episodeID: episode.id, episodeNumber: String(episode.number.prefix(100)),
+            language: language, position: length, duration: length,
+            isWatched: watched, updatedAt: Date()
+        )
+        records.removeAll { $0.id == record.id }
+        records.append(record)
+        entries[index].episodeProgress = records
+        if entries[index].latestEpisodeID == episode.id &&
+           entries[index].latestLanguage == language {
+            updateSummary(at: index, progress: record)
         }
-        return position
+        persist()
+    }
+
+    func hideFromContinueWatching(sourceID: String, animeID: String) {
+        guard let index = index(sourceID: sourceID, animeID: animeID) else { return }
+        entries[index].isHiddenFromContinueWatching = true
+        persist()
     }
 
     func removeRecent(sourceID: String, animeID: String) {
-        guard let index = entries.firstIndex(where: {
-            $0.sourceID == sourceID && $0.animeID == animeID
-        }) else { return }
-
+        guard let index = index(sourceID: sourceID, animeID: animeID) else { return }
         entries[index].latestEpisodeID = nil
         entries[index].latestEpisodeNumber = nil
         entries[index].latestLanguage = nil
@@ -915,77 +987,149 @@ final class ModuleAnimeCollectionStore: ObservableObject {
         entries[index].lastPlaybackPosition = nil
         entries[index].lastPlaybackDuration = nil
         entries[index].lastPlaybackDate = nil
-        if !entries[index].isFavorite { entries.remove(at: index) }
+        entries[index].isHiddenFromContinueWatching = true
+        if !Self.shouldRetain(entries[index]) { entries.remove(at: index) }
         persist()
     }
 
-    private static func identity(sourceID: String, animeID: String) -> String {
-        String(sourceID.utf8.count) + ":" + sourceID + animeID
+    private func entry(sourceID: String, animeID: String) -> ModuleAnimeCollectionEntry? {
+        entries.first { $0.sourceID == sourceID && $0.animeID == animeID }
+    }
+
+    private func index(sourceID: String, animeID: String) -> Int? {
+        entries.firstIndex { $0.sourceID == sourceID && $0.animeID == animeID }
+    }
+
+    private func ensureEntry(
+        sourceID: String, sourceName: String, anime: ModuleAnimeItem
+    ) -> Int {
+        if let index = index(sourceID: sourceID, animeID: anime.id) { return index }
+        let artwork = anime.imageURL.flatMap { url -> String? in
+            guard url.scheme?.lowercased() == "https",
+                  url.absoluteString.count <= 3000 else { return nil }
+            return url.absoluteString
+        }
+        entries.insert(ModuleAnimeCollectionEntry(
+            sourceID: sourceID, sourceName: String(sourceName.prefix(180)),
+            animeID: anime.id, title: anime.title, href: anime.href,
+            artworkURL: artwork, isFavorite: false, savedAt: Date(),
+            latestEpisodeID: nil, latestEpisodeNumber: nil, latestLanguage: nil,
+            latestEpisodeDate: nil, lastPlaybackPosition: nil,
+            lastPlaybackDuration: nil, lastPlaybackDate: nil,
+            episodeProgress: [], isHiddenFromContinueWatching: false
+        ), at: 0)
+        return 0
+    }
+
+    private func selectEpisode(at index: Int, episode: ModuleAnimeEpisode, language: String) {
+        entries[index].latestEpisodeID = episode.id
+        entries[index].latestEpisodeNumber = String(episode.number.prefix(100))
+        entries[index].latestLanguage = language
+        entries[index].latestEpisodeDate = Date()
+        let progress = entries[index].episodeProgress?.first {
+            $0.episodeID == episode.id && $0.language == language
+        }
+        updateSummary(at: index, progress: progress)
+    }
+
+    private func updateSummary(at index: Int, progress: ModuleEpisodeProgress?) {
+        entries[index].lastPlaybackPosition = progress?.position
+        entries[index].lastPlaybackDuration = progress?.duration
+        entries[index].lastPlaybackDate = progress?.updatedAt
+    }
+
+    private static func supports(_ language: String, episode: ModuleAnimeEpisode) -> Bool {
+        (language == "sub" && episode.subAvailable) ||
+        (language == "dub" && episode.dubAvailable)
+    }
+
+    private static func isSafe(episode: ModuleAnimeEpisode, language: String) -> Bool {
+        !episode.id.isEmpty && episode.id.count <= 1500 &&
+        supports(language, episode: episode)
     }
 
     private static func isSafe(sourceID: String, anime: ModuleAnimeItem) -> Bool {
         !sourceID.isEmpty && sourceID.count <= 1200 &&
         !anime.id.isEmpty && anime.id.count <= 1500 &&
-        !anime.title.isEmpty && anime.title.count <= 400 &&
-        anime.href.count <= 2500
+        !anime.title.isEmpty && anime.title.count <= 400 && anime.href.count <= 2500
     }
 
     private static func isSafe(_ record: ModuleAnimeCollectionEntry) -> Bool {
-        !record.sourceID.isEmpty && record.sourceID.count <= 1200 &&
-        !record.animeID.isEmpty && record.animeID.count <= 1500 &&
-        !record.title.isEmpty && record.title.count <= 400 &&
-        record.href.count <= 2500 &&
+        isSafe(sourceID: record.sourceID, anime: record.anime) &&
+        record.savedAt.timeIntervalSince1970.isFinite &&
         (record.lastPlaybackPosition.map { $0.isFinite && $0 >= 0 } ?? true) &&
         (record.lastPlaybackDuration.map { $0.isFinite && $0 >= 0 } ?? true)
     }
 
-    private func makeEntry(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem,
-        favorite: Bool
-    ) -> ModuleAnimeCollectionEntry {
-        let artwork: String?
-        if let url = anime.imageURL,
-           url.scheme?.lowercased() == "https",
-           url.absoluteString.count <= 3000 {
-            artwork = url.absoluteString
-        } else {
-            artwork = nil
+    private static func shouldRetain(_ record: ModuleAnimeCollectionEntry) -> Bool {
+        record.isFavorite || record.latestEpisodeID != nil ||
+        !(record.episodeProgress ?? []).isEmpty
+    }
+
+    private static func migrate(_ original: ModuleAnimeCollectionEntry) -> ModuleAnimeCollectionEntry {
+        var entry = original
+        var records = original.episodeProgress ?? []
+        if original.episodeProgress == nil,
+           let episodeID = original.latestEpisodeID,
+           let language = original.latestLanguage?.lowercased(),
+           let position = original.lastPlaybackPosition,
+           let duration = original.lastPlaybackDuration {
+            records.append(ModuleEpisodeProgress(
+                episodeID: episodeID, episodeNumber: original.latestEpisodeNumber ?? "",
+                language: language, position: position, duration: duration,
+                isWatched: original.playbackFraction >= 0.97,
+                updatedAt: original.lastPlaybackDate ?? original.latestEpisodeDate ?? original.savedAt
+            ))
+        }
+        var seen = Set<String>()
+        entry.episodeProgress = records.filter(\.isValid)
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .filter { seen.insert($0.id).inserted }
+        return entry
+    }
+
+    private func trimToLimits() {
+        if entries.count > maximumEntries {
+            let saved = entries.filter(\.isFavorite).sorted { $0.savedAt > $1.savedAt }
+            let recent = entries.filter { !$0.isFavorite }.sorted {
+                Self.lastActivity($0) > Self.lastActivity($1)
+            }
+            entries = Array((saved + recent).prefix(maximumEntries))
         }
 
-        return ModuleAnimeCollectionEntry(
-            sourceID: sourceID,
-            sourceName: String(sourceName.prefix(180)),
-            animeID: anime.id,
-            title: anime.title,
-            href: anime.href,
-            artworkURL: artwork,
-            isFavorite: favorite,
-            savedAt: Date(),
-            latestEpisodeID: nil,
-            latestEpisodeNumber: nil,
-            latestLanguage: nil,
-            latestEpisodeDate: nil,
-            lastPlaybackPosition: nil,
-            lastPlaybackDuration: nil,
-            lastPlaybackDate: nil
-        )
+        let records = entries.flatMap { entry in
+            (entry.episodeProgress ?? []).map { progress in
+                (key: Self.progressKey(entryID: entry.id, progressID: progress.id),
+                 date: progress.updatedAt)
+            }
+        }
+        if records.count > maximumEpisodeRecords {
+            let retained = Set(records.sorted {
+                $0.date == $1.date ? $0.key < $1.key : $0.date > $1.date
+            }.prefix(maximumEpisodeRecords).map { $0.key })
+            for index in entries.indices {
+                let entryID = entries[index].id
+                entries[index].episodeProgress = entries[index].episodeProgress?.filter {
+                    retained.contains(Self.progressKey(entryID: entryID, progressID: $0.id))
+                }
+            }
+            entries.removeAll { !Self.shouldRetain($0) }
+        }
+    }
+
+    private static func progressKey(entryID: String, progressID: String) -> String {
+        String(entryID.utf8.count) + ":" + entryID + progressID
+    }
+
+    private static func lastActivity(_ entry: ModuleAnimeCollectionEntry) -> Date {
+        max(entry.latestEpisodeDate ?? .distantPast,
+            entry.episodeProgress?.map(\.updatedAt).max() ?? .distantPast)
     }
 
     private func persist() {
-        if entries.count > maximumEntries {
-            let saved = entries.filter(\.isFavorite)
-                .sorted { $0.savedAt > $1.savedAt }
-            let recent = entries.filter { !$0.isFavorite }
-                .sorted {
-                    ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
-                    ($1.lastPlaybackDate ?? $1.latestEpisodeDate ?? .distantPast)
-                }
-            entries = Array((saved + recent).prefix(maximumEntries))
-        }
+        trimToLimits()
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey)
+        defaults.set(data, forKey: storageKey)
     }
 }
 
@@ -1210,7 +1354,7 @@ struct ModuleRemoteContinueWatchingShelf: View {
                                 .buttonStyle(.plain)
 
                                 Button {
-                                    collection.removeRecent(
+                                    collection.hideFromContinueWatching(
                                         sourceID: entry.sourceID,
                                         animeID: entry.animeID
                                     )

@@ -670,54 +670,68 @@ and devices.
 
 # Current Development Status
 
-**Current Phase:** Phase 2 -- Playback & Player Experience.
+**Current focus:** Playback memory and episode navigation across Phases 2, 4, and 6.
 
-**Current milestone:** Advanced local player experience.
+**Working baseline:** `8efde5e117243ab85e5bb1f86f254d4aeef8f1d5` on `main`,
+inspected on 6 November 2026. The implementation has advanced beyond the older
+phase checklist. An unchecked task remains planned or awaiting its required
+verification; source-code presence alone does not certify completion.
 
-The current implementation includes:
+The inspected baseline contains source code for:
 
-- Native SwiftUI application architecture.
-- Existing five-destination navigation remains in the current app build until the planned four-destination redesign is applied.
-- The Home source picker and Video/Manga switcher are planned as top-level Home controls.
-- The Library is planned to become part of Home rather than a separate bottom-navigation destination.
-- Continue Watching thumbnail generation is planned to use persistent local frame thumbnails or source-provided episode artwork, with a generated-frame fallback when supported.
-- Persistent appearance preferences.
-- Launch tagline selection.
-- What's New presentation for unseen release notes.
-- Local video importing through Files.
-- Local video importing through Photos.
-- Full-screen AVPlayer-based playback.
-- Playback speed controls.
-- Aspect-ratio controls.
-- Audio and embedded subtitle track selection.
-- Sleep timer.
-- Persistent playback history.
-- Automatic playback resume.
-- Continue Watching.
-- Playback progress tracking.
-- Completed-media handling.
-- Persistent playback queues.
-- Next and Previous navigation.
-- Queue selection, removal, and reordering.
-- Play Next.
-- Shuffle and Repeat modes.
-- Queue persistence and unavailable-file handling.
+- Four bottom destinations: Home, Favorites, Downloads, and Settings.
+- Local Library access within Home, the source picker, and Video/Manga mode controls.
+- Existing local playback, queue, import, thumbnail, and subtitle systems.
+- Batch 01: module compatibility adapters and a player using the local player's visual design.
+- Batch 02: stream/server selection, diagnostics, and recovery paths.
+- Batch 03A: source-specific anime Favorites and Recent Episodes.
+- Batch 03B: global anime Favorites and remote Continue Watching.
+- Batch 03C: anime discovery controls and shared artwork caching.
 
-The following advanced player features remain planned and must not be
-considered implemented until their source code, tests, and integration exist:
+These observations describe source code, not a fresh build or device acceptance
+result. Manga reading, downloads, cloud synchronization, metadata providers, and
+all other unchecked requirements retain their places in the roadmap.
 
-- Local video thumbnail generation and caching.
-- Technical media metadata.
-- Picture-in-Picture, including automatic background transition and external-subtitle rendering.
-- Capability-driven track and quality detection for the active media source.
-- AirPlay route selection.
-- Double-tap seeking and feedback.
-- Playback retry and failed-item recovery.
+## Batch 03D -- Episode Progress and Continue Watching
 
-CI build and simulator verification do not replace physical-device
-testing. Features that depend on remote streams, external modules,
-synchronization, or a separate tvOS target remain in their designated
-future phases.
+**Implementation status:** Replacement source prepared; iOS validation pending.
+
+Scope is based on two gaps in the inspected 03C baseline: remote history kept
+only one episode/language position per title, and completed episodes could stay
+in Continue Watching.
+
+- Keep independent episode progress per source, anime, episode, and Sub/Dub language.
+- Migrate the existing saved collection without resetting Favorites or its latest
+  valid playback position. Earlier positions already overwritten by 03B cannot
+  be reconstructed.
+- Record watched state at the existing 97% completion threshold or a real end event.
+- Offer per-language Mark Watched / Mark Unwatched actions in anime details.
+- Show episode progress, watched counts, episode-number search, and watched filters.
+- Resume an available unfinished episode, otherwise offer the first unwatched
+  playable episode in the source's own order.
+- Hide finished episodes from Continue Watching. Hiding a card or removing a
+  Recent Episodes entry retains its underlying episode progress and artwork.
+- Preserve same-language position during server recovery; use independent saved
+  progress when changing Sub/Dub.
+- Save progress on pause, completed seeking, leaving the active app, handoff, and close.
+
+The existing collection remains bounded to 400 titles; episode history is bounded
+to 8,000 records across retained titles, with older records pruned first. Watched
+marks remain until explicitly reset or removed by those storage limits. Replaying
+a watched episode does not silently mark it unwatched.
+
+Validation required before closing the relevant roadmap tasks:
+
+- [ ] Run the added migration, persistence, completion, and continuation XCTest cases.
+- [ ] Compile and link the full app with the project's Xcode configuration.
+- [ ] Exercise Sub/Dub switching, episode changes, server recovery, and app restarts on iPhone.
+- [ ] Verify details layout, scrolling, accessibility, and the unchanged player controls on iPhone.
+- [ ] Recheck real module search → details → episode → stream → playback.
+
+Full GitHub Actions build debugging is temporarily deferred to stabilization.
+Local Swift syntax parsing and source-consistency checks are recorded in
+`docs/BATCH_03D.md`. They do not replace Swift type checking, simulator tests,
+module compatibility tests, or physical-device playback verification.
 
 ---
 
