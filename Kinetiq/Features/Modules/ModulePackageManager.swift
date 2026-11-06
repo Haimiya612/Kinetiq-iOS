@@ -420,6 +420,21 @@ enum ModulePackageValidator {
             )
         }
 
+        if let expectedFamilyID = source.module.moduleFamilyId,
+           familyID != expectedFamilyID {
+            throw ModulePackageError.moduleIdentityMismatch
+        }
+
+        if let expectedIdentity = source.module.moduleIdentity,
+           identity != expectedIdentity {
+            throw ModulePackageError.moduleIdentityMismatch
+        }
+
+        if let expectedIdentityNumber = source.module.moduleIdentityNumber,
+           identityNumber != expectedIdentityNumber {
+            throw ModulePackageError.moduleIdentityMismatch
+        }
+
         guard
             manifest.scriptUrl == nil,
             manifest.config?.scriptUrl == nil
@@ -433,10 +448,10 @@ enum ModulePackageValidator {
             let runtime = manifest.config?.runtime,
             runtime.mode == "local",
             let entry = runtime.entry,
-            !entry.isEmpty
+            entry == "index.js"
         else {
             throw ModulePackageError.invalidManifest(
-                "The runtime must declare a local JavaScript entry point."
+                "The V3 runtime must declare a local index.js entry point."
             )
         }
 
@@ -536,10 +551,7 @@ actor ModulePackageInstaller {
     func install(
         source: ModuleSourceOption
     ) async throws -> InstalledModuleRecord {
-        guard
-            let packageURLString = source.module.packageUrl,
-            let packageURL = URL(string: packageURLString)
-        else {
+        guard let packageURL = source.packageURL else {
             throw ModulePackageError.missingPackageURL
         }
 
@@ -792,6 +804,8 @@ final class ModulePackageStore: ObservableObject {
 
         return
             record.version == source.module.version
+            && source.module.sha256?.lowercased()
+                == record.packageSHA256.lowercased()
             && fileManager.fileExists(
                 atPath: record.entryScriptPath
             )
@@ -951,7 +965,7 @@ struct ModuleSourceListRow: View {
 
     private var canInstall: Bool {
         isVideoModule
-        && source.module.packageUrl != nil
+        && source.packageURL != nil
         && source.module.sha256 != nil
     }
 
@@ -959,14 +973,31 @@ struct ModuleSourceListRow: View {
         HStack(spacing: 10) {
             Button(action: onSelect) {
                 HStack(spacing: 12) {
-                    Image(systemName: source.symbol)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(KinetiqPalette.accent)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            KinetiqPalette.accent.opacity(0.12),
-                            in: RoundedRectangle(cornerRadius: 10)
-                        )
+                    Group {
+                        if let iconURL = source.iconURL {
+                            AsyncImage(url: iconURL) { phase in
+                                if let image = phase.image {
+                                    image
+                                        .resizable()
+                                        .scaledToFit()
+                                } else {
+                                    Image(systemName: source.symbol)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(KinetiqPalette.accent)
+                                }
+                            }
+                        } else {
+                            Image(systemName: source.symbol)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(KinetiqPalette.accent)
+                        }
+                    }
+                    .frame(width: 34, height: 34)
+                    .padding(5)
+                    .background(
+                        KinetiqPalette.accent.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(source.title)
@@ -978,6 +1009,20 @@ struct ModuleSourceListRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+
+                        if let purpose = source.module.displayPurpose {
+                            Text(purpose)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+
+                        if source.module.presentation?.recommended == true {
+                            Text("RECOMMENDED")
+                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                .tracking(0.8)
+                                .foregroundStyle(KinetiqPalette.accent)
+                        }
                     }
 
                     Spacer(minLength: 4)

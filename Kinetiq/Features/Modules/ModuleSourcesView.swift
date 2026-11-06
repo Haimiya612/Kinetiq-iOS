@@ -9,85 +9,147 @@ struct ModuleRepositoryDocument: Decodable {
     let name: String?
     let enabled: Bool?
     let modules: [ModuleRepositoryModule]?
+    let defaultModules: [String: String]?
+    let defaultModulesSignature: String?
+    let signature: String?
 }
 
 struct ModuleRepositoryPresentation: Decodable, Hashable {
     let category: String?
     let purpose: String?
+    let recommended: Bool?
     let language: String?
+    let languages: [String]?
     let iconUrl: String?
 }
 
 struct ModuleRepositoryModule: Decodable, Hashable, Identifiable {
     let moduleId: String
+    let moduleFamilyId: String?
+    let moduleIdentity: String?
+    let moduleIdentityNumber: Int?
     let contentType: String?
     let version: String?
     let minAppVersion: String?
     let packageUrl: String?
+    let packagePath: String?
     let sha256: String?
     let signature: String?
+    let publishedAtMs: Int64?
+    let changelog: [String]?
     let presentation: ModuleRepositoryPresentation?
 
     var id: String {
         moduleId
     }
 
-    var displayName: String {
-        let packageFilename = packageUrl
-            .flatMap { URL(string: $0)?.deletingPathExtension().lastPathComponent }
+    private var packageName: String? {
+        guard let packageLocation = packageUrl ?? packagePath else {
+            return nil
+        }
 
-        let fallbackID = moduleId.replacingOccurrences(
-            of: #"(?i)-v\d+(?:\.\d+)*$"#,
+        let filename = URL(string: packageLocation)?.lastPathComponent
+            ?? URL(fileURLWithPath: packageLocation).lastPathComponent
+
+        let withoutExtension = filename.replacingOccurrences(
+            of: #"\.zip$"#,
             with: "",
-            options: .regularExpression
+            options: [.regularExpression, .caseInsensitive]
         )
 
-        let rawName = (packageFilename?.isEmpty == false
-            ? packageFilename
-            : fallbackID) ?? moduleId
-
-        let cleanedName = rawName.replacingOccurrences(
-            of: #"(?i)[-_ ]v?\d+(?:\.\d+){0,3}$"#,
+        let withoutVersion = withoutExtension.replacingOccurrences(
+            of: #"[-_ ]v?\d+(?:\.\d+){1,3}(?:-[A-Za-z0-9.-]+)?$"#,
             with: "",
-            options: .regularExpression
-        )
-        .replacingOccurrences(
-            of: #"([a-z])([A-Z])"#,
-            with: "$1 $2",
-            options: .regularExpression
-        )
-        .replacingOccurrences(
-            of: #"[-_]+"#,
-            with: " ",
             options: .regularExpression
         )
         .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let key = cleanedName
+        return withoutVersion.isEmpty ? nil : withoutVersion
+    }
+
+    private var identityNameKey: String {
+        let components = (moduleIdentity ?? "").split(separator: "-")
+        let suffix = components.count > 3
+            ? components.dropFirst(3).joined()
+            : moduleId
+
+        return suffix
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }
+    }
 
+    var displayName: String {
+        // The current Synthetiq catalogue does not define a separate
+        // per-module "name" field. Use stable identity and the package
+        // filename so the source's original branding is not rewritten.
         let canonicalNames: [String: String] = [
-            "aniworld": "AniWorld",
+            "synthetiqanime": "Synthetiq Anime",
+            "animedirect": "Synthetiq Flux",
+            "synthetiqone": "Synthetiq One",
             "anipm": "AniPM",
             "anikoto": "AniKoto",
-            "anikage": "AniKage"
+            "anikage": "AniKage",
+            "yflix": "YFlix",
+            "dramacool": "DramaCool",
+            "dramadirect": "Drama Direct",
+            "onepace": "One Pace",
+            "animeheaven": "AnimeHeaven",
+            "xstream": "X-Stream",
+            "miruro": "Miruro",
+            "animesama": "Anime-Sama",
+            "an1me": "An1me",
+            "animeav1": "AnimeAV1",
+            "kartoons": "Kartoons",
+            "dramafun": "DramaFun",
+            "toontales": "ToonTales",
+            "aniworld": "AniWorld",
+            "megakino": "MegaKino",
+            "weebcentral": "WeebCentral",
+            "synthetiqmanga": "Synthetiq Manga",
+            "atsu": "Atsu",
+            "synthetiqmusichub": "Synthetiq Music Hub",
+            "animeunity": "AnimeUnity",
+            "kickassanime": "KickAssAnime",
+            "shahiid": "Shahiid",
+            "mugiwara": "Mugiwara",
+            "justanime": "JustAnime",
+            "streamingunity": "StreamingUnity",
+            "mangakatana": "MangaKatana",
+            "mgreadlikemanga": "MGRead Like Manga",
+            "colorizedmanga": "ColorizedManga",
+            "alphamovies": "Alpha Movies",
+            "moviedb": "MovieDB",
+            "cimaclub": "CimaClub",
+            "anime4up": "Anime4up"
         ]
 
-        if let canonicalName = canonicalNames[key] {
+        if let canonicalName = canonicalNames[identityNameKey] {
             return canonicalName
         }
 
-        return cleanedName
-            .split(separator: " ")
-            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-            .joined(separator: " ")
+        if let packageName {
+            return packageName.replacingOccurrences(
+                of: "_",
+                with: " "
+            )
+        }
+
+        return moduleId.replacingOccurrences(
+            of: #"(?i)-v\d+(?:\.\d+)*$"#,
+            with: "",
+            options: .regularExpression
+        )
     }
 
     var displaySubtitle: String {
-        [
+        let languageModes = presentation?.languages?
+            .map { $0.uppercased() }
+            .joined(separator: " / ")
+
+        return [
             presentation?.category,
             presentation?.language,
+            languageModes,
             version.map { "v\($0)" }
         ]
         .compactMap { value in
@@ -103,8 +165,25 @@ struct ModuleRepositoryModule: Decodable, Hashable, Identifiable {
         .joined(separator: " • ")
     }
 
+    var displayPurpose: String? {
+        let value = presentation?.purpose?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return value?.isEmpty == false ? value : nil
+    }
+
     var displayType: String {
         (contentType ?? "Module").capitalized
+    }
+
+    var publishedDate: Date? {
+        guard let publishedAtMs else {
+            return nil
+        }
+
+        return Date(
+            timeIntervalSince1970: TimeInterval(publishedAtMs) / 1_000
+        )
     }
 }
 
@@ -115,6 +194,11 @@ struct ModuleRepositoryRecord: Identifiable {
     var modules: [ModuleRepositoryModule]
     var lastRefreshed: Date?
     var refreshError: String?
+    var schemaVersion: Int? = nil
+    var enabled: Bool? = nil
+    var defaultModules: [String: String]? = nil
+    var defaultModulesSignature: String? = nil
+    var signature: String? = nil
 
     var id: String {
         url.absoluteString
@@ -130,14 +214,71 @@ struct ModuleSourceOption: Identifiable {
         "\(repositoryURL.absoluteString)|\(module.moduleId)"
     }
 
+    @MainActor
     var title: String {
-        module.displayName
+        if let installed = ModulePackageStore.shared.installedModule(for: self),
+           installed.version == module.version,
+           let expectedChecksum = module.sha256,
+           installed.packageSHA256.lowercased() == expectedChecksum.lowercased() {
+            return installed.name
+        }
+
+        return module.displayName
     }
 
     var subtitle: String {
         module.displaySubtitle.isEmpty
             ? module.displayType
             : module.displaySubtitle
+    }
+
+    var packageURL: URL? {
+        if let packageUrl = module.packageUrl,
+           let url = URL(string: packageUrl),
+           url.scheme?.lowercased() == "https",
+           url.host != nil {
+            return url
+        }
+
+        guard let packagePath = module.packagePath else {
+            return nil
+        }
+
+        if let absoluteURL = URL(string: packagePath),
+           absoluteURL.scheme?.lowercased() == "https",
+           absoluteURL.host != nil {
+            return absoluteURL
+        }
+
+        // Synthetiq's packagePath values are GitHub release paths, while
+        // its repository.json is hosted on raw.githubusercontent.com.
+        if repositoryURL.host?.lowercased() == "raw.githubusercontent.com",
+           packagePath.hasPrefix("/") {
+            var components = URLComponents(
+                url: repositoryURL,
+                resolvingAgainstBaseURL: false
+            )
+            components?.host = "github.com"
+            components?.path = packagePath
+            components?.query = nil
+            components?.fragment = nil
+            return components?.url
+        }
+
+        return URL(
+            string: packagePath,
+            relativeTo: repositoryURL
+        )?.absoluteURL
+    }
+
+    var iconURL: URL? {
+        guard let rawValue = module.presentation?.iconUrl,
+              let url = URL(string: rawValue),
+              url.scheme?.lowercased() == "https" else {
+            return nil
+        }
+
+        return url
     }
 
     var symbol: String {
@@ -148,6 +289,8 @@ struct ModuleSourceOption: Identifiable {
             return "photo.fill"
         case "music":
             return "music.note"
+        case "text":
+            return "doc.text.fill"
         default:
             return "square.stack.3d.up.fill"
         }
@@ -391,7 +534,12 @@ final class ModuleSourceStore: ObservableObject {
                         name: previous?.name ?? url.host ?? "Repository",
                         modules: previous?.modules ?? [],
                         lastRefreshed: previous?.lastRefreshed,
-                        refreshError: error.localizedDescription
+                        refreshError: error.localizedDescription,
+                        schemaVersion: previous?.schemaVersion,
+                        enabled: previous?.enabled,
+                        defaultModules: previous?.defaultModules,
+                        defaultModulesSignature: previous?.defaultModulesSignature,
+                        signature: previous?.signature
                     )
                 )
             }
@@ -489,7 +637,12 @@ final class ModuleSourceStore: ObservableObject {
                 : (url.host ?? "Module Repository"),
             modules: modules,
             lastRefreshed: Date(),
-            refreshError: nil
+            refreshError: nil,
+            schemaVersion: document.schemaVersion,
+            enabled: document.enabled,
+            defaultModules: document.defaultModules,
+            defaultModulesSignature: document.defaultModulesSignature,
+            signature: document.signature
         )
     }
 

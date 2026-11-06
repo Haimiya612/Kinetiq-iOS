@@ -2,6 +2,7 @@ import AVKit
 import Foundation
 import JavaScriptCore
 import SwiftUI
+import UIKit
 
 // MARK: - Runtime Errors
 
