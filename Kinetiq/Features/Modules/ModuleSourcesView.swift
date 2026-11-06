@@ -33,9 +33,74 @@ struct ModuleRepositoryModule: Decodable, Hashable, Identifiable {
     }
 
     var displayName: String {
-        presentation?.purpose
-            ?? presentation?.category
-            ?? moduleId
+        let packageFilename = packageUrl
+            .flatMap { URL(string: $0)?.deletingPathExtension().lastPathComponent }
+
+        let fallbackID = moduleId.replacingOccurrences(
+            of: #"(?i)-v\d+(?:\.\d+)*$"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        let rawName = (packageFilename?.isEmpty == false
+            ? packageFilename
+            : fallbackID) ?? moduleId
+
+        let cleanedName = rawName.replacingOccurrences(
+            of: #"(?i)[-_ ]v?\d+(?:\.\d+){0,3}$"#,
+            with: "",
+            options: .regularExpression
+        )
+        .replacingOccurrences(
+            of: #"([a-z])([A-Z])"#,
+            with: "$1 $2",
+            options: .regularExpression
+        )
+        .replacingOccurrences(
+            of: #"[-_]+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let key = cleanedName
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+
+        let canonicalNames: [String: String] = [
+            "aniworld": "AniWorld",
+            "anipm": "AniPM",
+            "anikoto": "AniKoto",
+            "anikage": "AniKage"
+        ]
+
+        if let canonicalName = canonicalNames[key] {
+            return canonicalName
+        }
+
+        return cleanedName
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    var displaySubtitle: String {
+        [
+            presentation?.category,
+            presentation?.language,
+            version.map { "v\($0)" }
+        ]
+        .compactMap { value in
+            guard let value,
+                  !value.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                  ).isEmpty else {
+                return nil
+            }
+
+            return value
+        }
+        .joined(separator: " • ")
     }
 
     var displayType: String {
@@ -70,7 +135,9 @@ struct ModuleSourceOption: Identifiable {
     }
 
     var subtitle: String {
-        "\(module.displayType) • v\(module.version ?? "Unknown")"
+        module.displaySubtitle.isEmpty
+            ? module.displayType
+            : module.displaySubtitle
     }
 
     var symbol: String {
@@ -618,7 +685,7 @@ struct ModuleSourcesView: View {
                 Text("Source Selection")
             } footer: {
                 Text(
-                    "Selecting a module changes the active source in Home. Video package installation downloads the ZIP, verifies its SHA-256 checksum, and inspects its local manifest and JavaScript handlers. Module execution, browsing, and playback are the next integration step."
+                    "Selecting a module changes the active source in Home. Supported video modules run through Kinetiq's JavaScript runtime, and resolved streams use Kinetiq's native player. Image and music modules are listed but are not supported yet."
                 )
             }
         }
