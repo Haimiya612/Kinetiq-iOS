@@ -4,267 +4,452 @@ import AVFoundation
 import Combine
 import UIKit
 
-// MARK: - Module Player
+// MARK: - Module Player Panels
 
-/// Native AVPlayer surface for remote streams resolved by a module.
-/// This player has its own playback state and never writes to the local
-/// media queue or local playback history.
+// Matches the Local Library player panel order and symbols.
+// Kept private to avoid clashing with LibraryView.swift's PlayerPanel.
+private enum ModulePlayerPanel: String, CaseIterable, Identifiable {
+    case episodes = "Episodes"
+    case servers = "Servers"
+    case audio = "Audio"
+    case playback = "Playback"
+    case subtitles = "Subtitles"
+    case queue = "Queue"
+    case more = "More"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .episodes: "list.number"
+        case .servers: "server.rack"
+        case .audio: "waveform"
+        case .playback: "slider.horizontal.3"
+        case .subtitles: "captions.bubble"
+        case .queue: "text.line.first.and.arrowtriangle.forward"
+        case .more: "ellipsis.circle"
+        }
+    }
+}
+
+// MARK: - Full-Screen Module Player
+
+/// Uses the visual language of LocalVideoPlayerView, while keeping all
+/// module playback state independent of the local Files/Photos queue.
 @MainActor
 struct KinetiqModulePlayerView: View {
-
     @ObservedObject private var session: ModuleEpisodePlaybackSession
     @StateObject private var playback: ModulePlayerPlaybackController
+    @StateObject private var pictureInPicture =
+        ModulePictureInPictureController()
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var showingEpisodes = false
-    @State private var showingPlaybackOptions = false
-    @State private var isShowingControls = true
+    @State private var controlsVisible = true
+    @State private var activePanel: ModulePlayerPanel?
+
+    @State private var isSeeking = false
+    @State private var seekPosition: Double = 0
+    @State private var seekFeedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
+    @State private var autoHideTask: Task<Void, Never>?
+
+    private let autoHideDelay: Duration = .seconds(3.4)
 
     init(session: ModuleEpisodePlaybackSession) {
-        self._session = ObservedObject(wrappedValue: session)
-        self._playback = StateObject(
+        _session = ObservedObject(wrappedValue: session)
+        _playback = StateObject(
             wrappedValue: ModulePlayerPlaybackController(session: session)
         )
     }
 
-    var body: some View {
-        ZStack {
-            Color.black
-                .ignoresSafeArea()
-
-            ModulePlayerSurface(
-                player: playback.player,
-                aspectFill: playback.isAspectFill
-            )
-            .ignoresSafeArea()
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isShowingControls.toggle()
-                }
-            }
-
-            if playback.isBuffering {
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(1.25)
-                    .allowsHitTesting(false)
-            }
-
-            if isShowingControls {
-                playerControls
-                    .transition(.opacity)
-            }
-        }
-        .statusBarHidden()
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $showingEpisodes) {
-            episodePicker
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
-        }
-        .confirmationDialog(
-            "Playback Options",
-            isPresented: $showingPlaybackOptions,
-            titleVisibility: .visible
-        ) {
-            Button(playback.isAspectFill ? "Use Fit" : "Use Fill") {
-                playback.isAspectFill.toggle()
-            }
-
-            ForEach([0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { rate in
-                Button(String(format: "%.2fx Speed", rate)) {
-                    playback.setRate(Float(rate))
-                }
-            }
-
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert(
-            "Playback",
-            isPresented: Binding(
-                get: { playback.errorMessage != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        playback.dismissError()
-                    }
-                }
-            )
-        ) {
-            Button("OK", role: .cancel) {
-                playback.dismissError()
-            }
-        } message: {
-            Text(playback.errorMessage ?? "The stream could not be played.")
-        }
-        .onDisappear {
-            playback.stop()
-        }
+    private var displayedTime: Double {
+        isSeeking ? seekPosition : playback.currentTime
     }
 
-    // MARK: Controls
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-    private var playerControls: some View {
-        VStack(spacing: 0) {
-            header
+                ModulePlayerSurface(
+                    player: playback.player,
+                    aspectFill: playback.isAspectFill,
+                    pictureInPicture: pictureInPicture
+                )
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+                .background(.black)
 
-            Spacer()
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: toggleControls)
+                    .accessibilityLabel("Show or hide playback controls")
 
-            centerControls
+                if controlsVisible {
+                    controlOverlay(
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .transition(.opacity)
+                    .zIndex(2)
+                }
 
-            Spacer()
+                if playback.isBuffering && playback.errorMessage == nil {
+                    ProgressView()
+                        .tint(KinetiqPalette.cyan)
+                        .scaleEffect(1.25)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                        .zIndex(3)
+                }
 
-            footer
+                if let seekFeedback {
+                    Text(seekFeedback)
+                        .font(
+                            .system(
+                                size: 15,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 17)
+                        .padding(.vertical, 11)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .position(
+                            x: geometry.size.width / 2,
+                            y: geometry.size.height / 2
+                        )
+                        .allowsHitTesting(false)
+                        .transition(.opacity.combined(with: .scale))
+                        .zIndex(4)
+                }
+
+                if let error = playback.errorMessage {
+                    playbackErrorOverlay(error)
+                        .zIndex(5)
+                }
+
+                if let activePanel {
+                    optionsOverlay(
+                        for: activePanel,
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .transition(
+                        .move(edge: .bottom)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(6)
+                }
+            }
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height
+            )
+            .background(.black)
+            .clipped()
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2)
+                    .onEnded { value in
+                        guard activePanel == nil else { return }
+
+                        let isLeftSide =
+                            value.location.x < geometry.size.width / 2
+
+                        let seconds: Double = isLeftSide ? -10 : 10
+                        playback.seek(by: seconds)
+                        showSeekFeedback(
+                            isLeftSide ? "−10 seconds" : "+10 seconds"
+                        )
+                        revealControls()
+                    }
+            )
+            .animation(
+                reduceMotion
+                    ? .easeInOut(duration: 0.15)
+                    : .easeInOut(duration: 0.24),
+                value: controlsVisible
+            )
+            .animation(
+                .spring(response: 0.34, dampingFraction: 0.88),
+                value: activePanel
+            )
+            .onAppear {
+                revealControls()
+            }
+            .onDisappear {
+                autoHideTask?.cancel()
+                feedbackTask?.cancel()
+                playback.stop()
+            }
+            .onChange(of: playback.isPlaying) { _, playing in
+                if playing {
+                    scheduleAutoHide()
+                } else {
+                    cancelAutoHide()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = true
+                    }
+                }
+            }
+            .onChange(of: activePanel) { _, panel in
+                if panel != nil {
+                    cancelAutoHide()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = true
+                    }
+                } else {
+                    scheduleAutoHide()
+                }
+            }
+            .onChange(of: pictureInPicture.isActive) { _, active in
+                if active {
+                    cancelAutoHide()
+                    activePanel = nil
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = false
+                    }
+                } else {
+                    revealControls()
+                }
+            }
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 18)
-        .padding(.bottom, 22)
-        .background {
+        .ignoresSafeArea()
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
+        .background(.black)
+    }
+
+    // MARK: Overlay Layout
+
+    private func controlOverlay(
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
+        ZStack {
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.72), location: 0),
-                    .init(color: .clear, location: 0.34),
-                    .init(color: .clear, location: 0.62),
-                    .init(color: .black.opacity(0.78), location: 1)
+                    .init(color: .black.opacity(0.58), location: 0),
+                    .init(color: .clear, location: 0.27),
+                    .init(color: .clear, location: 0.60),
+                    .init(color: .black.opacity(0.70), location: 1)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                topControls
+                    .padding(.top, max(safeAreaInsets.top, 14))
+
+                Spacer(minLength: 18)
+                centreControls
+                Spacer(minLength: 18)
+
+                bottomControls
+                    .padding(
+                        .bottom,
+                        max(safeAreaInsets.bottom, 15)
+                    )
+            }
+            .padding(.horizontal, 16)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var header: some View {
-        HStack(spacing: 13) {
+    // MARK: Top Controls
+
+    private var topControls: some View {
+        HStack(spacing: 11) {
             Button {
-                playback.stop()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 39, height: 39)
-                    .background(.white.opacity(0.13), in: Circle())
+                    .frame(width: 42, height: 42)
+                    .background(.black.opacity(0.34), in: Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(.white.opacity(0.14), lineWidth: 1)
+                    )
             }
             .accessibilityLabel("Close player")
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(session.animeTitle)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("NOW PLAYING")
+                    .font(
+                        .system(
+                            size: 9,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
+                    .tracking(1.8)
+                    .foregroundStyle(KinetiqPalette.cyan)
 
-                Text("\(session.sourceName)  •  \(session.currentEpisodeTitle)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.66))
+                Text(session.currentEpisodeTitle)
+                    .font(
+                        .system(
+                            size: 14,
+                            weight: .semibold,
+                            design: .rounded
+                        )
+                    )
+                    .foregroundStyle(.white)
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             ModuleAirPlayButton()
-                .frame(width: 39, height: 39)
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.14), lineWidth: 1)
+                )
                 .accessibilityLabel("AirPlay")
 
-            Menu {
+            if pictureInPicture.isPossible {
                 Button {
-                    showingEpisodes = true
+                    pictureInPicture.start()
                 } label: {
-                    Label("Episodes", systemImage: "list.number")
+                    Image(systemName: "pip")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.black.opacity(0.34), in: Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(
+                                    .white.opacity(0.14),
+                                    lineWidth: 1
+                                )
+                        )
                 }
-
-                Button {
-                    showingPlaybackOptions = true
-                } label: {
-                    Label("Playback Options", systemImage: "slider.horizontal.3")
-                }
-
-                if let episode = session.currentEpisode {
-                    Menu("Language") {
-                        if session.supports("sub", for: episode) {
-                            Button {
-                                playback.selectLanguage("sub")
-                            } label: {
-                                if session.selectedLanguage == "sub" {
-                                    Label("Sub", systemImage: "checkmark")
-                                } else {
-                                    Text("Sub")
-                                }
-                            }
-                        }
-
-                        if session.supports("dub", for: episode) {
-                            Button {
-                                playback.selectLanguage("dub")
-                            } label: {
-                                if session.selectedLanguage == "dub" {
-                                    Label("Dub", systemImage: "checkmark")
-                                } else {
-                                    Text("Dub")
-                                }
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 39, height: 39)
-                    .background(.white.opacity(0.13), in: Circle())
+                .accessibilityLabel("Start Picture in Picture")
             }
-            .accessibilityLabel("More player options")
+
+            Button {
+                playback.isAspectFill.toggle()
+                scheduleAutoHide()
+            } label: {
+                Image(
+                    systemName: playback.isAspectFill
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.14), lineWidth: 1)
+                )
+            }
+            .accessibilityLabel(
+                playback.isAspectFill
+                    ? "Fit video to screen"
+                    : "Fill screen with video"
+            )
         }
     }
 
-    private var centerControls: some View {
-        HStack(spacing: 34) {
+    // MARK: Centre Controls
+
+    private var centreControls: some View {
+        HStack(spacing: 13) {
             Button {
                 playback.playPrevious()
+                revealControls()
             } label: {
                 Image(systemName: "backward.end.fill")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
+                    .frame(width: 38, height: 52)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Previous episode")
 
             Button {
                 playback.seek(by: -10)
+                showSeekFeedback("−10 seconds")
+                scheduleAutoHide()
             } label: {
                 Image(systemName: "gobackward.10")
-                    .font(.system(size: 29, weight: .regular))
+                    .font(.system(size: 25, weight: .medium))
                     .foregroundStyle(.white)
+                    .frame(width: 44, height: 58)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Back 10 seconds")
 
             Button {
                 playback.togglePlayback()
+                if playback.isPlaying {
+                    scheduleAutoHide()
+                } else {
+                    cancelAutoHide()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        controlsVisible = true
+                    }
+                }
             } label: {
-                Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 25, weight: .bold))
-                    .foregroundStyle(.black)
-                    .frame(width: 68, height: 68)
-                    .background(.white, in: Circle())
+                Image(
+                    systemName: playback.isPlaying
+                        ? "pause.fill"
+                        : "play.fill"
+                )
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 72, height: 72)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(
+                    Circle().fill(.black.opacity(0.18))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(.white.opacity(0.24), lineWidth: 1)
+                )
+                .shadow(
+                    color: .black.opacity(0.28),
+                    radius: 18,
+                    y: 7
+                )
             }
-            .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(
+                playback.isPlaying ? "Pause" : "Play"
+            )
 
             Button {
                 playback.seek(by: 10)
+                showSeekFeedback("+10 seconds")
+                scheduleAutoHide()
             } label: {
                 Image(systemName: "goforward.10")
-                    .font(.system(size: 29, weight: .regular))
+                    .font(.system(size: 25, weight: .medium))
                     .foregroundStyle(.white)
+                    .frame(width: 44, height: 58)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Forward 10 seconds")
 
             Button {
                 playback.playNext()
+                revealControls()
             } label: {
                 Image(systemName: "forward.end.fill")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
+                    .frame(width: 38, height: 52)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Next episode")
         }
@@ -273,141 +458,856 @@ struct KinetiqModulePlayerView: View {
         .opacity(playback.isResolvingEpisode ? 0.55 : 1)
     }
 
-    private var footer: some View {
-        VStack(spacing: 13) {
-            HStack(spacing: 12) {
-                Text(playback.formattedCurrentTime)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(minWidth: 42, alignment: .leading)
+    // MARK: Bottom Controls
 
+    private var bottomControls: some View {
+        VStack(spacing: 12) {
+            VStack(spacing: 4) {
                 Slider(
-                    value: $playback.scrubPosition,
+                    value: Binding(
+                        get: { displayedTime },
+                        set: { value in
+                            isSeeking = true
+                            seekPosition = value
+                        }
+                    ),
                     in: 0...max(playback.duration, 1),
                     onEditingChanged: { editing in
-                        playback.setScrubbing(editing)
+                        if editing {
+                            cancelAutoHide()
+                        } else {
+                            playback.seek(to: seekPosition)
+                            isSeeking = false
+                            scheduleAutoHide()
+                        }
                     }
                 )
-                .tint(KinetiqPalette.accent)
+                .tint(KinetiqPalette.cyan)
+                .accessibilityLabel("Playback position")
 
-                Text(playback.formattedDuration)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(minWidth: 42, alignment: .trailing)
+                HStack {
+                    Text(
+                        ModulePlayerPlaybackController.timeString(
+                            displayedTime
+                        )
+                    )
+
+                    Spacer()
+
+                    Text(playback.formattedDuration)
+                }
+                .font(
+                    .system(
+                        size: 10,
+                        weight: .semibold,
+                        design: .monospaced
+                    )
+                )
+                .foregroundStyle(.white.opacity(0.88))
             }
 
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(KinetiqPalette.accent)
-                        .frame(width: 6, height: 6)
+            playerMenuBar
+        }
+    }
 
-                    Text(session.selectedLanguage.uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(.white.opacity(0.78))
+    private var playerMenuBar: some View {
+        HStack(spacing: 1) {
+            ForEach(ModulePlayerPanel.allCases) { panel in
+                Button {
+                    activePanel = activePanel == panel
+                        ? nil
+                        : panel
+                    controlsVisible = true
+                    cancelAutoHide()
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: panel.symbol)
+                            .font(
+                                .system(size: 15, weight: .semibold)
+                            )
+
+                        Text(panel.rawValue)
+                            .font(
+                                .system(size: 8, weight: .semibold)
+                            )
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                    .foregroundStyle(
+                        activePanel == panel
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.92)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(panel.rawValue)
+            }
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .background(Capsule().fill(.black.opacity(0.27)))
+        .overlay(
+            Capsule().stroke(.white.opacity(0.14), lineWidth: 1)
+        )
+        .shadow(
+            color: .black.opacity(0.22),
+            radius: 16,
+            y: 6
+        )
+    }
+
+    // MARK: Options Overlay
+
+    @ViewBuilder
+    private func optionsOverlay(
+        for panel: ModulePlayerPanel,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    activePanel = nil
+                }
+
+            ModulePlayerOptionsSheet(
+                panel: panel,
+                playback: playback,
+                session: session
+            ) {
+                activePanel = nil
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, max(safeAreaInsets.bottom, 8))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+    }
+
+    // MARK: Playback Error
+
+    private func playbackErrorOverlay(
+        _ error: String
+    ) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.orange)
+
+            Text("Playback issue")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 10) {
+                Button {
+                    playback.retryCurrentStream()
+                    revealControls()
+                } label: {
+                    Label(
+                        "Try again",
+                        systemImage: "arrow.clockwise"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(KinetiqPalette.cyan, in: Capsule())
+                }
+
+                Button {
+                    playback.dismissError()
+                    playback.playNext()
+                    revealControls()
+                } label: {
+                    Label(
+                        "Skip",
+                        systemImage: "forward.end.fill"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(.white.opacity(0.13), in: Capsule())
+                }
+            }
+            .padding(.top, 5)
+        }
+        .padding(24)
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        )
+        .padding(30)
+    }
+
+    // MARK: Seek Feedback
+
+    private func showSeekFeedback(_ message: String) {
+        feedbackTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            seekFeedback = message
+        }
+
+        feedbackTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(750))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    seekFeedback = nil
+                }
+            } catch {
+                // Another gesture replaced the current seek feedback.
+            }
+        }
+    }
+
+    // MARK: Controls Visibility
+
+    private func toggleControls() {
+        if controlsVisible {
+            cancelAutoHide()
+            withAnimation(.easeInOut(duration: 0.22)) {
+                controlsVisible = false
+            }
+        } else {
+            revealControls()
+        }
+    }
+
+    private func revealControls() {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            controlsVisible = true
+        }
+        scheduleAutoHide()
+    }
+
+    private func scheduleAutoHide() {
+        cancelAutoHide()
+
+        guard playback.isPlaying,
+              activePanel == nil,
+              !isSeeking else {
+            return
+        }
+
+        autoHideTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: autoHideDelay)
+
+                guard !Task.isCancelled,
+                      playback.isPlaying,
+                      activePanel == nil,
+                      !isSeeking else {
+                    return
+                }
+
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    controlsVisible = false
+                }
+            } catch {
+                // Cancelled by interaction or player state.
+            }
+        }
+    }
+
+    private func cancelAutoHide() {
+        autoHideTask?.cancel()
+        autoHideTask = nil
+    }
+}
+
+// MARK: - Module Player Options Sheet
+
+/// Mirrors the Library player's glass bottom sheet; every selectable
+/// control is connected to the module AVPlayer or module episode session.
+@MainActor
+private struct ModulePlayerOptionsSheet: View {
+    let panel: ModulePlayerPanel
+    @ObservedObject var playback: ModulePlayerPlaybackController
+    @ObservedObject var session: ModuleEpisodePlaybackSession
+    let onClose: () -> Void
+
+    private let speeds: [Float] = [
+        0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .frame(width: 38, height: 4)
+                .padding(.top, 10)
+                .padding(.bottom, 16)
+
+            HStack {
+                HStack(spacing: 10) {
+                    Image(systemName: panel.symbol)
+                        .foregroundStyle(KinetiqPalette.cyan)
+
+                    Text(panel.rawValue)
+                        .font(
+                            .system(
+                                size: 17,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
+                        .foregroundStyle(.white)
                 }
 
                 Spacer()
 
-                Button {
-                    showingEpisodes = true
-                } label: {
-                    Label("Episodes", systemImage: "list.number")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                        .background(.white.opacity(0.10), in: Circle())
                 }
-                .buttonStyle(.plain)
+                .accessibilityLabel("Close options")
+            }
+            .padding(.horizontal, 19)
+            .padding(.bottom, 14)
 
-                Button {
-                    showingPlaybackOptions = true
-                } label: {
-                    Label(
-                        String(format: "%.2fx", playback.playbackRate),
-                        systemImage: "speedometer"
-                    )
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
+            Rectangle()
+                .fill(.white.opacity(0.10))
+                .frame(height: 1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    panelContent
                 }
-                .buttonStyle(.plain)
+                .padding(18)
+            }
+            .frame(maxHeight: 390)
+        }
+        .background(.ultraThinMaterial)
+        .background(
+            Color(red: 0.035, green: 0.045, blue: 0.065)
+                .opacity(0.90)
+        )
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+        )
+        .overlay(alignment: .top) {
+            UnevenRoundedRectangle(
+                topLeadingRadius: 24,
+                topTrailingRadius: 24
+            )
+            .stroke(.white.opacity(0.13), lineWidth: 1)
+        }
+        .shadow(
+            color: .black.opacity(0.32),
+            radius: 25,
+            y: -5
+        )
+    }
+
+    @ViewBuilder
+    private var panelContent: some View {
+        switch panel {
+        case .episodes:
+            if session.episodes.isEmpty {
+                unavailableContent(
+                    symbol: "list.number",
+                    title: "No episodes",
+                    message: "The selected source has not returned an episode list."
+                )
+            } else {
+                episodeList
+            }
+
+        case .servers:
+            VStack(alignment: .leading, spacing: 12) {
+                sectionLabel("CURRENT SOURCE")
+
+                HStack(spacing: 12) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(KinetiqPalette.cyan)
+                        .frame(width: 30)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session.sourceName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+
+                        Text(
+                            session.currentStream?.url.host
+                                ?? "No server resolved"
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    if session.currentStream != nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(KinetiqPalette.cyan)
+                    }
+                }
+                .padding(12)
+                .background(
+                    KinetiqPalette.cyan.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
+
+                Text(
+                    "This module resolved one active stream. Additional server choices require the module to expose them."
+                )
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.58))
+            }
+
+        case .audio:
+            VStack(alignment: .leading, spacing: 12) {
+                if let episode = session.currentEpisode,
+                   episode.subAvailable || episode.dubAvailable {
+                    sectionLabel("EPISODE LANGUAGE")
+
+                    if episode.subAvailable {
+                        optionRow(
+                            title: "Sub",
+                            subtitle: "Subtitled episode stream",
+                            symbol: "captions.bubble.fill",
+                            selected: session.selectedLanguage == "sub"
+                        ) {
+                            playback.selectLanguage("sub")
+                        }
+                    }
+
+                    if episode.dubAvailable {
+                        optionRow(
+                            title: "Dub",
+                            subtitle: "Dubbed episode stream",
+                            symbol: "speaker.wave.2.fill",
+                            selected: session.selectedLanguage == "dub"
+                        ) {
+                            playback.selectLanguage("dub")
+                        }
+                    }
+                }
+
+                sectionLabel("EMBEDDED AUDIO TRACKS")
+
+                if playback.audioOptions.isEmpty {
+                    unavailableContent(
+                        symbol: "waveform",
+                        title: "No alternate embedded audio",
+                        message: "This stream does not expose selectable embedded audio tracks. Use Sub or Dub above when the source offers them."
+                    )
+                } else {
+                    ForEach(
+                        Array(playback.audioOptions.enumerated()),
+                        id: \.offset
+                    ) { _, option in
+                        optionRow(
+                            title: option.displayName,
+                            subtitle: option.locale?.identifier ?? "Audio track",
+                            symbol: "waveform",
+                            selected: playback.selectedAudio == option
+                        ) {
+                            playback.selectAudio(option)
+                        }
+                    }
+                }
+            }
+
+        case .playback:
+            VStack(alignment: .leading, spacing: 13) {
+                sectionLabel("PLAYBACK SPEED")
+
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible()),
+                        GridItem(.flexible()),
+                        GridItem(.flexible())
+                    ],
+                    spacing: 9
+                ) {
+                    ForEach(speeds, id: \.self) { speed in
+                        Button {
+                            playback.setRate(speed)
+                        } label: {
+                            Text(String(format: "%.2fx", speed))
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(
+                                    playback.playbackRate == speed
+                                        ? .black
+                                        : .white
+                                )
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(
+                                    playback.playbackRate == speed
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
+                                    in: RoundedRectangle(cornerRadius: 11)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("ASPECT RATIO")
+
+                optionRow(
+                    title: "Fit",
+                    subtitle: "Show the complete video",
+                    symbol: "arrow.left.and.right",
+                    selected: !playback.isAspectFill
+                ) {
+                    playback.isAspectFill = false
+                }
+
+                optionRow(
+                    title: "Fill",
+                    subtitle: "Fill the screen (may crop edges)",
+                    symbol: "arrow.up.left.and.arrow.down.right",
+                    selected: playback.isAspectFill
+                ) {
+                    playback.isAspectFill = true
+                }
+            }
+
+        case .subtitles:
+            if playback.subtitleOptions.isEmpty {
+                unavailableContent(
+                    symbol: "captions.bubble",
+                    title: "No selectable subtitle tracks",
+                    message: "The current stream does not expose embedded subtitle options. Module-provided Sub and Dub streams can be selected in Audio."
+                )
+            } else {
+                optionRow(
+                    title: "Off",
+                    subtitle: "Disable embedded subtitles",
+                    symbol: "nosign",
+                    selected: playback.selectedSubtitle == nil
+                ) {
+                    playback.selectSubtitle(nil)
+                }
+
+                ForEach(
+                    Array(playback.subtitleOptions.enumerated()),
+                    id: \.offset
+                ) { _, option in
+                    optionRow(
+                        title: option.displayName,
+                        subtitle: option.locale?.identifier ?? "Subtitle track",
+                        symbol: "captions.bubble",
+                        selected: playback.selectedSubtitle == option
+                    ) {
+                        playback.selectSubtitle(option)
+                    }
+                }
+            }
+
+        case .queue:
+            if session.episodes.isEmpty {
+                unavailableContent(
+                    symbol: "text.line.first.and.arrowtriangle.forward",
+                    title: "No episode queue",
+                    message: "The selected source has not provided episodes."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionLabel("SERIES QUEUE")
+                    Text("\(session.upcomingEpisodes.count) episodes after the current episode")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                    episodeList
+                }
+            }
+
+        case .more:
+            VStack(alignment: .leading, spacing: 13) {
+                sectionLabel("SLEEP TIMER")
+
+                HStack(spacing: 9) {
+                    ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                        Button {
+                            playback.setSleepTimer(minutes)
+                        } label: {
+                            Text("\(minutes)m")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(
+                                    playback.sleepTimerMinutes == minutes
+                                        ? .black
+                                        : .white
+                                )
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(
+                                    playback.sleepTimerMinutes == minutes
+                                        ? KinetiqPalette.cyan
+                                        : .white.opacity(0.09),
+                                    in: RoundedRectangle(cornerRadius: 10)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if let minutes = playback.sleepTimerMinutes {
+                    HStack {
+                        Label(
+                            "Timer set: \(minutes) minutes",
+                            systemImage: "moon.zzz.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(KinetiqPalette.cyan)
+
+                        Spacer()
+
+                        Button("Cancel") {
+                            playback.setSleepTimer(nil)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                    }
+                }
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("STREAM INFORMATION")
+                informationRow("Source", value: session.sourceName)
+                informationRow(
+                    "Server",
+                    value: session.currentStream?.url.host ?? "Unavailable"
+                )
+                informationRow(
+                    "Type",
+                    value: session.currentStream?.streamType ?? "Unknown"
+                )
+                informationRow(
+                    "Resolution",
+                    value: playback.resolutionText
+                )
+                informationRow(
+                    "Duration",
+                    value: playback.formattedDuration
+                )
+                informationRow(
+                    "Language",
+                    value: session.selectedLanguage.uppercased()
+                )
+                informationRow(
+                    "Playback speed",
+                    value: String(format: "%.2fx", playback.playbackRate)
+                )
             }
         }
     }
 
-    // MARK: Episode Picker
+    // MARK: Episode List
 
-    private var episodePicker: some View {
-        NavigationStack {
-            List {
-                ForEach(session.episodes) { episode in
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Episode \(episode.number)")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.primary)
+    private var episodeList: some View {
+        VStack(spacing: 9) {
+            ForEach(session.episodes) { episode in
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 11) {
+                        Image(systemName: "play.rectangle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(
+                                episode.id == session.currentEpisode?.id
+                                    ? KinetiqPalette.cyan
+                                    : .white.opacity(0.6)
+                            )
+                            .frame(width: 26)
 
-                            Text(languageDescription(for: episode))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Text("Episode \(episode.number)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+
+                        Spacer()
+
+                        if episode.id == session.currentEpisode?.id {
+                            Text("PLAYING")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(KinetiqPalette.cyan)
                         }
+                    }
 
-                        Spacer(minLength: 8)
+                    HStack(spacing: 10) {
+                        Spacer(minLength: 30)
 
                         if episode.subAvailable {
-                            Button("Sub") {
-                                showingEpisodes = false
-                                playback.play(episode: episode, language: "sub")
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(KinetiqPalette.accent)
-                            .disabled(playback.isResolvingEpisode)
+                            episodeButton(
+                                "Sub",
+                                episode: episode,
+                                language: "sub"
+                            )
                         }
-
                         if episode.dubAvailable {
-                            Button("Dub") {
-                                showingEpisodes = false
-                                playback.play(episode: episode, language: "dub")
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(KinetiqPalette.accent)
-                            .disabled(playback.isResolvingEpisode)
+                            episodeButton(
+                                "Dub",
+                                episode: episode,
+                                language: "dub"
+                            )
                         }
                     }
-                    .padding(.vertical, 4)
-                    .listRowBackground(
-                        episode.id == session.currentEpisode?.id
-                            ? KinetiqPalette.accent.opacity(0.10)
-                            : Color(uiColor: .secondarySystemGroupedBackground)
-                    )
                 }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color(uiColor: .systemGroupedBackground))
-            .navigationTitle("Episodes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        showingEpisodes = false
-                    }
-                }
+                .padding(12)
+                .background(
+                    episode.id == session.currentEpisode?.id
+                        ? KinetiqPalette.cyan.opacity(0.12)
+                        : .white.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 12)
+                )
             }
         }
     }
 
-    private func languageDescription(
-        for episode: ModuleAnimeEpisode
-    ) -> String {
-        switch (episode.subAvailable, episode.dubAvailable) {
-        case (true, true):
-            return "Sub and Dub"
-        case (true, false):
-            return "Sub"
-        case (false, true):
-            return "Dub"
-        case (false, false):
-            return "No language listed"
+    private func episodeButton(
+        _ title: String,
+        episode: ModuleAnimeEpisode,
+        language: String
+    ) -> some View {
+        Button {
+            playback.play(episode: episode, language: language)
+            onClose()
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 17)
+                .padding(.vertical, 9)
+                .background(.white.opacity(0.12), in: Capsule())
         }
+        .buttonStyle(.plain)
+        .disabled(playback.isResolvingEpisode)
+    }
+
+    // MARK: Reusable Options
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(
+                .system(
+                    size: 10,
+                    weight: .bold,
+                    design: .rounded
+                )
+            )
+            .tracking(1.3)
+            .foregroundStyle(.white.opacity(0.48))
+    }
+
+    private func optionRow(
+        title: String,
+        subtitle: String,
+        symbol: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(
+                        selected
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.65)
+                    )
+                    .frame(width: 30)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 5)
+
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(KinetiqPalette.cyan)
+                }
+            }
+            .padding(12)
+            .background(
+                selected
+                    ? KinetiqPalette.cyan.opacity(0.12)
+                    : .white.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func unavailableContent(
+        symbol: String,
+        title: String,
+        message: String
+    ) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 29, weight: .light))
+                .foregroundStyle(KinetiqPalette.cyan)
+
+            Text(title)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.56))
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+    }
+
+    private func informationRow(
+        _ title: String,
+        value: String
+    ) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .foregroundStyle(.white.opacity(0.52))
+
+            Spacer(minLength: 12)
+
+            Text(value)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .font(.system(size: 11, weight: .medium))
     }
 }
 
@@ -427,6 +1327,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     @Published var scrubPosition: Double = 0
     @Published var playbackRate: Float = 1.0
     @Published var isAspectFill = false
+
+    @Published private(set) var audioOptions: [AVMediaSelectionOption] = []
+    @Published private(set) var subtitleOptions: [AVMediaSelectionOption] = []
+    @Published private(set) var selectedAudio: AVMediaSelectionOption?
+    @Published private(set) var selectedSubtitle: AVMediaSelectionOption?
+    @Published private(set) var sleepTimerMinutes: Int?
+    @Published private(set) var resolutionText = "Analyzing…"
+
+    private var audioGroup: AVMediaSelectionGroup?
+    private var subtitleGroup: AVMediaSelectionGroup?
+    private var sleepTask: Task<Void, Never>?
 
     private let session: ModuleEpisodePlaybackSession
 
@@ -541,6 +1452,14 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         duration = 0
         currentTime = 0
         scrubPosition = 0
+        isScrubbing = false
+        resolutionText = "Analyzing…"
+        audioOptions = []
+        subtitleOptions = []
+        selectedAudio = nil
+        selectedSubtitle = nil
+        audioGroup = nil
+        subtitleGroup = nil
 
         removeCurrentItemObservers()
 
@@ -580,6 +1499,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                         self.duration = seconds
                     }
                     self.player.playImmediately(atRate: self.playbackRate)
+
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await self.loadMediaOptions(for: observedItem)
+                        await self.loadResolution(for: observedItem)
+                    }
 
                 case .failed:
                     self.isBuffering = false
@@ -626,6 +1551,75 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
         }
+    }
+
+    // MARK: Stream Tracks and Metadata
+
+    private func loadMediaOptions(for item: AVPlayerItem) async {
+        do {
+            let audio = try await item.asset.loadMediaSelectionGroup(
+                for: .audible
+            )
+            let subtitles = try await item.asset.loadMediaSelectionGroup(
+                for: .legible
+            )
+
+            guard player.currentItem === item else { return }
+            audioGroup = audio
+            subtitleGroup = subtitles
+            audioOptions = audio?.options ?? []
+            subtitleOptions = subtitles?.options ?? []
+
+            if let audio {
+                selectedAudio = item.currentMediaSelection
+                    .selectedMediaOption(in: audio)
+            }
+            if let subtitles {
+                selectedSubtitle = item.currentMediaSelection
+                    .selectedMediaOption(in: subtitles)
+            }
+        } catch {
+            // HLS sources can omit optional track-selection metadata.
+            // This is not a playback failure.
+        }
+    }
+
+    private func loadResolution(for item: AVPlayerItem) async {
+        do {
+            let tracks = try await item.asset.loadTracks(withMediaType: .video)
+            guard let track = tracks.first else {
+                guard player.currentItem === item else { return }
+                resolutionText = "No video track"
+                return
+            }
+
+            let naturalSize = try await track.load(.naturalSize)
+            let transform = try await track.load(.preferredTransform)
+            let adjusted = CGRect(origin: .zero, size: naturalSize)
+                .applying(transform)
+
+            guard player.currentItem === item else { return }
+            let width = Int(abs(adjusted.width))
+            let height = Int(abs(adjusted.height))
+            resolutionText = width > 0 && height > 0
+                ? "\(width) × \(height)"
+                : "Unavailable"
+        } catch {
+            guard player.currentItem === item else { return }
+            resolutionText = "Unavailable"
+        }
+    }
+
+    func selectAudio(_ option: AVMediaSelectionOption?) {
+        guard let audioGroup else { return }
+        player.currentItem?.select(option, in: audioGroup)
+        selectedAudio = option
+    }
+
+    func selectSubtitle(_ option: AVMediaSelectionOption?) {
+        guard let subtitleGroup else { return }
+        player.currentItem?.select(option, in: subtitleGroup)
+        selectedSubtitle = option
     }
 
     // MARK: Playback Controls
@@ -724,6 +1718,36 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         errorMessage = nil
     }
 
+    func retryCurrentStream() {
+        guard let stream = session.currentStream else {
+            errorMessage = "No stream is available to retry."
+            return
+        }
+        // Reload the same stream even though its UUID has not changed.
+        lastStreamID = nil
+        load(stream)
+    }
+
+    func setSleepTimer(_ minutes: Int?) {
+        sleepTask?.cancel()
+        sleepTask = nil
+        sleepTimerMinutes = nil
+
+        guard let minutes, minutes > 0 else { return }
+        sleepTimerMinutes = minutes
+
+        sleepTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(minutes * 60))
+                guard !Task.isCancelled, let self else { return }
+                self.player.pause()
+                self.sleepTimerMinutes = nil
+            } catch {
+                // The timer was cancelled or changed.
+            }
+        }
+    }
+
     // MARK: Lifecycle
 
     func stop() {
@@ -731,6 +1755,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         hasStopped = true
 
         player.pause()
+        sleepTask?.cancel()
+        sleepTask = nil
+        sleepTimerMinutes = nil
         removeCurrentItemObservers()
 
         if let timeObserver {
@@ -753,7 +1780,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         player.replaceCurrentItem(with: nil)
     }
 
-    private static func timeString(_ seconds: Double) -> String {
+    static func timeString(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else {
             return "0:00"
         }
@@ -780,12 +1807,121 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 }
 
-// MARK: - AVPlayer Surface
+// MARK: - Module Picture in Picture
+
+@MainActor
+private final class ModulePictureInPictureController:
+    NSObject,
+    ObservableObject {
+
+    @Published private(set) var isPossible = false
+    @Published private(set) var isActive = false
+
+    private weak var attachedLayer: AVPlayerLayer?
+    private var controller: AVPictureInPictureController?
+    private var possibleObservation: NSKeyValueObservation?
+
+    func attach(to layer: AVPlayerLayer) {
+        guard attachedLayer !== layer else { return }
+
+        possibleObservation?.invalidate()
+        possibleObservation = nil
+
+        controller?.delegate = nil
+        controller = nil
+
+        attachedLayer = layer
+        isPossible = false
+        isActive = false
+
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            return
+        }
+
+        guard let pipController =
+            AVPictureInPictureController(playerLayer: layer) else {
+            return
+        }
+
+        pipController.delegate = self
+        pipController.canStartPictureInPictureAutomaticallyFromInline = true
+        controller = pipController
+
+        possibleObservation = pipController.observe(
+            \.isPictureInPicturePossible,
+            options: [.initial, .new]
+        ) { [weak self] _, change in
+            let possible = change.newValue ?? false
+
+            Task { @MainActor [weak self] in
+                self?.isPossible = possible
+            }
+        }
+    }
+
+    func start() {
+        guard let controller,
+              controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive else {
+            return
+        }
+
+        controller.startPictureInPicture()
+    }
+
+    func stop() {
+        guard let controller,
+              controller.isPictureInPictureActive else {
+            return
+        }
+
+        controller.stopPictureInPicture()
+    }
+}
+
+extension ModulePictureInPictureController:
+    @preconcurrency AVPictureInPictureControllerDelegate {
+
+    nonisolated func pictureInPictureControllerDidStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        Task { @MainActor [weak self] in
+            self?.isActive = true
+        }
+    }
+
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        Task { @MainActor [weak self] in
+            self?.isActive = false
+        }
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        Task { @MainActor [weak self] in
+            self?.isActive = false
+        }
+    }
+
+    nonisolated func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler
+            completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(true)
+    }
+}
+
+// MARK: - Module AVPlayer Surface
 
 private struct ModulePlayerSurface: UIViewRepresentable {
-
     let player: AVPlayer
     let aspectFill: Bool
+    let pictureInPicture: ModulePictureInPictureController
 
     func makeUIView(context: Context) -> ModulePlayerLayerView {
         let view = ModulePlayerLayerView()
@@ -794,6 +1930,7 @@ private struct ModulePlayerSurface: UIViewRepresentable {
             ? .resizeAspectFill
             : .resizeAspect
         view.backgroundColor = .black
+        pictureInPicture.attach(to: view.playerLayer)
         return view
     }
 
@@ -805,11 +1942,18 @@ private struct ModulePlayerSurface: UIViewRepresentable {
         uiView.playerLayer.videoGravity = aspectFill
             ? .resizeAspectFill
             : .resizeAspect
+        pictureInPicture.attach(to: uiView.playerLayer)
+    }
+
+    static func dismantleUIView(
+        _ uiView: ModulePlayerLayerView,
+        coordinator: ()
+    ) {
+        uiView.playerLayer.player = nil
     }
 }
 
 private final class ModulePlayerLayerView: UIView {
-
     override class var layerClass: AnyClass {
         AVPlayerLayer.self
     }
@@ -819,19 +1963,13 @@ private final class ModulePlayerLayerView: UIView {
     }
 }
 
-// MARK: - AirPlay Button
+// MARK: - Module AirPlay Button
 
 private struct ModuleAirPlayButton: UIViewRepresentable {
-
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.tintColor = .white
-        picker.activeTintColor = UIColor(
-            red: 0.20,
-            green: 0.78,
-            blue: 0.95,
-            alpha: 1
-        )
+        picker.activeTintColor = .systemTeal
         picker.prioritizesVideoDevices = true
         return picker
     }

@@ -168,8 +168,11 @@ private actor SynthetiqModuleNetworkClient {
 
         configuration.urlCache = nil
         configuration.urlCredentialStorage = nil
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
+
+        // Each ephemeral session has transient cookie storage. Retain
+        // source cookies for subsequent module requests without persisting
+        // them to the app's shared cookie store on disk.
+        configuration.httpShouldSetCookies = true
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 
         session = URLSession(configuration: configuration)
@@ -241,7 +244,7 @@ private actor SynthetiqModuleNetworkClient {
             Double(timeoutMilliseconds) / 1_000
 
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.httpShouldHandleCookies = false
+        request.httpShouldHandleCookies = true
 
         for (name, value) in headers {
             guard
@@ -842,11 +845,18 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
             }
 
             if !errorMessage.isEmpty {
-                continuation.resume(
-                    throwing: ModuleRuntimeError.handlerFailed(
-                        errorMessage
+                if errorMessage ==
+                    ModuleRuntimeError.handlerTimedOut.localizedDescription {
+                    continuation.resume(
+                        throwing: ModuleRuntimeError.handlerTimedOut
                     )
-                )
+                } else {
+                    continuation.resume(
+                        throwing: ModuleRuntimeError.handlerFailed(
+                            errorMessage
+                        )
+                    )
+                }
                 return
             }
 
@@ -1005,32 +1015,59 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
             "\(animeTitle) -- Episode \(episode.number)"
 
         do {
-            let response = try await runtime.call(
-                handler: "extractStreamUrl",
-                arguments: [
-                    episode.href,
-                    language.lowercased()
-                ]
-            )
+            // The Synthetiq handler expects the episode href. Keep it
+            // first for modules such as JustAnime that already work.
+            // Only try the ID as a compatibility fallback.
+            let references = [episode.href, episode.id]
+            var attempted = Set<String>()
+            var lastError: Error?
 
-            let stream = try ModuleRuntimeDecoder.stream(
-                from: response,
-                title: episodeTitle,
-                baseURL: runtime.baseURL
-            )
+            for rawReference in references {
+                let reference = rawReference.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
 
-            guard activeRequestID == requestID else {
-                return false
+                guard !reference.isEmpty,
+                      attempted.insert(reference).inserted else {
+                    continue
+                }
+
+                do {
+                    let response = try await runtime.call(
+                        handler: "extractStreamUrl",
+                        arguments: [
+                            reference,
+                            language.lowercased()
+                        ]
+                    )
+
+                    let stream = try ModuleRuntimeDecoder.stream(
+                        from: response,
+                        title: episodeTitle,
+                        baseURL: runtime.baseURL
+                    )
+
+                    guard activeRequestID == requestID else {
+                        return false
+                    }
+
+                    currentEpisode = episode
+                    currentEpisodeIndex = index
+                    currentEpisodeTitle = episodeTitle
+                    selectedLanguage = language.lowercased()
+                    currentStream = stream
+                    playbackError = nil
+                    return true
+                } catch {
+                    if let moduleError = error as? ModuleRuntimeError,
+                       case .handlerTimedOut = moduleError {
+                        throw moduleError
+                    }
+                    lastError = error
+                }
             }
 
-            currentEpisode = episode
-            currentEpisodeIndex = index
-            currentEpisodeTitle = episodeTitle
-            selectedLanguage = language.lowercased()
-            currentStream = stream
-            playbackError = nil
-
-            return true
+            throw lastError ?? ModuleRuntimeError.invalidStream
         } catch {
             guard activeRequestID == requestID else {
                 return false
@@ -1133,12 +1170,21 @@ enum ModuleRuntimeDecoder {
         "items",
         "episodes",
         "data",
-        "anime"
+        "anime",
+        "list",
+        "entries",
+        "records",
+        "result"
     ]
 
     private static func dictionaryList(
-        from value: Any
+        from value: Any,
+        depth: Int = 0
     ) -> [[String: Any]] {
+        guard depth <= 4 else {
+            return []
+        }
+
         if let direct = value as? [[String: Any]] {
             return direct
         }
@@ -1148,16 +1194,21 @@ enum ModuleRuntimeDecoder {
         }
 
         for key in listKeys {
-            if let list = dictionary[key] as? [[String: Any]] {
-                return list
+            guard let nestedValue = dictionary[key] else {
+                continue
             }
-        }
 
-        if let nested = dictionary["data"] as? [String: Any] {
-            for key in listKeys {
-                if let list = nested[key] as? [[String: Any]] {
-                    return list
-                }
+            if let direct = nestedValue as? [[String: Any]] {
+                return direct
+            }
+
+            let nested = dictionaryList(
+                from: nestedValue,
+                depth: depth + 1
+            )
+
+            if !nested.isEmpty {
+                return nested
             }
         }
 
@@ -1327,7 +1378,20 @@ enum ModuleRuntimeDecoder {
             .compactMap { index, episode in
                 guard let href = string(
                     episode,
-                    keys: ["href", "url", "link"]
+                    keys: [
+                        "href",
+                        "url",
+                        "link",
+                        "episodeUrl",
+                        "episodeURL",
+                        "watchUrl",
+                        "watchURL",
+                        "episodeLink",
+                        "src",
+                        "episodeId",
+                        "episode_id",
+                        "id"
+                    ]
                 ) else {
                     return nil
                 }
@@ -1338,13 +1402,22 @@ enum ModuleRuntimeDecoder {
                         "number",
                         "episode",
                         "episodeNumber",
-                        "title"
+                        "episode_number",
+                        "ep",
+                        "title",
+                        "name"
                     ]
                 ) ?? "\(index + 1)"
 
                 let id = string(
                     episode,
-                    keys: ["id", "episodeId"]
+                    keys: [
+                        "id",
+                        "episodeId",
+                        "episode_id",
+                        "slug",
+                        "key"
+                    ]
                 ) ?? href
 
                 return ModuleAnimeEpisode(
@@ -2076,6 +2149,9 @@ struct ModuleAnimeDetailsView: View {
     @MainActor
     private func loadDetailsAndEpisodes() async {
         isLoading = true
+        episodes = []
+        errorMessage = nil
+
         defer {
             isLoading = false
         }
@@ -2086,22 +2162,68 @@ struct ModuleAnimeDetailsView: View {
                 arguments: [item.href]
             )
 
-            details = ModuleRuntimeDecoder.details(
+            let resolvedDetails = ModuleRuntimeDecoder.details(
                 from: detailsResponse,
                 fallback: item,
                 baseURL: runtime.baseURL
             )
 
-            let seriesIdentifier = details?.id ?? item.id
+            details = resolvedDetails
 
-            let episodesResponse = try await runtime.call(
-                handler: "extractEpisodes",
-                arguments: [seriesIdentifier]
-            )
+            // Prefer the documented series identifier first; only retry
+            // with alternative references if that returns no episodes.
+            let references = [
+                resolvedDetails.id,
+                resolvedDetails.href,
+                item.id,
+                item.href
+            ]
 
-            episodes = ModuleRuntimeDecoder.episodes(
-                from: episodesResponse
-            )
+            var attempted = Set<String>()
+            var lastError: Error?
+
+            for rawReference in references {
+                let reference = rawReference.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+                guard !reference.isEmpty,
+                      attempted.insert(reference).inserted else {
+                    continue
+                }
+
+                do {
+                    let response = try await runtime.call(
+                        handler: "extractEpisodes",
+                        arguments: [reference]
+                    )
+
+                    let foundEpisodes = ModuleRuntimeDecoder.episodes(
+                        from: response
+                    )
+
+                    if !foundEpisodes.isEmpty {
+                        episodes = foundEpisodes
+                        return
+                    }
+                } catch {
+                    // A timeout is not an identifier-format issue.
+                    // Avoid multiplying a slow request four times.
+                    if let moduleError = error as? ModuleRuntimeError,
+                       case .handlerTimedOut = moduleError {
+                        throw moduleError
+                    }
+
+                    lastError = error
+                }
+            }
+
+            if let lastError {
+                throw lastError
+            }
+
+            errorMessage =
+                "The source did not return a recognizable episode list."
         } catch {
             errorMessage = error.localizedDescription
         }
