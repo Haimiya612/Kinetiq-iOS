@@ -1010,18 +1010,11 @@ private struct ModuleAnimeSavedArtwork: View {
                     )
                 )
 
-            if let urlString, let url = URL(string: urlString) {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    Image(systemName: "play.rectangle")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Image(systemName: "play.rectangle.fill")
-                    .font(.system(size: 25))
-                    .foregroundStyle(KinetiqPalette.accent)
-            }
+            // Match the poster cache used by module Explore/Search and
+            // details. Missing artwork continues to show its fallback.
+            ModuleAnimeArtworkView(
+                url: urlString.flatMap { URL(string: $0) }
+            )
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

@@ -1,4 +1,5 @@
 import AVKit
+import CryptoKit
 import Foundation
 import JavaScriptCore
 import SwiftUI
@@ -919,6 +920,207 @@ struct ModuleAnimeItem: Identifiable {
     let title: String
     let href: String
     let imageURL: URL?
+    let synopsis: String?
+
+    init(
+        id: String,
+        title: String,
+        href: String,
+        imageURL: URL?,
+        synopsis: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.href = href
+        self.imageURL = imageURL
+        self.synopsis = synopsis
+    }
+}
+
+// MARK: - Artwork Cache and Poster
+
+/// A source-neutral, bounded HTTPS artwork cache for module posters.
+/// No cookies, credentials, stream URLs or module-provided request headers
+/// are used for artwork requests. Cache file names contain only SHA-256
+/// hashes of the URLs and the data is kept in the app's Caches directory.
+actor ModuleAnimeArtworkCache {
+    static let shared = ModuleAnimeArtworkCache()
+
+    private let maximumImageBytes = 6_000_000
+    private let maximumDiskBytes = 60_000_000
+    private let maximumDiskFiles = 240
+
+    private let memory = NSCache<NSString, NSData>()
+    private let session: URLSession
+    private let directory: URL?
+
+    private init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.timeoutIntervalForRequest = 15
+        session = URLSession(configuration: configuration)
+        directory = FileManager.default.urls(
+            for: .cachesDirectory,
+            in: .userDomainMask
+        ).first?.appendingPathComponent(
+            "KinetiqModuleArtwork/v1",
+            isDirectory: true
+        )
+        memory.countLimit = 75
+        memory.totalCostLimit = 28_000_000
+    }
+
+    func imageData(for url: URL) async -> Data? {
+        guard url.scheme?.lowercased() == "https",
+              url.host != nil,
+              url.user == nil,
+              url.password == nil else {
+            return nil
+        }
+
+        let key = Self.cacheKey(for: url)
+        if let cached = memory.object(forKey: key as NSString) {
+            return cached as Data
+        }
+
+        if let directory {
+            let file = directory.appendingPathComponent(key + ".img")
+            if let data = try? Data(contentsOf: file),
+               data.count > 0,
+               data.count <= maximumImageBytes {
+                memory.setObject(data as NSData, forKey: key as NSString,
+                                 cost: data.count)
+                return data
+            }
+        }
+
+        guard !Task.isCancelled else { return nil }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("image/avif,image/webp,image/*;q=0.9",
+                         forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard !Task.isCancelled,
+                  let response = response as? HTTPURLResponse,
+                  response.statusCode == 200,
+                  response.url?.scheme?.lowercased() == "https",
+                  response.mimeType?.lowercased().hasPrefix("image/") == true,
+                  response.mimeType?.lowercased() != "image/svg+xml",
+                  !data.isEmpty,
+                  data.count <= maximumImageBytes else {
+                return nil
+            }
+
+            memory.setObject(data as NSData, forKey: key as NSString,
+                             cost: data.count)
+
+            if let directory {
+                try? FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let destination = directory.appendingPathComponent(key + ".img")
+                try? data.write(to: destination, options: [.atomic])
+                // Enforce the disk budget on every successful insert.
+                pruneDiskCache(in: directory)
+            }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private static func cacheKey(for url: URL) -> String {
+        SHA256.hash(data: Data(url.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func pruneDiskCache(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [
+                .contentModificationDateKey, .fileSizeKey
+            ],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        let filesByAge = files.compactMap { url -> (URL, Int, Date)? in
+            guard let attributes = try? url.resourceValues(forKeys: [
+                .contentModificationDateKey, .fileSizeKey
+            ]) else { return nil }
+            return (
+                url,
+                max(0, attributes.fileSize ?? 0),
+                attributes.contentModificationDate ?? .distantPast
+            )
+        }.sorted { $0.2 < $1.2 }
+
+        var totalBytes = filesByAge.reduce(0) { $0 + $1.1 }
+        var totalFiles = filesByAge.count
+        for file in filesByAge {
+            guard totalBytes > maximumDiskBytes ||
+                  totalFiles > maximumDiskFiles else { break }
+            try? FileManager.default.removeItem(at: file.0)
+            totalBytes -= file.1
+            totalFiles -= 1
+        }
+    }
+}
+
+/// A reusable poster for Search, Explore, Favorites and Continue Watching.
+/// When artwork is missing or unavailable, always shows real fallback UI.
+struct ModuleAnimeArtworkView: View {
+    let url: URL?
+    @State private var artwork: UIImage?
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    KinetiqPalette.cyan.opacity(0.20),
+                    KinetiqPalette.violet.opacity(0.26)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            if let artwork {
+                GeometryReader { geometry in
+                    Image(uiImage: artwork)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width,
+                               height: geometry.size.height)
+                        .clipped()
+                }
+                .accessibilityHidden(true)
+            } else {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 25, weight: .regular))
+                    .foregroundStyle(KinetiqPalette.accent.opacity(0.85))
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .task(id: url?.absoluteString) {
+            artwork = nil
+            guard let url else { return }
+            let data = await ModuleAnimeArtworkCache.shared.imageData(for: url)
+            guard !Task.isCancelled,
+                  let data,
+                  let image = UIImage(data: data) else { return }
+            artwork = image
+        }
+    }
 }
 
 struct ModuleAnimeEpisode: Identifiable {
@@ -1389,6 +1591,11 @@ enum ModuleRuntimeDecoder {
                     ]
                 )
 
+                let synopsis = string(
+                    item,
+                    keys: ["description", "synopsis", "summary", "overview"]
+                ).map { String($0.prefix(3500)) }
+
                 return ModuleAnimeItem(
                     id: id,
                     title: title,
@@ -1396,7 +1603,8 @@ enum ModuleRuntimeDecoder {
                     imageURL: resolvedURL(
                         image,
                         baseURL: baseURL
-                    )
+                    ),
+                    synopsis: synopsis
                 )
             }
             .prefix(maximumResults)
@@ -1437,6 +1645,11 @@ enum ModuleRuntimeDecoder {
             ]
         )
 
+        let synopsis = string(
+            dictionary,
+            keys: ["description", "synopsis", "summary", "overview", "plot"]
+        ).map { String($0.prefix(3500)) } ?? fallback.synopsis
+
         return ModuleAnimeItem(
             id: id,
             title: title,
@@ -1444,7 +1657,8 @@ enum ModuleRuntimeDecoder {
             imageURL: resolvedURL(
                 image,
                 baseURL: baseURL
-            ) ?? fallback.imageURL
+            ) ?? fallback.imageURL,
+            synopsis: synopsis
         )
     }
 
@@ -1760,9 +1974,17 @@ enum ModuleRuntimeTrustStore {
 // Shared anime collection models and persistence now live in MainTabView.swift.
 
 private enum ModuleCatalogueSection: String, CaseIterable, Identifiable {
+    case explore = "Explore"
     case search = "Search"
     case favorites = "Favorites"
     case recent = "Recent"
+    var id: String { rawValue }
+}
+
+private enum ModuleCatalogueSort: String, CaseIterable, Identifiable {
+    case source = "Source order"
+    case title = "Title A–Z"
+    case reverseTitle = "Title Z–A"
     var id: String { rawValue }
 }
 
@@ -1781,7 +2003,11 @@ struct ModuleBrowserView: View {
     @State private var results: [ModuleAnimeItem] = []
 
     @State private var selectedItem: ModuleAnimeItem?
-    @State private var catalogueSection: ModuleCatalogueSection = .search
+    @State private var catalogueSection: ModuleCatalogueSection = .explore
+    @State private var catalogueSort: ModuleCatalogueSort = .source
+    @AppStorage("kinetiq.modules.discovery.posterGrid")
+    private var usesPosterGrid = true
+    @State private var completedSearchQuery: String?
     @StateObject private var animeCollection = ModuleAnimeCollectionStore.shared
 
     @State private var isPreparingRuntime = false
@@ -1950,6 +2176,8 @@ struct ModuleBrowserView: View {
     private func prepareRuntime() async {
         runtime = nil
         results = []
+        searchQuery = ""
+        completedSearchQuery = nil
 
         guard let record = installedRecord,
               packageStore.isInstalled(source) else {
@@ -1991,34 +2219,45 @@ struct ModuleBrowserView: View {
     // MARK: Anime Catalogue
 
     private var animeCatalogue: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Picker("Anime collection", selection: $catalogueSection) {
                 ForEach(ModuleCatalogueSection.allCases) { section in
                     Text(section.rawValue).tag(section)
                 }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 18)
-            .padding(.top, 12)
-            .accessibilityLabel("Anime catalogue section")
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .accessibilityLabel("Anime collection section")
 
             switch catalogueSection {
+            case .explore:
+                exploreContent
+
             case .search:
                 searchBar
                 if isSearching {
                     ProgressView("Searching \(source.title)…")
                         .frame(maxWidth: .infinity)
-                        .padding(.top, 35)
+                        .padding(.vertical, 34)
                 } else if results.isEmpty {
                     ContentUnavailableView(
-                        "Search Anime",
+                        completedSearchQuery == nil ? "Search Anime" : "No Matches",
                         systemImage: "magnifyingglass",
                         description: Text(
-                            "Enter an anime title to search this source."
+                            completedSearchQuery == nil
+                                ? "Enter a title or choose a topic from Explore."
+                                : "The source returned no results for \"\(completedSearchQuery ?? "")\". Try another search."
                         )
                     )
+                    .padding(.top, 20)
                 } else {
-                    collectionScroll(results, showRecent: false)
+                    collectionResults(
+                        results,
+                        title: "Search results",
+                        showRecent: false,
+                        allowSorting: true
+                    )
                 }
 
             case .favorites:
@@ -2026,12 +2265,15 @@ struct ModuleBrowserView: View {
                     ContentUnavailableView(
                         "No Saved Anime",
                         systemImage: "heart",
-                        description: Text("Tap a heart on an anime to save it from this source.")
+                        description: Text("Tap the heart on an anime to save it from this source.")
                     )
+                    .padding(.top, 22)
                 } else {
-                    collectionScroll(
+                    collectionResults(
                         animeCollection.favorites(for: source.id).map(\.anime),
-                        showRecent: false
+                        title: "Saved from \(source.title)",
+                        showRecent: false,
+                        allowSorting: false
                     )
                 }
 
@@ -2042,88 +2284,401 @@ struct ModuleBrowserView: View {
                         systemImage: "clock.arrow.circlepath",
                         description: Text("Episodes you open from this source appear here.")
                     )
+                    .padding(.top, 22)
                 } else {
-                    collectionScroll(
+                    collectionResults(
                         animeCollection.recentEpisodes(for: source.id).map(\.anime),
-                        showRecent: true
+                        title: "Recently opened",
+                        showRecent: true,
+                        allowSorting: false
                     )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // The documented Synthetiq video contract has no trending/home handler.
+    // Explore therefore uses actual saved catalogue entries and explicitly
+    // labeled search shortcuts, never manufactured trending/rating data.
+    private var exploreContent: some View {
+        VStack(alignment: .leading, spacing: 21) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("DISCOVER ON YOUR SOURCE")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(KinetiqPalette.accent)
+
+                Text("Explore anime")
+                    .font(.system(size: 27, weight: .bold))
+
+                Text("Search results come directly from \(source.title). Choose a topic or search for a title.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Explore by search", systemImage: "sparkle.magnifyingglass")
+                    .font(.headline)
+
+                Text("These are search suggestions, not source-provided trending rankings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: 10
+                ) {
+                    ForEach(["Romance", "Action", "Fantasy", "Comedy", "Mystery", "Adventure"], id: \.self) { term in
+                        Button {
+                            startSuggestedSearch(term)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 12, weight: .bold))
+                                Text(term)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Spacer(minLength: 0)
+                            }
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 51)
+                            .background(
+                                Color(uiColor: .secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 13)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Search \(term) on \(source.title)")
+                    }
+                }
+            }
+
+            let inProgress = animeCollection.continueWatching.filter {
+                $0.sourceID == source.id && !$0.isCompleted
+            }
+            if !inProgress.isEmpty {
+                exploreShelf(
+                    inProgress,
+                    title: "Continue watching",
+                    subtitle: "Continue a previously started episode"
+                )
+            }
+
+            let saved = animeCollection.favorites(for: source.id)
+            if !saved.isEmpty {
+                exploreShelf(
+                    Array(saved.prefix(12)),
+                    title: "Your saved anime",
+                    subtitle: "Favorites from this source"
+                )
+            }
+
+            Button {
+                catalogueSection = .search
+            } label: {
+                Label("Search \(source.title)", systemImage: "magnifyingglass")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(KinetiqPalette.accent)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 22)
+    }
+
+    private func exploreShelf(
+        _ entries: [ModuleAnimeCollectionEntry],
+        title: String,
+        subtitle: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 19, weight: .bold))
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(entries) { entry in
+                        Button {
+                            selectedItem = entry.anime
+                        } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                                    .frame(width: 124, height: 164)
+                                    .clipShape(RoundedRectangle(cornerRadius: 13))
+                                Text(entry.title)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                    .frame(width: 124, alignment: .leading)
+                                if entry.playbackFraction > 0, !entry.isCompleted {
+                                    ProgressView(value: entry.playbackFraction)
+                                        .tint(KinetiqPalette.accent)
+                                        .frame(width: 124)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(entry.title)")
+                    }
                 }
             }
         }
     }
 
-    private func collectionScroll(
-        _ items: [ModuleAnimeItem],
-        showRecent: Bool
+    private func startSuggestedSearch(_ term: String) {
+        searchQuery = term
+        catalogueSection = .search
+        Task { await searchAnime() }
+    }
+
+    private func collectionResults(
+        _ originalItems: [ModuleAnimeItem],
+        title: String,
+        showRecent: Bool,
+        allowSorting: Bool
     ) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                ForEach(items) { item in
-                    HStack(spacing: 8) {
-                        Button {
-                            selectedItem = item
-                        } label: {
-                            animeRow(item)
-                        }
-                        .buttonStyle(.plain)
+        // Some modules return the same anime more than once in a search.
+        // Dedupe by the provider's real identity without renaming results.
+        var seen = Set<String>()
+        let unique = originalItems.filter { seen.insert($0.id).inserted }
 
-                        VStack(spacing: 12) {
+        let items: [ModuleAnimeItem]
+        if allowSorting && catalogueSort == .title {
+            items = unique.sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        } else if allowSorting && catalogueSort == .reverseTitle {
+            items = unique.sorted {
+                $0.title.localizedStandardCompare($1.title) == .orderedDescending
+            }
+        } else {
+            items = unique
+        }
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 18, weight: .bold))
+                    Text("\(items.count) \(items.count == 1 ? "title" : "titles")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if allowSorting {
+                    Menu {
+                        ForEach(ModuleCatalogueSort.allCases) { option in
                             Button {
-                                animeCollection.toggleFavorite(
-                                    sourceID: source.id,
-                                    sourceName: source.title,
-                                    anime: item
-                                )
+                                catalogueSort = option
                             } label: {
-                                Image(systemName: animeCollection.isFavorite(
-                                    sourceID: source.id,
-                                    animeID: item.id
-                                ) ? "heart.fill" : "heart")
-                                .font(.system(size: 19, weight: .semibold))
-                                .foregroundStyle(KinetiqPalette.accent)
-                                .frame(width: 38, height: 44)
-                            }
-                            .accessibilityLabel(
-                                animeCollection.isFavorite(
-                                    sourceID: source.id,
-                                    animeID: item.id
-                                ) ? "Remove favorite" : "Save to favorites"
-                            )
-
-                            if showRecent {
-                                Button(role: .destructive) {
-                                    animeCollection.removeRecent(
-                                        sourceID: source.id,
-                                        animeID: item.id
-                                    )
-                                } label: {
-                                    Image(systemName: "xmark.circle")
-                                        .font(.system(size: 17))
-                                        .frame(width: 38, height: 40)
+                                if option == catalogueSort {
+                                    Label(option.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(option.rawValue)
                                 }
-                                .accessibilityLabel("Remove recent episode")
                             }
                         }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 36, height: 38)
                     }
-                    .overlay(alignment: .bottomLeading) {
-                        if showRecent,
-                           let entry = animeCollection.recentEpisodes(for: source.id)
-                            .first(where: { $0.animeID == item.id }),
-                           let number = entry.latestEpisodeNumber {
-                            Text("Last opened: Episode \(number) • \((entry.latestLanguage ?? "sub").uppercased())")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 19)
-                                .padding(.bottom, 2)
-                                .allowsHitTesting(false)
-                        }
+                    .accessibilityLabel("Sort anime")
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        usesPosterGrid.toggle()
+                    }
+                } label: {
+                    Image(systemName: usesPosterGrid ? "list.bullet" : "square.grid.2x2")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 36, height: 38)
+                }
+                .accessibilityLabel(usesPosterGrid ? "Switch to list" : "Switch to grid")
+            }
+
+            if usesPosterGrid {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 12),
+                              GridItem(.flexible(), spacing: 12)],
+                    alignment: .center,
+                    spacing: 13
+                ) {
+                    ForEach(items) { item in
+                        animeGridCard(item, showRecent: showRecent)
+                    }
+                }
+            } else {
+                LazyVStack(spacing: 11) {
+                    ForEach(items) { item in
+                        animeListCard(item, showRecent: showRecent)
                     }
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 16)
-            .padding(.bottom, 30)
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 28)
+    }
+
+    private func animeGridCard(
+        _ item: ModuleAnimeItem,
+        showRecent: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Button {
+                selectedItem = item
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    ModuleAnimeArtworkView(url: item.imageURL)
+                        .frame(height: 199)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    Text(item.title)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .frame(height: 37, alignment: .topLeading)
+                    if showRecent,
+                       let entry = animeCollection.recentEpisodes(for: source.id)
+                        .first(where: { $0.animeID == item.id }) {
+                        Text(entry.playbackLabel)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 0) {
+                Button {
+                    toggleFavorite(item)
+                } label: {
+                    Image(systemName: isFavorite(item) ? "heart.fill" : "heart")
+                        .frame(width: 38, height: 34)
+                        .foregroundStyle(KinetiqPalette.accent)
+                }
+                .accessibilityLabel(isFavorite(item) ? "Remove favorite" : "Save to favorites")
+
+                Spacer(minLength: 0)
+
+                if showRecent {
+                    Button(role: .destructive) {
+                        animeCollection.removeRecent(
+                            sourceID: source.id, animeID: item.id
+                        )
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .frame(width: 38, height: 34)
+                    }
+                    .accessibilityLabel("Remove recent episode")
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 27)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 17)
+        )
+    }
+
+    private func animeListCard(
+        _ item: ModuleAnimeItem,
+        showRecent: Bool
+    ) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                selectedItem = item
+            } label: {
+                HStack(spacing: 12) {
+                    ModuleAnimeArtworkView(url: item.imageURL)
+                        .frame(width: 75, height: 104)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(item.title)
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(3)
+                        Text(source.title)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(KinetiqPalette.accent)
+                        if showRecent,
+                           let entry = animeCollection.recentEpisodes(for: source.id)
+                            .first(where: { $0.animeID == item.id }) {
+                            Text(entry.playbackLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .buttonStyle(.plain)
+
+            VStack(spacing: 12) {
+                Button {
+                    toggleFavorite(item)
+                } label: {
+                    Image(systemName: isFavorite(item) ? "heart.fill" : "heart")
+                        .font(.system(size: 18))
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .frame(width: 38, height: 38)
+                }
+                .accessibilityLabel(isFavorite(item) ? "Remove favorite" : "Save to favorites")
+
+                if showRecent {
+                    Button(role: .destructive) {
+                        animeCollection.removeRecent(
+                            sourceID: source.id, animeID: item.id
+                        )
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .frame(width: 38, height: 38)
+                    }
+                    .accessibilityLabel("Remove recent episode")
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 17)
+        )
+    }
+
+    private func isFavorite(_ item: ModuleAnimeItem) -> Bool {
+        animeCollection.isFavorite(sourceID: source.id, animeID: item.id)
+    }
+
+    private func toggleFavorite(_ item: ModuleAnimeItem) {
+        animeCollection.toggleFavorite(
+            sourceID: source.id,
+            sourceName: source.title,
+            anime: item
+        )
     }
 
     private var searchBar: some View {
@@ -2131,152 +2686,69 @@ struct ModuleBrowserView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField(
-                "Search anime…",
-                text: $searchQuery
-            )
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .submitLabel(.search)
-            .onSubmit {
-                Task {
-                    await searchAnime()
-                }
-            }
+            TextField("Search anime…", text: $searchQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit { Task { await searchAnime() } }
 
             Button {
-                Task {
-                    await searchAnime()
-                }
+                Task { await searchAnime() }
             } label: {
                 Image(systemName: "arrow.right.circle.fill")
                     .font(.system(size: 23))
                     .foregroundStyle(KinetiqPalette.accent)
             }
-            .disabled(
-                searchQuery.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ).isEmpty || isSearching
-            )
+            .disabled(searchQuery.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty || isSearching)
             .accessibilityLabel("Search anime")
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 13)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(
-                cornerRadius: 16,
-                style: .continuous
-            )
+            in: RoundedRectangle(cornerRadius: 16)
         )
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.top, 14)
-        .padding(.bottom, 8)
+        .padding(.bottom, 5)
     }
-
-    private func animeRow(
-        _ item: ModuleAnimeItem
-    ) -> some View {
-        HStack(spacing: 13) {
-            AsyncImage(url: item.imageURL) { image in
-                image
-                    .resizable()
-                    .scaledToFill()
-            } placeholder: {
-                ZStack {
-                    KinetiqPalette.accent.opacity(0.12)
-
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 25))
-                        .foregroundStyle(KinetiqPalette.accent)
-                }
-            }
-            .frame(width: 76, height: 105)
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: 12,
-                    style: .continuous
-                )
-            )
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text(item.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(3)
-
-                Text(source.title)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(KinetiqPalette.accent)
-
-                Spacer()
-
-                HStack {
-                    Text("View details")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
-        }
-        .padding(10)
-        .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(
-                cornerRadius: 18,
-                style: .continuous
-            )
-        )
-    }
-
-    // MARK: Search Action
 
     @MainActor
     private func searchAnime() async {
         let query = searchQuery.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-
         guard !query.isEmpty,
-              let runtime else {
-            return
-        }
+              !isSearching,
+              let runtime else { return }
 
         isSearching = true
+        completedSearchQuery = query
+        results = []
         errorMessage = nil
-
-        defer {
-            isSearching = false
-        }
+        defer { isSearching = false }
 
         do {
             let response = try await runtime.call(
-                handler: "searchResults",
-                arguments: [query]
+                handler: "searchResults", arguments: [query]
             )
-
+            // A delayed result from a previously selected source must not
+            // be displayed under the newly selected module identity.
+            guard self.runtime === runtime else { return }
             results = ModuleRuntimeDecoder.searchResults(
                 from: response,
                 baseURL: runtime.baseURL,
                 maximumResults: runtime.maximumHomeResults
             )
-
-            if results.isEmpty {
-                errorMessage =
-                    "The source returned no anime for \"\(query)\"."
-            }
         } catch {
-            errorMessage = error.localizedDescription
+            if self.runtime === runtime {
+                errorMessage = error.localizedDescription
+            }
         }
     }
+
 }
 
 // MARK: - Anime Details and Episodes
@@ -2386,23 +2858,23 @@ struct ModuleAnimeDetailsView: View {
 
     private var detailsHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let imageURL = details?.imageURL ?? item.imageURL {
-                AsyncImage(url: imageURL) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(.quaternary)
-                }
+            ModuleAnimeArtworkView(url: details?.imageURL ?? item.imageURL)
                 .frame(maxWidth: .infinity)
-                .frame(height: 210)
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: 18,
-                        style: .continuous
-                    )
-                )
+                .frame(height: 220)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+            if let synopsis = details?.synopsis ?? item.synopsis,
+               !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Synopsis")
+                        .font(.system(size: 16, weight: .bold))
+                    Text(synopsis)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Text(details?.title ?? item.title)
@@ -2649,8 +3121,8 @@ struct ModuleAnimeDetailsView: View {
         )
 
         if didResolve {
-            // Store the episode selection only after stream resolution;
-            // playback position is deliberately not claimed as implemented.
+            // Record the selected episode only after stream resolution.
+            // The native module player separately persists real play position.
             animeCollection.recordEpisode(
                 sourceID: sourceID,
                 sourceName: sourceName,
