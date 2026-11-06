@@ -953,6 +953,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     let id = UUID()
     let animeTitle: String
     let sourceName: String
+    let sourceID: String?
+    let animeItem: ModuleAnimeItem?
 
     @Published private(set) var episodes: [ModuleAnimeEpisode]
     @Published private(set) var currentEpisode: ModuleAnimeEpisode?
@@ -970,8 +972,12 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     init(
         animeTitle: String,
         episodes: [ModuleAnimeEpisode],
-        runtime: SynthetiqModuleRuntime
+        runtime: SynthetiqModuleRuntime,
+        sourceID: String? = nil,
+        animeItem: ModuleAnimeItem? = nil
     ) {
+        self.sourceID = sourceID
+        self.animeItem = animeItem
         self.animeTitle = animeTitle
         self.episodes = episodes
         self.runtime = runtime
@@ -1751,199 +1757,7 @@ enum ModuleRuntimeTrustStore {
 }
 
 
-// MARK: - Native Anime Collection (Batch 03)
-
-/// Only title/artwork identifiers and user choices are stored here.
-/// Signed stream URLs, headers, cookies, and playback sessions are never saved.
-struct ModuleAnimeCollectionEntry: Codable, Identifiable, Hashable {
-    let sourceID: String
-    let sourceName: String
-    let animeID: String
-    let title: String
-    let href: String
-    let artworkURL: String?
-    var isFavorite: Bool
-    var savedAt: Date
-    var latestEpisodeID: String?
-    var latestEpisodeNumber: String?
-    var latestLanguage: String?
-    var latestEpisodeDate: Date?
-
-    var id: String { String(sourceID.utf8.count) + ":" + sourceID + animeID }
-
-    var anime: ModuleAnimeItem {
-        ModuleAnimeItem(
-            id: animeID,
-            title: title,
-            href: href,
-            imageURL: artworkURL.flatMap(URL.init(string:))
-        )
-    }
-}
-
-/// Local-only, bounded persistence with a separate namespace per module source.
-/// `Recently Played` reflects resolved episode selections, not AVPlayer position.
-@MainActor
-final class ModuleAnimeCollectionStore: ObservableObject {
-    static let shared = ModuleAnimeCollectionStore()
-
-    @Published private(set) var entries: [ModuleAnimeCollectionEntry] = []
-
-    private let storageKey = "kinetiq.modules.animeCollection.v1"
-    private let maximumEntries = 400
-
-    private init() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let restored = try? JSONDecoder().decode(
-                [ModuleAnimeCollectionEntry].self,
-                from: data
-              ) else { return }
-
-        // An untrusted module must not be able to explode persisted state.
-        var seen = Set<String>()
-        entries = restored.filter { record in
-            guard record.sourceID.count <= 1200,
-                  record.animeID.count <= 1500,
-                  !record.sourceID.isEmpty,
-                  !record.animeID.isEmpty,
-                  !record.title.isEmpty,
-                  record.title.count <= 400,
-                  record.href.count <= 2500,
-                  seen.insert(record.id).inserted else {
-                return false
-            }
-            return record.isFavorite || record.latestEpisodeID != nil
-        }
-        .prefix(maximumEntries)
-        .map { $0 }
-    }
-
-    func favorites(for sourceID: String) -> [ModuleAnimeCollectionEntry] {
-        entries.filter { $0.sourceID == sourceID && $0.isFavorite }
-            .sorted { $0.savedAt > $1.savedAt }
-    }
-
-    func recentEpisodes(for sourceID: String) -> [ModuleAnimeCollectionEntry] {
-        entries.filter { $0.sourceID == sourceID && $0.latestEpisodeDate != nil }
-            .sorted { ($0.latestEpisodeDate ?? .distantPast) > ($1.latestEpisodeDate ?? .distantPast) }
-    }
-
-    func isFavorite(sourceID: String, animeID: String) -> Bool {
-        entries.first { $0.sourceID == sourceID && $0.animeID == animeID }?.isFavorite ?? false
-    }
-
-    func toggleFavorite(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem
-    ) {
-        let key = String(sourceID.utf8.count) + ":" + sourceID + anime.id
-        guard isValid(sourceID: sourceID, anime: anime) else { return }
-        if let index = entries.firstIndex(where: { $0.id == key }) {
-            entries[index].isFavorite.toggle()
-            if entries[index].isFavorite { entries[index].savedAt = Date() }
-            if !entries[index].isFavorite && entries[index].latestEpisodeID == nil {
-                entries.remove(at: index)
-            }
-        } else {
-            entries.insert(
-                ModuleAnimeCollectionEntry(
-                    sourceID: sourceID,
-                    sourceName: String(sourceName.prefix(180)),
-                    animeID: anime.id,
-                    title: anime.title,
-                    href: anime.href,
-                    artworkURL: validArtworkURL(anime.imageURL),
-                    isFavorite: true,
-                    savedAt: Date(),
-                    latestEpisodeID: nil,
-                    latestEpisodeNumber: nil,
-                    latestLanguage: nil,
-                    latestEpisodeDate: nil
-                ),
-                at: 0
-            )
-        }
-        persist()
-    }
-
-    /// Called only when an episode's stream successfully resolves.
-    func recordEpisode(
-        sourceID: String,
-        sourceName: String,
-        anime: ModuleAnimeItem,
-        episode: ModuleAnimeEpisode,
-        language: String
-    ) {
-        guard isValid(sourceID: sourceID, anime: anime),
-              !episode.id.isEmpty, episode.id.count <= 1500 else { return }
-
-        let key = String(sourceID.utf8.count) + ":" + sourceID + anime.id
-        if let index = entries.firstIndex(where: { $0.id == key }) {
-            entries[index].latestEpisodeID = episode.id
-            entries[index].latestEpisodeNumber = String(episode.number.prefix(100))
-            entries[index].latestLanguage = String(language.prefix(10))
-            entries[index].latestEpisodeDate = Date()
-        } else {
-            entries.insert(
-                ModuleAnimeCollectionEntry(
-                    sourceID: sourceID,
-                    sourceName: String(sourceName.prefix(180)),
-                    animeID: anime.id,
-                    title: anime.title,
-                    href: anime.href,
-                    artworkURL: validArtworkURL(anime.imageURL),
-                    isFavorite: false,
-                    savedAt: Date(),
-                    latestEpisodeID: episode.id,
-                    latestEpisodeNumber: String(episode.number.prefix(100)),
-                    latestLanguage: String(language.prefix(10)),
-                    latestEpisodeDate: Date()
-                ),
-                at: 0
-            )
-        }
-        persist()
-    }
-
-    func removeRecent(sourceID: String, animeID: String) {
-        guard let index = entries.firstIndex(where: {
-            $0.sourceID == sourceID && $0.animeID == animeID
-        }) else { return }
-        entries[index].latestEpisodeID = nil
-        entries[index].latestEpisodeNumber = nil
-        entries[index].latestLanguage = nil
-        entries[index].latestEpisodeDate = nil
-        if !entries[index].isFavorite { entries.remove(at: index) }
-        persist()
-    }
-
-    private func isValid(sourceID: String, anime: ModuleAnimeItem) -> Bool {
-        !sourceID.isEmpty && sourceID.count <= 1200 &&
-        !anime.id.isEmpty && anime.id.count <= 1500 &&
-        !anime.title.isEmpty && anime.title.count <= 400 &&
-        anime.href.count <= 2500
-    }
-
-    private func validArtworkURL(_ url: URL?) -> String? {
-        guard let url,
-              url.scheme?.lowercased() == "https",
-              url.absoluteString.count <= 3000 else { return nil }
-        return url.absoluteString
-    }
-
-    private func persist() {
-        // Keep favorites first when pruning; only old recents are evicted.
-        if entries.count > maximumEntries {
-            let favorites = entries.filter(\.isFavorite)
-            let recent = entries.filter { !$0.isFavorite }
-                .sorted { ($0.latestEpisodeDate ?? .distantPast) > ($1.latestEpisodeDate ?? .distantPast) }
-            entries = Array((favorites + recent).prefix(maximumEntries))
-        }
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey)
-    }
-}
+// Shared anime collection models and persistence now live in MainTabView.swift.
 
 private enum ModuleCatalogueSection: String, CaseIterable, Identifiable {
     case search = "Search"
@@ -2554,6 +2368,22 @@ struct ModuleAnimeDetailsView: View {
 
     // MARK: Details Header
 
+    private var savedPlayback: ModuleAnimeCollectionEntry? {
+        animeCollection.entries.first {
+            $0.sourceID == sourceID && $0.animeID == item.id
+        }
+    }
+
+    private var resumeEpisode: ModuleAnimeEpisode? {
+        guard let savedPlayback,
+              (savedPlayback.lastPlaybackPosition ?? 0) >= 3,
+              let episodeID = savedPlayback.latestEpisodeID else {
+            return nil
+        }
+
+        return episodes.first { $0.id == episodeID }
+    }
+
     private var detailsHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let imageURL = details?.imageURL ?? item.imageURL {
@@ -2578,6 +2408,25 @@ struct ModuleAnimeDetailsView: View {
             Text(details?.title ?? item.title)
                 .font(.system(size: 23, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let episode = resumeEpisode {
+                Button {
+                    let requested = savedPlayback?.latestLanguage ?? "sub"
+                    let language = requested == "dub" && episode.dubAvailable
+                        ? "dub"
+                        : (episode.subAvailable ? "sub" : "dub")
+                    Task { await play(episode: episode, language: language) }
+                } label: {
+                    Label(
+                        "Continue Episode \(episode.number)",
+                        systemImage: "play.circle.fill"
+                    )
+                    .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(KinetiqPalette.accent)
+                .disabled(isResolvingStream)
+            }
 
             if isLoading {
                 ProgressView("Loading episodes…")
@@ -2787,7 +2636,9 @@ struct ModuleAnimeDetailsView: View {
             session = ModuleEpisodePlaybackSession(
                 animeTitle: details?.title ?? item.title,
                 episodes: episodes,
-                runtime: runtime
+                runtime: runtime,
+                sourceID: sourceID,
+                animeItem: item
             )
             playbackSession = session
         }

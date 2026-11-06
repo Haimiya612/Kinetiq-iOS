@@ -1409,6 +1409,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var knownStreamChoices = Set<UUID>()
     private var isHandlingStreamFailure = false
     private var lastStreamID: UUID?
+    private var lastLoadedEpisode: ModuleAnimeEpisode?
+    private var lastLoadedLanguage = "sub"
+    private var pendingResumePosition: Double = 0
+    private var lastSavedProgressAt = Date.distantPast
     private var isScrubbing = false
     private var hasStopped = false
 
@@ -1504,6 +1508,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                         self.duration = length
                     }
                 }
+
+                if self.player.timeControlStatus == .playing {
+                    self.savePlaybackProgress(force: false)
+                }
             }
         }
     }
@@ -1537,6 +1545,45 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         guard !hasStopped, lastStreamID != stream.id else {
             return
         }
+
+        // Save the OLD episode before a new one replaces the player item.
+        // Failover between servers for the same episode retains the current
+        // in-memory position, whereas a different episode uses saved progress.
+        let previousEpisodeID = lastLoadedEpisode?.id
+        let previousPosition = currentTime
+        if lastStreamID != nil {
+            savePlaybackProgress(force: true)
+        }
+
+        lastLoadedEpisode = session.currentEpisode
+        lastLoadedLanguage = session.selectedLanguage
+
+        let storedPosition: Double
+        if let sourceID = session.sourceID,
+           let anime = session.animeItem,
+           let episode = session.currentEpisode {
+            storedPosition = ModuleAnimeCollectionStore.shared.resumePosition(
+                sourceID: sourceID,
+                animeID: anime.id,
+                episodeID: episode.id,
+                language: session.selectedLanguage
+            )
+        } else {
+            storedPosition = 0
+        }
+
+        if previousEpisodeID == session.currentEpisode?.id {
+            // Preserve the pending seek during early server failures.
+            pendingResumePosition = max(
+                previousPosition,
+                pendingResumePosition,
+                storedPosition
+            )
+        } else {
+            pendingResumePosition = storedPosition
+        }
+
+        lastSavedProgressAt = .distantPast
 
         let choices = Set(session.availableStreams.map(\.id))
         if choices != knownStreamChoices {
@@ -1638,7 +1685,32 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                     if seconds.isFinite, seconds > 0 {
                         self.duration = seconds
                     }
-                    self.player.playImmediately(atRate: self.playbackRate)
+                    // Seek before playback begins, avoiding a brief jump
+                    // from zero on resumed episodes and server failover.
+                    let savedPosition = self.pendingResumePosition
+                    self.pendingResumePosition = 0
+                    let safePosition: Double
+                    if seconds.isFinite, seconds > 5 {
+                        safePosition = min(savedPosition, max(0, seconds - 5))
+                    } else {
+                        safePosition = 0
+                    }
+
+                    if safePosition >= 3 {
+                        self.player.seek(
+                            to: CMTime(seconds: safePosition, preferredTimescale: 600),
+                            toleranceBefore: .zero,
+                            toleranceAfter: .zero
+                        ) { [weak self] _ in
+                            Task { @MainActor [weak self] in
+                                guard let self,
+                                      self.player.currentItem === observedItem else { return }
+                                self.player.playImmediately(atRate: self.playbackRate)
+                            }
+                        }
+                    } else {
+                        self.player.playImmediately(atRate: self.playbackRate)
+                    }
 
                     Task { [weak self] in
                         guard let self else { return }
@@ -1677,6 +1749,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                     return
                 }
 
+                self.savePlaybackProgress(force: true, finished: true)
                 await self.session.playNext()
 
                 if let message = self.session.playbackError,
@@ -2039,8 +2112,40 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     // MARK: Lifecycle
 
+    // MARK: Independent Remote Playback History
+
+    private func savePlaybackProgress(
+        force: Bool,
+        finished: Bool = false
+    ) {
+        guard let sourceID = session.sourceID,
+              let anime = session.animeItem,
+              let episode = lastLoadedEpisode,
+              duration.isFinite, duration > 5,
+              currentTime.isFinite, currentTime >= 3 else {
+            return
+        }
+
+        let now = Date()
+        if !force, now.timeIntervalSince(lastSavedProgressAt) < 7 {
+            return
+        }
+
+        ModuleAnimeCollectionStore.shared.recordPlayback(
+            sourceID: sourceID,
+            sourceName: session.sourceName,
+            anime: anime,
+            episode: episode,
+            language: lastLoadedLanguage,
+            position: finished ? duration : currentTime,
+            duration: duration
+        )
+        lastSavedProgressAt = now
+    }
+
     func stop() {
         guard !hasStopped else { return }
+        savePlaybackProgress(force: true)
         hasStopped = true
 
         player.pause()
