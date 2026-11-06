@@ -142,6 +142,16 @@ private actor ModuleRequestGate {
 
 // MARK: - Module Networking
 
+/// Immutable cookie values can safely cross the URLSession actor boundary.
+/// They are never written to defaults, diagnostics, or the module catalogue.
+struct ModuleStreamCookie: Sendable {
+    let name: String
+    let value: String
+    let domain: String
+    let path: String
+    let isSecure: Bool
+}
+
 private actor SynthetiqModuleNetworkClient {
     private let baseURL: URL
     private let maximumResponseBytes: Int
@@ -176,6 +186,24 @@ private actor SynthetiqModuleNetworkClient {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 
         session = URLSession(configuration: configuration)
+    }
+
+    func cookies(for streamURL: URL) -> [ModuleStreamCookie] {
+        guard streamURL.scheme?.lowercased() == "https",
+              let cookieStorage = session.configuration.httpCookieStorage else {
+            return []
+        }
+
+        return Array((cookieStorage.cookies(for: streamURL) ?? []).prefix(40))
+            .map { cookie in
+                ModuleStreamCookie(
+                    name: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain,
+                    path: cookie.path,
+                    isSecure: cookie.isSecure
+                )
+            }
     }
 
     func fetch(
@@ -578,6 +606,12 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         }
     }
 
+    /// Returns only cookies that match the requested HTTPS stream host.
+    /// The native video player converts them to AVURLAsset cookies.
+    func cookies(for streamURL: URL) async -> [ModuleStreamCookie] {
+        await networkClient.cookies(for: streamURL)
+    }
+
     // MARK: JavaScript Runtime Bootstrap
 
     private static let runtimeBootstrap = """
@@ -895,12 +929,18 @@ struct ModuleAnimeEpisode: Identifiable {
     let dubAvailable: Bool
 }
 
-struct ModuleResolvedStream: Identifiable {
+struct ModuleResolvedStream: Identifiable, Sendable {
     let id = UUID()
+    /// The episode title; distinct from the provider's server label.
     let title: String
+    let label: String
     let url: URL
     let headers: [String: String]
     let streamType: String
+    var cookies: [ModuleStreamCookie] = []
+
+    /// Never display the full URL: it may contain signed query tokens.
+    var hostName: String { url.host ?? "Unknown host" }
 }
 
 // MARK: - Module Episode Playback Session
@@ -918,6 +958,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     @Published private(set) var currentEpisode: ModuleAnimeEpisode?
     @Published private(set) var currentEpisodeIndex: Int?
     @Published private(set) var currentStream: ModuleResolvedStream?
+    @Published private(set) var availableStreams: [ModuleResolvedStream] = []
     @Published private(set) var currentEpisodeTitle: String
     @Published private(set) var selectedLanguage = "sub"
     @Published private(set) var isResolving = false
@@ -1041,7 +1082,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         ]
                     )
 
-                    let stream = try ModuleRuntimeDecoder.stream(
+                    var choices = try ModuleRuntimeDecoder.streams(
                         from: response,
                         title: episodeTitle,
                         baseURL: runtime.baseURL
@@ -1051,11 +1092,30 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         return false
                     }
 
+                    // Capture cookies only for each HTTPS stream host;
+                    // never pass source-domain cookies to unrelated CDNs.
+                    for index in choices.indices {
+                        let streamURL = choices[index].url
+                        let sourceCookies = await runtime.cookies(
+                            for: streamURL
+                        )
+                        choices[index].cookies = sourceCookies
+                    }
+
+                    guard activeRequestID == requestID else {
+                        return false
+                    }
+
+                    guard let preferredStream = choices.first else {
+                        throw ModuleRuntimeError.invalidStream
+                    }
+
                     currentEpisode = episode
                     currentEpisodeIndex = index
                     currentEpisodeTitle = episodeTitle
                     selectedLanguage = language.lowercased()
-                    currentStream = stream
+                    availableStreams = choices
+                    currentStream = preferredStream
                     playbackError = nil
                     return true
                 } catch {
@@ -1076,6 +1136,20 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
             playbackError = error.localizedDescription
             return false
         }
+    }
+
+    /// Changes the active server for this episode without rerunning JS.
+    /// The player observes currentStream and performs the actual handoff.
+    @discardableResult
+    func selectStream(_ stream: ModuleResolvedStream) -> Bool {
+        guard !isResolving,
+              availableStreams.contains(where: { $0.id == stream.id }) else {
+            return false
+        }
+
+        playbackError = nil
+        currentStream = stream
+        return true
     }
 
     @discardableResult
@@ -1440,58 +1514,194 @@ enum ModuleRuntimeDecoder {
 
     // MARK: Stream Resolution
 
+    /// The Synthetiq V3 contract permits [label, URL], a direct URL, and
+    /// stream dictionaries. This decoder also supports lists of labeled
+    /// alternatives from compatible providers. A single malformed server
+    /// never prevents another valid server from being used.
+    static func streams(
+        from value: Any,
+        title: String,
+        baseURL: URL
+    ) throws -> [ModuleResolvedStream] {
+        let root = value as? [String: Any] ?? [:]
+        let inheritedHeaders = root["headers"] as? [String: String] ?? [:]
+        let inheritedType = string(
+            root,
+            keys: ["streamType", "type"]
+        ) ?? "auto"
+
+        var choices: [ModuleResolvedStream] = []
+        var seen = Set<String>()
+        let maximumChoices = 24
+
+        func isServerLabel(_ text: String) -> Bool {
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return false }
+            let lowered = value.lowercased()
+            return !value.contains("/")
+                && !value.contains("://")
+                && !lowered.contains(".m3u8")
+                && !lowered.contains(".mp4")
+        }
+
+        func append(
+            urlString: String?,
+            label: String?,
+            headers: [String: String],
+            streamType: String
+        ) {
+            guard choices.count < maximumChoices,
+                  let urlString,
+                  let url = resolvedURL(urlString, baseURL: baseURL) else {
+                return
+            }
+
+            let displayLabel = label?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
+            // Labels originate from third-party module output. A label that
+            // looks like a URL could accidentally expose a signed token.
+            let sensitiveLabel = displayLabel.lowercased().contains("://")
+                || displayLabel.lowercased().contains("token=")
+                || displayLabel.lowercased().contains("signature=")
+            let safeLabel = displayLabel.isEmpty || sensitiveLabel
+                ? (url.host ?? "Auto")
+                : String(displayLabel.prefix(80))
+
+            // Keep distinct header-bearing streams even on the same URL.
+            let headerSignature = headers.keys.sorted().map {
+                "\($0.lowercased())=\(headers[$0] ?? "")"
+            }.joined(separator: "&")
+            let key = url.absoluteString + "|" + headerSignature
+
+            guard seen.insert(key).inserted else { return }
+
+            choices.append(
+                ModuleResolvedStream(
+                    title: title,
+                    label: safeLabel,
+                    url: url,
+                    headers: headers,
+                    streamType: streamType
+                )
+            )
+        }
+
+        func parseEntry(_ entry: Any, defaultLabel: String? = nil) {
+            if let urlString = entry as? String {
+                append(
+                    urlString: urlString,
+                    label: defaultLabel,
+                    headers: inheritedHeaders,
+                    streamType: inheritedType
+                )
+                return
+            }
+
+            if let pair = entry as? [String],
+               pair.count == 2,
+               isServerLabel(pair[0]) {
+                append(
+                    urlString: pair[1],
+                    label: pair[0],
+                    headers: inheritedHeaders,
+                    streamType: inheritedType
+                )
+                return
+            }
+
+            if let dictionary = entry as? [String: Any] {
+                let itemHeaders = dictionary["headers"] as? [String: String] ?? [:]
+                let mergedHeaders = inheritedHeaders.merging(itemHeaders) {
+                    _, incoming in incoming
+                }
+
+                let streamLabel = string(
+                    dictionary,
+                    keys: ["label", "name", "title", "quality", "server"]
+                ) ?? defaultLabel
+
+                let streamType = string(
+                    dictionary,
+                    keys: ["streamType", "type"]
+                ) ?? inheritedType
+
+                append(
+                    urlString: string(
+                        dictionary,
+                        keys: ["url", "streamUrl", "file", "src", "href", "link"]
+                    ),
+                    label: streamLabel,
+                    headers: mergedHeaders,
+                    streamType: streamType
+                )
+            }
+        }
+
+        if let direct = value as? String {
+            parseEntry(direct, defaultLabel: "Auto")
+        } else if let list = value as? [Any] {
+            if list.count == 2,
+               let first = list[0] as? String,
+               let second = list[1] as? String,
+               isServerLabel(first) {
+                parseEntry([first, second])
+            } else {
+                for element in list.prefix(maximumChoices) {
+                    parseEntry(element)
+                }
+            }
+        } else if !root.isEmpty {
+            for key in ["streams", "sources", "servers", "links"] {
+                guard let group = root[key] else { continue }
+
+                if let list = group as? [Any] {
+                    if list.count == 2,
+                       let first = list[0] as? String,
+                       let second = list[1] as? String,
+                       isServerLabel(first) {
+                        parseEntry([first, second])
+                    } else {
+                        for element in list.prefix(maximumChoices) {
+                            parseEntry(element)
+                        }
+                    }
+                } else if let mapping = group as? [String: Any] {
+                    for key in mapping.keys.sorted().prefix(maximumChoices) {
+                        if let entry = mapping[key] {
+                            parseEntry(entry, defaultLabel: key)
+                        }
+                    }
+                } else {
+                    parseEntry(group)
+                }
+            }
+
+            // Some modules expose a preferred direct URL alongside mirrors.
+            // Prefer explicit server lists, then use the direct URL as backup.
+            parseEntry(root, defaultLabel: "Auto")
+        }
+
+        guard !choices.isEmpty else {
+            throw ModuleRuntimeError.invalidStream
+        }
+
+        return choices
+    }
+
     static func stream(
         from value: Any,
         title: String,
         baseURL: URL
     ) throws -> ModuleResolvedStream {
-        let dictionary = value as? [String: Any] ?? [:]
-
-        let streamArray = (value as? [Any])
-            ?? (dictionary["streams"] as? [Any])
-
-        var label: String?
-        var rawURL: String?
-
-        // Synthetiq's documented format is a flat [label, URL] array.
-        if let streamArray,
-           streamArray.count >= 2,
-           let first = streamArray[0] as? String,
-           let second = streamArray[1] as? String {
-            label = first
-            rawURL = second
-        }
-
-        // Also accept a direct URL returned by a module.
-        if rawURL == nil {
-            rawURL = string(
-                dictionary,
-                keys: ["url", "streamUrl", "href"]
-            )
-        }
-
-        if rawURL == nil {
-            rawURL = value as? String
-        }
-
-        guard
-            let rawURL,
-            let url = resolvedURL(rawURL, baseURL: baseURL)
-        else {
+        guard let first = try streams(
+            from: value,
+            title: title,
+            baseURL: baseURL
+        ).first else {
             throw ModuleRuntimeError.invalidStream
         }
-
-        let headers = dictionary["headers"] as? [String: String] ?? [:]
-
-        return ModuleResolvedStream(
-            title: label ?? title,
-            url: url,
-            headers: headers,
-            streamType: string(
-                dictionary,
-                keys: ["streamType", "type"]
-            ) ?? "auto"
-        )
+        return first
     }
 }
 

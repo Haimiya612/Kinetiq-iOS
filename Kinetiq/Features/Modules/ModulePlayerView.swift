@@ -836,46 +836,41 @@ private struct ModulePlayerOptionsSheet: View {
 
         case .servers:
             VStack(alignment: .leading, spacing: 12) {
-                sectionLabel("CURRENT SOURCE")
+                sectionLabel("AVAILABLE SERVERS")
 
-                HStack(spacing: 12) {
-                    Image(systemName: "server.rack")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(KinetiqPalette.cyan)
-                        .frame(width: 30)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(session.sourceName)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-
-                        Text(
-                            session.currentStream?.url.host
-                                ?? "No server resolved"
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.48))
-                        .lineLimit(2)
+                if session.availableStreams.isEmpty {
+                    unavailableContent(
+                        symbol: "server.rack",
+                        title: "No servers resolved",
+                        message: "The module has not returned any playable stream choices."
+                    )
+                } else {
+                    ForEach(session.availableStreams) { stream in
+                        optionRow(
+                            title: stream.label,
+                            subtitle: "\(stream.hostName) • \(stream.streamType.uppercased())",
+                            symbol: "server.rack",
+                            selected: session.currentStream?.id == stream.id
+                        ) {
+                            playback.selectServer(stream)
+                            onClose()
+                        }
                     }
 
-                    Spacer()
+                    if session.availableStreams.count == 1 {
+                        Text("This module returned one playable stream. Other servers appear here only when the module provides them.")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
 
-                    if session.currentStream != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(KinetiqPalette.cyan)
+                    if session.availableStreams.contains(where: {
+                        !$0.headers.isEmpty
+                    }) {
+                        Text("Some servers request custom HTTP headers. iOS may not forward those headers to every HLS segment, so a server can resolve successfully but still fail to play.")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.58))
                     }
                 }
-                .padding(12)
-                .background(
-                    KinetiqPalette.cyan.opacity(0.12),
-                    in: RoundedRectangle(cornerRadius: 12)
-                )
-
-                Text(
-                    "This module resolved one active stream. Additional server choices require the module to expose them."
-                )
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.58))
             }
 
         case .audio:
@@ -1099,12 +1094,27 @@ private struct ModulePlayerOptionsSheet: View {
                 sectionLabel("STREAM INFORMATION")
                 informationRow("Source", value: session.sourceName)
                 informationRow(
+                    "Selected server",
+                    value: session.currentStream?.label ?? "None"
+                )
+                informationRow(
+                    "Playback state",
+                    value: playback.playbackStatus
+                )
+                if let status = playback.lastHTTPStatus {
+                    informationRow("Latest HTTP status", value: "\(status)")
+                }
+                informationRow(
                     "Server",
                     value: session.currentStream?.url.host ?? "Unavailable"
                 )
                 informationRow(
                     "Type",
                     value: session.currentStream?.streamType ?? "Unknown"
+                )
+                informationRow(
+                    "Session cookies",
+                    value: String(session.currentStream?.cookies.count ?? 0)
                 )
                 informationRow(
                     "Resolution",
@@ -1122,6 +1132,44 @@ private struct ModulePlayerOptionsSheet: View {
                     "Playback speed",
                     value: String(format: "%.2fx", playback.playbackRate)
                 )
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("PLAYBACK DIAGNOSTICS")
+
+                if playback.diagnosticEvents.isEmpty {
+                    Text("No stream events recorded yet.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                } else {
+                    ForEach(
+                        Array(playback.diagnosticEvents.enumerated()),
+                        id: \.offset
+                    ) { _, event in
+                        Text(event)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                Button {
+                    UIPasteboard.general.string = playback.diagnosticSummary
+                } label: {
+                    Label(
+                        "Copy diagnostics",
+                        systemImage: "doc.on.doc"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(KinetiqPalette.cyan, in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -1334,6 +1382,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     @Published private(set) var selectedSubtitle: AVMediaSelectionOption?
     @Published private(set) var sleepTimerMinutes: Int?
     @Published private(set) var resolutionText = "Analyzing…"
+    @Published private(set) var playbackStatus = "Preparing stream"
+    @Published private(set) var lastHTTPStatus: Int?
+    @Published private(set) var diagnosticEvents: [String] = []
 
     private var audioGroup: AVMediaSelectionGroup?
     private var subtitleGroup: AVMediaSelectionGroup?
@@ -1348,7 +1399,15 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var playerStatusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var failedEndObserver: NSObjectProtocol?
+    private var stalledObserver: NSObjectProtocol?
+    private var recoveryTask: Task<Void, Never>?
+    private var stallTask: Task<Void, Never>?
 
+    private var attemptedStreamIDs = Set<UUID>()
+    private var automaticRetriedIDs = Set<UUID>()
+    private var knownStreamChoices = Set<UUID>()
+    private var isHandlingStreamFailure = false
     private var lastStreamID: UUID?
     private var isScrubbing = false
     private var hasStopped = false
@@ -1371,6 +1430,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 guard let self else { return }
                 if let message, !message.isEmpty {
                     self.errorMessage = message
+                    self.playbackStatus = "Source resolution failed"
+                    self.note("Module handler reported an error")
                 }
             }
 
@@ -1390,6 +1451,32 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     var formattedDuration: String {
         Self.timeString(duration)
+    }
+
+    /// This summary deliberately excludes URL paths, query parameters,
+    /// authentication headers, cookies, and any module JavaScript.
+    var diagnosticSummary: String {
+        let lines: [String] = [
+            "Kinetiq module playback diagnostics",
+            "Source: \(session.sourceName)",
+            "Episode: \(session.currentEpisode?.number ?? "Unknown")",
+            "Language: \(session.selectedLanguage)",
+            "Server label: \(session.currentStream?.label ?? "None")",
+            "Host: \(session.currentStream?.hostName ?? "None")",
+            "Stream type: \(session.currentStream?.streamType ?? "Unknown")",
+            "Playback state: \(playbackStatus)",
+            "HTTP status: \(lastHTTPStatus.map(String.init) ?? "Unknown")",
+            "Player resolution: \(resolutionText)",
+            "Events:"
+        ]
+        return (lines + diagnosticEvents).joined(separator: "\n")
+    }
+
+    private func note(_ event: String) {
+        diagnosticEvents.append(event)
+        if diagnosticEvents.count > 14 {
+            diagnosticEvents.removeFirst(diagnosticEvents.count - 14)
+        }
     }
 
     // MARK: AVPlayer Observation
@@ -1434,6 +1521,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
                 self.isBuffering =
                     observedPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate
+
+                if observedPlayer.timeControlStatus == .playing {
+                    self.playbackStatus = "Playing"
+                    self.stallTask?.cancel()
+                    self.stallTask = nil
+                }
             }
         }
     }
@@ -1445,7 +1538,24 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             return
         }
 
+        let choices = Set(session.availableStreams.map(\.id))
+        if choices != knownStreamChoices {
+            knownStreamChoices = choices
+            attemptedStreamIDs.removeAll()
+            automaticRetriedIDs.removeAll()
+        }
+
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        stallTask?.cancel()
+        stallTask = nil
+
+        attemptedStreamIDs.insert(stream.id)
+        isHandlingStreamFailure = false
         lastStreamID = stream.id
+        lastHTTPStatus = nil
+        playbackStatus = "Opening \(stream.label)"
+        note("Opening \(stream.label) on \(stream.hostName)")
         errorMessage = nil
         isBuffering = true
         isPlaying = false
@@ -1463,17 +1573,45 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         removeCurrentItemObservers()
 
-        var assetOptions: [String: Any]?
+        var assetOptions: [String: Any] = [:]
 
+        // This key is undocumented and is retained only as best-effort
+        // compatibility for Referer and other provider-specific headers.
+        // iOS does not guarantee propagation to every HLS child request.
         if !stream.headers.isEmpty {
-            assetOptions = [
-                "AVURLAssetHTTPHeaderFieldsKey": stream.headers
-            ]
+            assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = stream.headers
+        }
+
+        // Official AVFoundation options. Do not put credentials into logs.
+        if let userAgent = stream.headers.first(where: {
+            $0.key.lowercased() == "user-agent"
+        })?.value {
+            assetOptions[AVURLAssetHTTPUserAgentKey] = userAgent
+        }
+
+        let hasExplicitCookieHeader = stream.headers.keys.contains {
+            $0.lowercased() == "cookie"
+        }
+
+        if !hasExplicitCookieHeader && !stream.cookies.isEmpty {
+            let playerCookies = stream.cookies.compactMap { cookie in
+                HTTPCookie(properties: [
+                    .name: cookie.name,
+                    .value: cookie.value,
+                    .domain: cookie.domain,
+                    .path: cookie.path,
+                    .secure: cookie.isSecure ? "TRUE" : "FALSE"
+                ])
+            }
+
+            if !playerCookies.isEmpty {
+                assetOptions[AVURLAssetHTTPCookiesKey] = playerCookies
+            }
         }
 
         let asset = AVURLAsset(
             url: stream.url,
-            options: assetOptions
+            options: assetOptions.isEmpty ? nil : assetOptions
         )
 
         let item = AVPlayerItem(asset: asset)
@@ -1494,6 +1632,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 switch observedItem.status {
                 case .readyToPlay:
                     self.isBuffering = false
+                    self.playbackStatus = "Ready to play"
+                    self.note("Stream ready: \(stream.label)")
                     let seconds = observedItem.duration.seconds
                     if seconds.isFinite, seconds > 0 {
                         self.duration = seconds
@@ -1508,16 +1648,20 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
                 case .failed:
                     self.isBuffering = false
-                    self.errorMessage =
-                        observedItem.error?.localizedDescription
-                        ?? "The source stream could not be opened."
+                    self.handleStreamFailure(
+                        for: observedItem,
+                        message: "The source stream could not be opened."
+                    )
 
                 case .unknown:
                     self.isBuffering = true
 
                 @unknown default:
                     self.isBuffering = false
-                    self.errorMessage = "The player returned an unknown stream status."
+                    self.handleStreamFailure(
+                        for: observedItem,
+                        message: "The player returned an unknown stream status."
+                    )
                 }
             }
         }
@@ -1541,6 +1685,30 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 }
             }
         }
+
+        failedEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.handleStreamFailure(
+                    for: item,
+                    message: "Playback stopped unexpectedly."
+                )
+            }
+        }
+
+        stalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleStallRecovery(for: item)
+            }
+        }
     }
 
     private func removeCurrentItemObservers() {
@@ -1550,6 +1718,108 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
+        }
+
+        if let failedEndObserver {
+            NotificationCenter.default.removeObserver(failedEndObserver)
+            self.failedEndObserver = nil
+        }
+
+        if let stalledObserver {
+            NotificationCenter.default.removeObserver(stalledObserver)
+            self.stalledObserver = nil
+        }
+    }
+
+    // MARK: Bounded Recovery and Diagnostics
+
+    private func scheduleStallRecovery(for item: AVPlayerItem) {
+        guard !hasStopped, player.currentItem === item else { return }
+
+        note("Player reported a stall")
+        stallTask?.cancel()
+        stallTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(12))
+                guard !Task.isCancelled,
+                      let self,
+                      !self.hasStopped,
+                      self.player.currentItem === item,
+                      self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else {
+                    return
+                }
+
+                self.handleStreamFailure(
+                    for: item,
+                    message: "The stream stalled while buffering."
+                )
+            } catch {
+                // Recovered naturally, switched servers, or closed player.
+            }
+        }
+    }
+
+    private func handleStreamFailure(
+        for item: AVPlayerItem,
+        message: String
+    ) {
+        guard !hasStopped,
+              !isHandlingStreamFailure,
+              player.currentItem === item,
+              let stream = session.currentStream else { return }
+
+        isHandlingStreamFailure = true
+
+        // Read only a numeric status: never expose token-bearing URLs or
+        // raw response headers from AVFoundation logs.
+        let status = item.errorLog()?.events.last?.errorStatusCode
+        if let status, (100...599).contains(status) {
+            lastHTTPStatus = status
+        }
+
+        let reason = lastHTTPStatus.map { "HTTP \($0)" }
+            ?? "AVPlayer failure"
+        note("\(reason) on \(stream.hostName)")
+
+        // Exactly one automatic retry per server. If the server rejects
+        // authorization, move directly to a different available server.
+        let authorizationRejected = lastHTTPStatus == 401 || lastHTTPStatus == 403
+        if !authorizationRejected,
+           automaticRetriedIDs.insert(stream.id).inserted {
+            playbackStatus = "Retrying \(stream.label)"
+            note("Automatic retry: \(stream.label)")
+            recoveryTask?.cancel()
+            recoveryTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .milliseconds(650))
+                    guard !Task.isCancelled,
+                          let self,
+                          self.player.currentItem === item,
+                          !self.hasStopped else { return }
+
+                    self.lastStreamID = nil
+                    self.load(stream)
+                } catch {
+                    // A manual selection or player dismissal cancelled retry.
+                }
+            }
+            return
+        }
+
+        if let alternate = session.availableStreams.first(where: {
+            !attemptedStreamIDs.contains($0.id)
+        }) {
+            playbackStatus = "Switching to \(alternate.label)"
+            note("Automatic fallback: \(alternate.label)")
+            _ = session.selectStream(alternate)
+            return
+        }
+
+        playbackStatus = "Playback failed"
+        if authorizationRejected {
+            errorMessage = "The server denied playback (HTTP \(lastHTTPStatus ?? 403)). Try a different source or language."
+        } else {
+            errorMessage = message
         }
     }
 
@@ -1714,6 +1984,18 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         }
     }
 
+    func selectServer(_ stream: ModuleResolvedStream) {
+        guard !hasStopped,
+              session.currentStream?.id != stream.id else { return }
+
+        recoveryTask?.cancel()
+        stallTask?.cancel()
+        errorMessage = nil
+        playbackStatus = "Switching to \(stream.label)"
+        note("Manual server selection: \(stream.label)")
+        _ = session.selectStream(stream)
+    }
+
     func dismissError() {
         errorMessage = nil
     }
@@ -1723,7 +2005,14 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             errorMessage = "No stream is available to retry."
             return
         }
-        // Reload the same stream even though its UUID has not changed.
+        // Explicit retries reset the automatic limits, but automatic
+        // recovery can never loop without user interaction.
+        recoveryTask?.cancel()
+        stallTask?.cancel()
+        automaticRetriedIDs.removeAll()
+        attemptedStreamIDs.removeAll()
+        playbackStatus = "Retrying manually"
+        note("Manual retry: \(stream.label)")
         lastStreamID = nil
         load(stream)
     }
@@ -1755,6 +2044,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         hasStopped = true
 
         player.pause()
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        stallTask?.cancel()
+        stallTask = nil
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = nil
