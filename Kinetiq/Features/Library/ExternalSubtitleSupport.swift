@@ -869,3 +869,326 @@ struct ExternalSubtitleOverlay: View {
         )
     }
 }
+
+// MARK: - Remote Module Subtitles (Batch 03E)
+
+enum ModuleSubtitleError: LocalizedError {
+    case invalidURL
+    case httpStatus(Int)
+    case tooLarge
+    case unsupportedFormat
+    case invalidSubtitles
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL: return "This subtitle link is not a valid HTTPS URL."
+        case .httpStatus(let status): return "The subtitle server returned HTTP \(status). Try another track or server."
+        case .tooLarge: return "This subtitle file exceeds Kinetiq's size limit."
+        case .unsupportedFormat: return "This subtitle format is not supported. Choose SRT or WebVTT."
+        case .invalidSubtitles: return "The source did not return a readable SRT or WebVTT subtitle file."
+        case .unavailable: return "Subtitles could not be loaded. Check your connection or choose another track."
+        }
+    }
+}
+
+enum ModuleSubtitleRequestPolicy {
+    static func isAllowed(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return false }
+        return parts.scheme?.lowercased() == "https" &&
+            !(parts.host ?? "").isEmpty && parts.user == nil && parts.password == nil &&
+            parts.fragment == nil && url.absoluteString.utf8.count <= 8_192
+    }
+
+    static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
+        lhs.host?.lowercased() == rhs.host?.lowercased() &&
+        (lhs.port ?? 443) == (rhs.port ?? 443)
+    }
+
+    static func cleanHeaders(_ headers: [String: String]) -> [String: String] {
+        var result: [String: String] = [:]
+        let blocked: Set<String> = ["host", "content-length", "connection", "transfer-encoding",
+                                    "proxy-authorization", "proxy-connection", "accept-encoding"]
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'*+-.^_`|~")
+        for key in headers.keys.sorted().prefix(40) {
+            guard !key.isEmpty, key.count <= 128,
+                  key.unicodeScalars.allSatisfy({ allowed.contains($0) }),
+                  let value = headers[key], value.utf8.count <= 8_192,
+                  !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                  !blocked.contains(key.lowercased()) else { continue }
+            result[key.lowercased()] = value
+        }
+        return result
+    }
+
+    /// Build a fresh GET for redirects: never copy URLSession's possibly
+    /// inherited credentials to a different origin or downgrade to HTTP.
+    static func request(for track: ModuleRemoteSubtitleTrack, destination: URL? = nil) throws -> URLRequest {
+        let url = destination ?? track.url
+        guard isAllowed(track.url), isAllowed(url) else { throw ModuleSubtitleError.invalidURL }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.httpMethod = "GET"
+        request.setValue("text/vtt, application/x-subrip, text/plain, application/octet-stream", forHTTPHeaderField: "Accept")
+        if sameOrigin(url, track.url) {
+            let headers = cleanHeaders(track.headers)
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            if headers["cookie"] == nil {
+                let cookies = track.cookies.prefix(40).filter { cookie in
+                    let domain = cookie.domain.lowercased()
+                    let host = url.host?.lowercased() ?? ""
+                    let matchesDomain = domain.hasPrefix(".")
+                        ? (host == String(domain.dropFirst()) || host.hasSuffix(domain))
+                        : host == domain
+                    let path = cookie.path.isEmpty ? "/" : cookie.path
+                    let requestPath = url.path.isEmpty ? "/" : url.path
+                    let matchesPath = requestPath == path || requestPath.hasPrefix(path.hasSuffix("/") ? path : path + "/")
+                    let safe = !cookie.name.isEmpty && cookie.name.utf8.count <= 256 &&
+                        cookie.value.utf8.count <= 8_192 &&
+                        !cookie.name.contains("=") && !cookie.name.contains(";") &&
+                        !cookie.value.contains(";") &&
+                        !(cookie.name + cookie.value).unicodeScalars.contains(where: {
+                            CharacterSet.controlCharacters.contains($0)
+                        })
+                    return matchesDomain && matchesPath && safe
+                }
+                if !cookies.isEmpty {
+                    request.setValue(cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; "), forHTTPHeaderField: "Cookie")
+                }
+            }
+        }
+        return request
+    }
+}
+
+private final class ModuleSubtitleRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let track: ModuleRemoteSubtitleTrack
+
+    init(track: ModuleRemoteSubtitleTrack) { self.track = track }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let url = request.url else { completionHandler(nil); return }
+        completionHandler(try? ModuleSubtitleRequestPolicy.request(for: track, destination: url))
+    }
+}
+
+struct ModuleSubtitleTimeline: Sendable {
+    private let cues: [ExternalSubtitleCue]
+    private let maximumEndTimes: [Double]
+
+    var isEmpty: Bool { cues.isEmpty }
+
+    init(cues: [ExternalSubtitleCue]) {
+        self.cues = cues.filter {
+            $0.startTime.isFinite && $0.endTime.isFinite &&
+            $0.startTime >= 0 && $0.endTime > $0.startTime && !$0.text.isEmpty
+        }.sorted { $0.startTime == $1.startTime ? $0.id < $1.id : $0.startTime < $1.startTime }
+        var ends: [Double] = []
+        var maximum: Double = 0
+        for cue in self.cues {
+            maximum = max(maximum, cue.endTime)
+            ends.append(maximum)
+        }
+        maximumEndTimes = ends
+    }
+
+    func text(at seconds: Double) -> String? {
+        guard seconds.isFinite, seconds >= 0 else { return nil }
+        var lower = 0
+        var upper = cues.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if cues[middle].startTime <= seconds { lower = middle + 1 }
+            else { upper = middle }
+        }
+        var index = lower - 1
+        var active: [String] = []
+        // Prefix maxima retain long overlapping cues even when a later,
+        // shorter cue has expired. Recompute on every seek, including backwards.
+        while index >= 0 && maximumEndTimes[index] > seconds && active.count < 8 {
+            if cues[index].contains(seconds) { active.append(String(cues[index].text.prefix(2_000))) }
+            index -= 1
+        }
+        return active.isEmpty ? nil : active.reversed().joined(separator: "\n")
+    }
+}
+
+enum ModuleSubtitleLoader {
+    static let maximumBytes = 2 * 1_024 * 1_024
+    static let maximumCues = 20_000
+
+    static func load(_ track: ModuleRemoteSubtitleTrack) async throws -> ModuleSubtitleTimeline {
+        let request = try ModuleSubtitleRequestPolicy.request(for: track)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: configuration)
+        let delegate = ModuleSubtitleRedirectDelegate(track: track)
+        defer { session.invalidateAndCancel() }
+
+        let (data, contentType): (Data, String?) = try await withTaskCancellationHandler {
+            let (bytes, response) = try await session.bytes(for: request, delegate: delegate)
+            guard let http = response as? HTTPURLResponse,
+                  let url = http.url, ModuleSubtitleRequestPolicy.isAllowed(url) else {
+                throw ModuleSubtitleError.invalidURL
+            }
+            guard (200...299).contains(http.statusCode) else { throw ModuleSubtitleError.httpStatus(http.statusCode) }
+            guard http.expectedContentLength <= Int64(maximumBytes) else { throw ModuleSubtitleError.tooLarge }
+            var data = Data()
+            data.reserveCapacity(min(maximumBytes, max(0, Int(http.expectedContentLength))))
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < maximumBytes else { throw ModuleSubtitleError.tooLarge }
+                data.append(byte)
+            }
+            return (data, http.mimeType)
+        } onCancel: {
+            session.invalidateAndCancel()
+        }
+
+        let parsing = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            let timeline = try parse(data: data, format: track.format, contentType: contentType)
+            try Task.checkCancellation()
+            return timeline
+        }
+        return try await withTaskCancellationHandler {
+            try await parsing.value
+        } onCancel: {
+            parsing.cancel()
+        }
+    }
+
+    static func parse(data: Data, format: ExternalSubtitleFormat?, contentType: String?) throws -> ModuleSubtitleTimeline {
+        guard data.count <= maximumBytes else { throw ModuleSubtitleError.tooLarge }
+        guard !data.isEmpty else { throw ModuleSubtitleError.invalidSubtitles }
+        let type = contentType?.lowercased() ?? ""
+        if type.contains("html") || type.contains("json") || type.contains("mpegurl") || type.contains("ttml") {
+            throw ModuleSubtitleError.unsupportedFormat
+        }
+        let prefix = String(decoding: data.prefix(512), as: UTF8.self)
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = format ?? ModuleRemoteSubtitleDecoder.format(type) ?? (prefix.hasPrefix("WEBVTT") ? .vtt : .srt)
+        do {
+            let cues = try ExternalSubtitleParser.parse(data: data, fileExtension: selected.rawValue)
+            guard cues.count <= maximumCues else { throw ModuleSubtitleError.tooLarge }
+            let timeline = ModuleSubtitleTimeline(cues: cues)
+            guard !timeline.isEmpty else { throw ModuleSubtitleError.invalidSubtitles }
+            return timeline
+        } catch let error as ModuleSubtitleError {
+            throw error
+        } catch {
+            throw ModuleSubtitleError.invalidSubtitles
+        }
+    }
+}
+
+@MainActor
+final class ModuleExternalSubtitleController: ObservableObject {
+    typealias Loader = @Sendable (ModuleRemoteSubtitleTrack) async throws -> ModuleSubtitleTimeline
+
+    @Published private(set) var tracks: [ModuleRemoteSubtitleTrack] = []
+    @Published private(set) var selectedTrackID: String?
+    @Published private(set) var currentText: String?
+    @Published private(set) var isLoading = false
+    @Published private(set) var errorMessage: String?
+
+    private let loader: Loader
+    private var loadTask: Task<Void, Never>?
+    private var requestID: UUID?
+    private var timeline: ModuleSubtitleTimeline?
+    private var currentTime: Double = 0
+    private var preference: (id: String, language: String?, label: String)?
+
+    var isRequested: Bool { preference != nil }
+
+    init(loader: @escaping Loader = { try await ModuleSubtitleLoader.load($0) }) {
+        self.loader = loader
+    }
+
+    func configure(tracks: [ModuleRemoteSubtitleTrack]) {
+        cancelLoad()
+        self.tracks = tracks
+        currentTime = .nan
+        guard let preference else { return }
+        let matching = tracks.first { $0.id == preference.id } ?? tracks.first { track in
+            if let language = preference.language {
+                return track.language == language ||
+                    (track.language == nil && track.label.caseInsensitiveCompare(preference.label) == .orderedSame)
+            }
+            return track.label.caseInsensitiveCompare(preference.label) == .orderedSame
+        }
+        if let matching { select(matching) }
+        else { errorMessage = "Your selected subtitle track is unavailable on this stream. Choose another track or Off." }
+    }
+
+    func select(_ track: ModuleRemoteSubtitleTrack) {
+        guard tracks.contains(where: { $0.id == track.id }) else { return }
+        cancelLoad()
+        preference = (track.id, track.language, track.label)
+        selectedTrackID = track.id
+        let identity = UUID()
+        requestID = identity
+        isLoading = true
+        let loader = self.loader
+        loadTask = Task { [weak self] in
+            do {
+                let loaded = try await loader(track)
+                guard !Task.isCancelled, let self,
+                      self.requestID == identity else { return }
+                self.timeline = loaded
+                self.isLoading = false
+                self.updatePlaybackTime(self.currentTime)
+            } catch {
+                guard !Task.isCancelled, let self,
+                      self.requestID == identity else { return }
+                self.isLoading = false
+                self.errorMessage = (error as? ModuleSubtitleError)?.errorDescription
+                    ?? ModuleSubtitleError.unavailable.errorDescription
+            }
+        }
+    }
+
+    func turnOff() {
+        preference = nil
+        cancelLoad()
+    }
+
+    func retry() {
+        guard let track = tracks.first(where: { $0.id == selectedTrackID }) else { return }
+        select(track)
+    }
+
+    func updatePlaybackTime(_ seconds: Double) {
+        currentTime = seconds
+        let next = timeline?.text(at: seconds)
+        if currentText != next { currentText = next }
+    }
+
+    func stop() {
+        turnOff()
+        tracks = []
+        currentTime = 0
+    }
+
+    private func cancelLoad() {
+        requestID = nil
+        loadTask?.cancel()
+        loadTask = nil
+        timeline = nil
+        currentText = nil
+        selectedTrackID = nil
+        errorMessage = nil
+        isLoading = false
+    }
+}

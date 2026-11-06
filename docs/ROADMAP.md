@@ -670,9 +670,9 @@ and devices.
 
 # Current Development Status
 
-**Current focus:** Playback memory and episode navigation across Phases 2, 4, and 6.
+**Current focus:** Module subtitle tracks and playback-memory verification across Phases 2, 4, and 6.
 
-**Working baseline:** `8efde5e117243ab85e5bb1f86f254d4aeef8f1d5` on `main`,
+**Working baseline:** `0aa310df2341927841facad5f82b22a8992a1a08` on `main`,
 inspected on 6 November 2026. The implementation has advanced beyond the older
 phase checklist. An unchecked task remains planned or awaiting its required
 verification; source-code presence alone does not certify completion.
@@ -687,6 +687,7 @@ The inspected baseline contains source code for:
 - Batch 03A: source-specific anime Favorites and Recent Episodes.
 - Batch 03B: global anime Favorites and remote Continue Watching.
 - Batch 03C: anime discovery controls and shared artwork caching.
+- Batch 03D: source-specific episode/language progress, watched state, and continuation controls.
 
 These observations describe source code, not a fresh build or device acceptance
 result. Manga reading, downloads, cloud synchronization, metadata providers, and
@@ -732,6 +733,44 @@ Full GitHub Actions build debugging is temporarily deferred to stabilization.
 Local Swift syntax parsing and source-consistency checks are recorded in
 `docs/BATCH_03D.md`. They do not replace Swift type checking, simulator tests,
 module compatibility tests, or physical-device playback verification.
+
+
+## Batch 03E -- Module Subtitle Tracks
+
+**Implementation status:** Replacement source prepared; compilation, XCTest, and
+physical-device validation pending.
+
+The 03D module player exposes embedded AVPlayer subtitle tracks, but its stream
+model does not retain external subtitle descriptors. This batch adds optional
+source subtitle metadata and in-app SRT/WebVTT rendering to the existing player.
+
+- Decode supported `subtitles`, `tracks`, and `captions` metadata without changing
+  the existing direct URL, flat label/URL, or alternative-server stream inputs.
+- Display embedded and source subtitles in the existing Subtitles panel with Off,
+  loading state, sanitized errors, and retry.
+- Fetch only the chosen subtitle file; bound body size and cue count, restrict
+  credential forwarding, cancel superseded requests, and keep subtitle URLs in memory.
+- Follow AVPlayer time through seeking, pausing, rate changes, and episode/server
+  transitions; clear the previous stream's cues before loading new ones.
+- Retain an external language choice within the current player session when the
+  new stream supplies a matching track. Off stays Off through stream transitions.
+- Preserve the existing local subtitle implementation, player controls, four tabs,
+  source identities, Favorites, and Batch 03D playback history.
+
+External subtitle metadata is an optional Kinetiq extension: the retrieved public
+Synthetiq guide does not define these fields. Availability depends on actual module
+output. This batch does not manufacture subtitle URLs or modify source modules.
+The in-app text overlay does not render in system PiP or remote AirPlay video.
+Native PiP subtitle rendering, subtitle appearance customization, timing offsets,
+ASS/SSA/TTML, and broader format support remain separate future work.
+
+- [ ] Execute the new `ModuleRemoteSubtitleTests` cases in the existing test target.
+- [ ] Validate HTTPS downloads, redirects, cancellation, and provider headers with real subtitle sources.
+- [ ] Test selection, Off, backwards seeking, overlapping cues, episode transitions, and server recovery on iPhone.
+- [ ] Confirm no regression to embedded subtitles, local subtitles, playback history, or existing player controls.
+
+See `docs/BATCH_03E.md` for the optional metadata schema, verification limits, and
+acceptance checklist. All earlier roadmap requirements remain in place.
 
 ---
 

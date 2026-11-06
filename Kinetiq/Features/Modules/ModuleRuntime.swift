@@ -1131,6 +1131,132 @@ struct ModuleAnimeEpisode: Identifiable {
     let dubAvailable: Bool
 }
 
+struct ModuleRemoteSubtitleTrack: Identifiable, Sendable {
+    let url: URL
+    let label: String
+    let language: String?
+    let format: ExternalSubtitleFormat?
+    let headers: [String: String]
+    var cookies: [ModuleStreamCookie] = []
+
+    // The opaque UI identity never exposes a signed URL or request headers.
+    var id: String {
+        let fields = headers.keys.sorted().map { [$0, headers[$0] ?? ""] }
+        let identity: [Any] = [url.absoluteString, language ?? "", fields]
+        let data = (try? JSONSerialization.data(withJSONObject: identity)) ?? Data(url.absoluteString.utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Optional Kinetiq metadata support. This does not change the documented
+/// Synthetiq direct-URL / flat [label, URL] stream contract.
+enum ModuleRemoteSubtitleDecoder {
+    static func tracks(
+        root: [String: Any], entry: [String: Any]?,
+        streamURL: URL, streamHeaders: [String: String], baseURL: URL
+    ) -> [ModuleRemoteSubtitleTrack] {
+        var result: [ModuleRemoteSubtitleTrack] = []
+        var seen = Set<String>()
+        // Prefer server-specific metadata when the same track is also global.
+        let containers = [entry, root].compactMap { $0 }
+        for container in containers {
+            for key in ["subtitles", "tracks", "captions"] {
+                for candidate in candidates(container[key]) {
+                    guard result.count < 24 else { return result }
+                    let dictionary = candidate as? [String: Any] ?? [:]
+                    if let kind = text(dictionary, keys: ["kind"])?.lowercased(),
+                       !["captions", "subtitles", "subtitle"].contains(kind) { continue }
+                    let rawURL = (candidate as? String) ??
+                        text(dictionary, keys: ["url", "file", "src", "href"])
+                    guard let rawURL, rawURL.utf8.count <= 8_192,
+                          let url = URL(string: rawURL, relativeTo: baseURL)?.absoluteURL,
+                          ModuleSubtitleRequestPolicy.isAllowed(url) else { continue }
+
+                    let declared = text(dictionary, keys: ["format", "mimeType"])
+                        ?? text(dictionary, keys: ["type"])
+                    let explicitFormat = declared.flatMap(format)
+                    if let declared,
+                       !["captions", "subtitles", "subtitle"].contains(declared.lowercased()),
+                       explicitFormat == nil { continue }
+                    let extensionFormat = ExternalSubtitleFormat(fileExtension: url.pathExtension)
+                    if ["ass", "ssa", "ttml", "dfxp", "m3u8", "json", "jpg", "png"].contains(url.pathExtension.lowercased()) {
+                        continue
+                    }
+
+                    let rawLanguage = text(dictionary, keys: ["language", "lang", "srclang"])
+                    let language = rawLanguage?.lowercased().replacingOccurrences(of: "_", with: "-")
+                    let safeLanguage = language.flatMap { value -> String? in
+                        guard !value.isEmpty, value.count <= 35,
+                              value.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else { return nil }
+                        return value
+                    }
+                    let rawLabel = text(dictionary, keys: ["label", "name", "title"]) ?? safeLanguage?.uppercased() ?? "Source subtitles"
+                    let label = safeLabel(rawLabel)
+                    let inherited = ModuleSubtitleRequestPolicy.sameOrigin(url, streamURL)
+                        ? streamHeaders : [:]
+                    var headers = ModuleSubtitleRequestPolicy.cleanHeaders(inherited)
+                    for (name, value) in ModuleSubtitleRequestPolicy.cleanHeaders(dictionary["headers"] as? [String: String] ?? [:]) {
+                        headers[name] = value
+                    }
+                    let track = ModuleRemoteSubtitleTrack(
+                        url: url, label: label, language: safeLanguage,
+                        format: explicitFormat ?? extensionFormat, headers: headers
+                    )
+                    if seen.insert(track.id).inserted { result.append(track) }
+                }
+            }
+        }
+        return result
+    }
+
+    static func format(_ value: String) -> ExternalSubtitleFormat? {
+        switch value.lowercased().split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "srt", "subrip", "application/x-subrip": return .srt
+        case "vtt", "webvtt", "text/vtt": return .vtt
+        default: return nil
+        }
+    }
+
+    private static func candidates(_ value: Any?) -> [Any] {
+        if let array = value as? [Any] { return Array(array.prefix(48)) }
+        if let string = value as? String { return [string] }
+        guard let mapping = value as? [String: Any] else { return [] }
+        if text(mapping, keys: ["url", "file", "src", "href"]) != nil { return [mapping] }
+        return mapping.keys.sorted().prefix(48).compactMap { key -> Any? in
+            if let url = mapping[key] as? String { return ["url": url, "label": key] }
+            if var track = mapping[key] as? [String: Any] {
+                if track["label"] == nil { track["label"] = key }
+                return track
+            }
+            return nil
+        }
+    }
+
+    private static func text(_ dictionary: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = dictionary[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
+    private static func safeLabel(_ label: String) -> String {
+        let lowered = label.lowercased()
+        guard !lowered.contains("://"), !lowered.contains("token="),
+              !lowered.contains("signature="), !lowered.contains("authorization"),
+              !lowered.contains("api_key="), !lowered.contains("cookie="),
+              !label.contains("?"), !label.hasPrefix("/") else {
+            return "Source subtitles"
+        }
+        let sanitized = String(label.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+        }.map(String.init).joined().prefix(80))
+        return sanitized.isEmpty ? "Source subtitles" : sanitized
+    }
+}
+
 struct ModuleResolvedStream: Identifiable, Sendable {
     let id = UUID()
     /// The episode title; distinct from the provider's server label.
@@ -1140,6 +1266,7 @@ struct ModuleResolvedStream: Identifiable, Sendable {
     let headers: [String: String]
     let streamType: String
     var cookies: [ModuleStreamCookie] = []
+    var subtitles: [ModuleRemoteSubtitleTrack] = []
 
     /// Never display the full URL: it may contain signed query tokens.
     var hostName: String { url.host ?? "Unknown host" }
@@ -1302,12 +1429,20 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
 
                     // Capture cookies only for each HTTPS stream host;
                     // never pass source-domain cookies to unrelated CDNs.
+                    var subtitleCookies: [URL: [ModuleStreamCookie]] = [:]
                     for index in choices.indices {
                         let streamURL = choices[index].url
                         let sourceCookies = await runtime.cookies(
                             for: streamURL
                         )
                         choices[index].cookies = sourceCookies
+                        for subtitleIndex in choices[index].subtitles.indices {
+                            let url = choices[index].subtitles[subtitleIndex].url
+                            if subtitleCookies[url] == nil {
+                                subtitleCookies[url] = await runtime.cookies(for: url)
+                            }
+                            choices[index].subtitles[subtitleIndex].cookies = subtitleCookies[url] ?? []
+                        }
                     }
 
                     guard activeRequestID == requestID else {
@@ -1768,7 +1903,8 @@ enum ModuleRuntimeDecoder {
             urlString: String?,
             label: String?,
             headers: [String: String],
-            streamType: String
+            streamType: String,
+            subtitleContainer: [String: Any]? = nil
         ) {
             guard choices.count < maximumChoices,
                   let urlString,
@@ -1802,7 +1938,11 @@ enum ModuleRuntimeDecoder {
                     label: safeLabel,
                     url: url,
                     headers: headers,
-                    streamType: streamType
+                    streamType: streamType,
+                    subtitles: ModuleRemoteSubtitleDecoder.tracks(
+                        root: root, entry: subtitleContainer,
+                        streamURL: url, streamHeaders: headers, baseURL: baseURL
+                    )
                 )
             )
         }
@@ -1853,7 +1993,8 @@ enum ModuleRuntimeDecoder {
                     ),
                     label: streamLabel,
                     headers: mergedHeaders,
-                    streamType: streamType
+                    streamType: streamType,
+                    subtitleContainer: dictionary
                 )
             }
         }

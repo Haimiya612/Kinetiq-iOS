@@ -90,6 +90,27 @@ struct KinetiqModulePlayerView: View {
                     .onTapGesture(perform: toggleControls)
                     .accessibilityLabel("Show or hide playback controls")
 
+                if let text = playback.externalSubtitles.currentText,
+                   !pictureInPicture.isActive {
+                    VStack {
+                        Spacer()
+                        Text(text)
+                            .font(.system(size: 19, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(8)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 17)
+                            .padding(.vertical, 10)
+                            .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 9))
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, controlsVisible ? 130 : max(geometry.safeAreaInsets.bottom + 12, 24))
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .allowsHitTesting(false)
+                    .zIndex(1)
+                }
+
                 if controlsVisible {
                     controlOverlay(
                         safeAreaInsets: geometry.safeAreaInsets
@@ -995,22 +1016,25 @@ private struct ModulePlayerOptionsSheet: View {
             }
 
         case .subtitles:
-            if playback.subtitleOptions.isEmpty {
+            optionRow(
+                title: "Off",
+                subtitle: "Disable embedded and source subtitles",
+                symbol: "nosign",
+                selected: playback.selectedSubtitle == nil && !playback.externalSubtitles.isRequested
+            ) {
+                playback.selectSubtitle(nil)
+            }
+
+            if playback.subtitleOptions.isEmpty && playback.externalSubtitles.tracks.isEmpty {
                 unavailableContent(
                     symbol: "captions.bubble",
                     title: "No selectable subtitle tracks",
-                    message: "The current stream does not expose embedded subtitle options. Module-provided Sub and Dub streams can be selected in Audio."
+                    message: "This stream exposes no embedded or supported source subtitle tracks. Sub and Dub streams remain available in Audio when the source provides them."
                 )
-            } else {
-                optionRow(
-                    title: "Off",
-                    subtitle: "Disable embedded subtitles",
-                    symbol: "nosign",
-                    selected: playback.selectedSubtitle == nil
-                ) {
-                    playback.selectSubtitle(nil)
-                }
+            }
 
+            if !playback.subtitleOptions.isEmpty {
+                sectionLabel("Embedded")
                 ForEach(
                     Array(playback.subtitleOptions.enumerated()),
                     id: \.offset
@@ -1023,6 +1047,40 @@ private struct ModulePlayerOptionsSheet: View {
                     ) {
                         playback.selectSubtitle(option)
                     }
+                }
+            }
+
+            if !playback.externalSubtitles.tracks.isEmpty {
+                sectionLabel("From source")
+                ForEach(playback.externalSubtitles.tracks) { track in
+                    optionRow(
+                        title: track.label,
+                        subtitle: [track.language?.uppercased(), track.format?.rawValue.uppercased() ?? "SRT / WebVTT"]
+                            .compactMap { $0 }.joined(separator: " · "),
+                        symbol: "captions.bubble",
+                        selected: playback.externalSubtitles.selectedTrackID == track.id
+                    ) {
+                        playback.selectExternalSubtitle(track)
+                    }
+                }
+                Text("Source subtitles display in the app. They are not yet shown in Picture in Picture or on AirPlay video.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+
+            if playback.externalSubtitles.isLoading {
+                ProgressView("Loading subtitles…")
+                    .tint(KinetiqPalette.accent)
+                    .foregroundStyle(.white)
+            }
+            if let message = playback.externalSubtitles.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+                if playback.externalSubtitles.selectedTrackID != nil {
+                    Button("Retry Subtitles") { playback.externalSubtitles.retry() }
+                        .buttonStyle(.bordered)
+                        .tint(KinetiqPalette.accent)
                 }
             }
 
@@ -1369,6 +1427,10 @@ private struct ModulePlayerOptionsSheet: View {
 @MainActor
 private final class ModulePlayerPlaybackController: ObservableObject {
 
+    let externalSubtitles = ModuleExternalSubtitleController()
+    private var subtitleChanges: AnyCancellable?
+    private var subtitlesExplicitlyOff = false
+
     @Published private(set) var player = AVPlayer()
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = true
@@ -1424,6 +1486,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     init(session: ModuleEpisodePlaybackSession) {
         self.session = session
+
+        subtitleChanges = externalSubtitles.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
 
         player.automaticallyWaitsToMinimizeStalling = true
 
@@ -1493,7 +1559,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     private func installTimeObserver() {
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.4, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 0.2, preferredTimescale: 600),
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -1505,6 +1571,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 guard seconds.isFinite, seconds >= 0 else { return }
 
                 self.currentTime = seconds
+                self.externalSubtitles.updatePlaybackTime(self.isRestoringPosition ? .nan : seconds)
 
                 if !self.isScrubbing {
                     self.scrubPosition = seconds
@@ -1629,6 +1696,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         selectedSubtitle = nil
         audioGroup = nil
         subtitleGroup = nil
+        externalSubtitles.configure(tracks: stream.subtitles)
 
         removeCurrentItemObservers()
 
@@ -1718,11 +1786,13 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                                 guard let self,
                                       self.player.currentItem === observedItem else { return }
                                 self.isRestoringPosition = false
+                                self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
                                 self.player.playImmediately(atRate: self.playbackRate)
                             }
                         }
                     } else {
                         self.isRestoringPosition = false
+                        self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
                         self.player.playImmediately(atRate: self.playbackRate)
                     }
 
@@ -1913,31 +1983,31 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     // MARK: Stream Tracks and Metadata
 
     private func loadMediaOptions(for item: AVPlayerItem) async {
-        do {
-            let audio = try await item.asset.loadMediaSelectionGroup(
-                for: .audible
-            )
-            let subtitles = try await item.asset.loadMediaSelectionGroup(
-                for: .legible
-            )
+        // Missing audio metadata must not prevent subtitle detection (or
+        // leave native subtitles enabled under an external subtitle overlay).
+        let audio: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(
+            for: .audible
+        )
+        let subtitles: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(
+            for: .legible
+        )
 
-            guard player.currentItem === item else { return }
-            audioGroup = audio
-            subtitleGroup = subtitles
-            audioOptions = audio?.options ?? []
-            subtitleOptions = subtitles?.options ?? []
+        guard player.currentItem === item else { return }
+        audioGroup = audio
+        subtitleGroup = subtitles
+        audioOptions = audio?.options ?? []
+        subtitleOptions = subtitles?.options ?? []
 
-            if let audio {
-                selectedAudio = item.currentMediaSelection
-                    .selectedMediaOption(in: audio)
+        if let audio {
+            selectedAudio = item.currentMediaSelection.selectedMediaOption(in: audio)
+        }
+        if let subtitles {
+            if subtitlesExplicitlyOff || externalSubtitles.isRequested {
+                item.select(nil, in: subtitles)
+                selectedSubtitle = nil
+            } else {
+                selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitles)
             }
-            if let subtitles {
-                selectedSubtitle = item.currentMediaSelection
-                    .selectedMediaOption(in: subtitles)
-            }
-        } catch {
-            // HLS sources can omit optional track-selection metadata.
-            // This is not a playback failure.
         }
     }
 
@@ -1974,9 +2044,19 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
-        guard let subtitleGroup else { return }
-        player.currentItem?.select(option, in: subtitleGroup)
+        externalSubtitles.turnOff()
+        subtitlesExplicitlyOff = option == nil
+        if let subtitleGroup { player.currentItem?.select(option, in: subtitleGroup) }
         selectedSubtitle = option
+    }
+
+    func selectExternalSubtitle(_ track: ModuleRemoteSubtitleTrack) {
+        guard externalSubtitles.tracks.contains(where: { $0.id == track.id }) else { return }
+        subtitlesExplicitlyOff = false
+        if let subtitleGroup { player.currentItem?.select(nil, in: subtitleGroup) }
+        selectedSubtitle = nil
+        externalSubtitles.updatePlaybackTime(isRestoringPosition ? .nan : player.currentTime().seconds)
+        externalSubtitles.select(track)
     }
 
     // MARK: Playback Controls
@@ -2009,6 +2089,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             Task { @MainActor [weak self] in
                 guard finished, let self,
                       self.player.currentItem === item else { return }
+                self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
                 self.persistCurrentProgress()
             }
         }
@@ -2181,6 +2262,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         savePlaybackProgress(force: true)
         hasStopped = true
 
+        externalSubtitles.stop()
+        subtitleChanges?.cancel()
+        subtitleChanges = nil
         player.pause()
         recoveryTask?.cancel()
         recoveryTask = nil
