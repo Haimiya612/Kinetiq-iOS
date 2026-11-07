@@ -184,6 +184,152 @@ enum ModuleRuntimeError: LocalizedError {
     }
 }
 
+// MARK: - Batch 05E: Private Module Failure Diagnostics
+
+/// Produces shareable evidence without including signed stream URLs, cookies,
+/// request headers, episode identifiers, or raw module response bodies.
+/// Reports are kept in memory only; nothing is uploaded automatically.
+enum ModulePlaybackDiagnostics {
+    static func redact(_ original: String, limit: Int = 240) -> String {
+        var result = original
+        let patterns = [
+            #"(?i)https?://[^\s\"'<>]+"#,
+            #"(?i)(?:authorization|set-cookie|cookie|x-api-key|api[_-]?key|token|signature|bearer)\s*[:=]\s*[^\s,;]+"#,
+            #"[A-Za-z0-9_\-]{85,}"#
+        ]
+        for pattern in patterns {
+            result = result.replacingOccurrences(
+                of: pattern, with: "[redacted]", options: .regularExpression
+            )
+        }
+        result = result.replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        return String(result.prefix(limit))
+    }
+
+    static func code(for error: Error) -> String {
+        if let module = error as? ModuleRuntimeError {
+            switch module {
+            case .invalidStream: return "E01_NO_ACCEPTED_STREAM"
+            case .handlerTimedOut: return "RUNTIME_HANDLER_TIMEOUT"
+            case .missingHandler: return "RUNTIME_MISSING_HANDLER"
+            case .handlerFailed: return "RUNTIME_HANDLER_FAILED"
+            case .invalidResult: return "RUNTIME_INVALID_RESULT"
+            case .invalidHTTPResponse: return "NETWORK_INVALID_RESPONSE"
+            case .invalidRequestURL, .insecureRequest: return "NETWORK_INVALID_URL"
+            case .invalidHeaders, .invalidHTTPMethod: return "NETWORK_UNSUPPORTED_REQUEST"
+            case .responseTooLarge: return "NETWORK_RESPONSE_LIMIT"
+            case .scriptLoadFailed: return "RUNTIME_SCRIPT_FAILURE"
+            case .contextUnavailable: return "RUNTIME_UNAVAILABLE"
+            case .invalidManifest, .invalidBaseURL, .unsupportedContentType:
+                return "MODULE_CONFIGURATION"
+            case .invalidArguments: return "RUNTIME_INVALID_ARGUMENTS"
+            }
+        }
+        if let url = error as? URLError {
+            switch url.code {
+            case .cannotFindHost: return "NETWORK_DNS_FAILED"
+            case .cannotConnectToHost: return "NETWORK_CONNECT_FAILED"
+            case .timedOut: return "NETWORK_TIMEOUT"
+            case .notConnectedToInternet: return "NETWORK_OFFLINE"
+            case .secureConnectionFailed, .serverCertificateUntrusted:
+                return "NETWORK_TLS_FAILED"
+            default: return "NETWORK_URL_ERROR_\(url.errorCode)"
+            }
+        }
+        return "UNCLASSIFIED_\(String(describing: type(of: error)))"
+    }
+
+    /// Only counts structural fields and URL types. Never includes values.
+    static func responseShape(_ value: Any) -> String {
+        if let raw = value as? String {
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (text.hasPrefix("{") || text.hasPrefix("[")),
+               text.utf8.count <= 524_288,
+               let data = text.data(using: .utf8),
+               let container = try? JSONSerialization.jsonObject(with: data),
+               container is [String: Any] || container is [Any] {
+                return "encoded JSON -> " + responseShape(container)
+            }
+        }
+        let urlKeys: Set<String> = [
+            "url", "streamurl", "file", "src", "link", "href",
+            "embedurl", "iframeurl", "playerurl", "weburl", "embed", "iframe"
+        ]
+        let containers: Set<String> = [
+            "streams", "sources", "servers", "links", "mirrors", "qualities",
+            "variants", "videos", "files", "data", "result", "stream", "source", "video"
+        ]
+        let exclusions: Set<String> = [
+            "image", "poster", "cover", "thumbnail", "artwork", "banner",
+            "subtitles", "captions", "tracks", "headers", "requestheaders",
+            "description", "metadata", "title", "name", "label", "provider",
+            "quality", "height", "language", "lang", "type", "streamtype",
+            "id", "episode", "serverkey", "preferred", "duration"
+        ]
+        var groups = 0, fields = 0, https = 0, http = 0, relative = 0, opaque = 0
+        var objects = 0, arrays = 0, visited = 0
+        func candidate(_ string: String) {
+            fields += 1
+            let value = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.lowercased().hasPrefix("https://") { https += 1 }
+            else if value.lowercased().hasPrefix("http://") { http += 1 }
+            else if value.hasPrefix("/") { relative += 1 }
+            else { opaque += 1 }
+        }
+        func walk(_ entry: Any, depth: Int, isCandidate: Bool) {
+            guard depth <= 6, visited < 384 else { return }
+            visited += 1
+            if let text = entry as? String {
+                if isCandidate { candidate(text) }
+                return
+            }
+            if let array = entry as? [Any] {
+                arrays += 1
+                if isCandidate, array.count == 2,
+                   let second = array[1] as? String {
+                    candidate(second)
+                    return
+                }
+                for item in array.prefix(48) {
+                    walk(item, depth: depth + 1, isCandidate: isCandidate)
+                }
+                return
+            }
+            if let object = entry as? [String: Any] {
+                objects += 1
+                for (name, child) in object.prefix(48) {
+                    let key = name.lowercased()
+                    guard !exclusions.contains(key) else { continue }
+                    if containers.contains(key) { groups += 1 }
+                    let looksLikeNamedServer = isCandidate &&
+                        (child is [String: Any] || child is [Any] || child is String)
+                    guard containers.contains(key) || urlKeys.contains(key) ||
+                          looksLikeNamedServer else { continue }
+                    walk(child, depth: depth + 1,
+                         isCandidate: urlKeys.contains(key) || looksLikeNamedServer ||
+                             containers.contains(key) || isCandidate)
+                }
+            }
+        }
+        walk(value, depth: 0, isCandidate: value is String || value is [Any])
+        let kind: String = value is [String: Any] ? "object"
+            : value is [Any] ? "array" : value is String ? "string" : "other"
+        return "type=\(kind), groups=\(groups), objects=\(objects), arrays=\(arrays), url fields=\(fields), HTTPS=\(https), HTTP=\(http), relative=\(relative), opaque=\(opaque)"
+    }
+
+    static func simpleReport(source: String, phase: String, error: Error) -> String {
+        [
+            "Kinetiq module diagnostics · Batch 05E",
+            "Source: \(redact(source, limit: 80))",
+            "Phase: \(phase)",
+            "Code: \(code(for: error))",
+            "Reason: \(redact(error.localizedDescription))",
+            "No stream URLs, request headers, cookies or tokens included."
+        ].joined(separator: "\n")
+    }
+}
+
 // MARK: - Runtime Manifest
 
 private struct RuntimeManifest: Decodable {
@@ -1661,6 +1807,51 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     @Published private(set) var selectedLanguage = "sub"
     @Published private(set) var isResolving = false
     @Published private(set) var playbackError: String?
+    @Published private(set) var resolutionDiagnosticEvents: [String] = []
+    @Published private(set) var resolutionFailureCode: String?
+    @Published private(set) var diagnosticEpisodeNumber: String?
+    @Published private(set) var diagnosticLanguage = "sub"
+    @Published private(set) var diagnosticCandidateCount = 0
+    @Published private(set) var playerFailureDiagnostics: String?
+    @Published private(set) var playerFailureReason: String?
+
+    /// Preserve a native-player failure even after the full-screen view closes.
+    func recordPlayerFailure(diagnostics: String, reason: String) {
+        playerFailureDiagnostics = diagnostics.components(separatedBy: "\n")
+            .prefix(75)
+            .map { ModulePlaybackDiagnostics.redact($0) }
+            .joined(separator: "\n")
+        playerFailureReason = ModulePlaybackDiagnostics.redact(reason)
+    }
+
+    func clearPlayerFailure() {
+        playerFailureDiagnostics = nil
+        playerFailureReason = nil
+    }
+
+    /// Available before the AVPlayer screen exists (Error 01 and handler failures).
+    var diagnosticSummary: String {
+        let header = [
+            "Kinetiq module diagnostics · Batch 05E",
+            "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
+            "Episode number: \(ModulePlaybackDiagnostics.redact(diagnosticEpisodeNumber ?? currentEpisode?.number ?? "Unknown", limit: 30))",
+            "Language: \(diagnosticLanguage)",
+            "Failure code: \(resolutionFailureCode ?? "none")",
+            "Accepted server candidates: \(diagnosticCandidateCount)",
+            "Error: \(ModulePlaybackDiagnostics.redact(playbackError ?? "none"))",
+            "Resolution trace:"
+        ]
+        return (header + resolutionDiagnosticEvents + [
+            "Privacy: URLs, headers, cookies, tokens and raw responses omitted."
+        ]).joined(separator: "\n")
+    }
+
+    private func trace(_ message: String) {
+        resolutionDiagnosticEvents.append(ModulePlaybackDiagnostics.redact(message))
+        if resolutionDiagnosticEvents.count > 30 {
+            resolutionDiagnosticEvents.removeFirst(resolutionDiagnosticEvents.count - 30)
+        }
+    }
 
     private let runtime: SynthetiqModuleRuntime
     private var activeRequestID: UUID?
@@ -1728,19 +1919,35 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
         language: String,
         forceRefresh: Bool = false
     ) async -> Bool {
+        if !forceRefresh {
+            resolutionDiagnosticEvents = []
+            playerFailureDiagnostics = nil
+            playerFailureReason = nil
+        }
+        resolutionFailureCode = nil
+        diagnosticCandidateCount = 0
+        diagnosticLanguage = language.lowercased()
+        diagnosticEpisodeNumber = episode.number
+        trace("Resolution requested; language=\(diagnosticLanguage); refresh=\(forceRefresh)")
+
         guard let index = episodes.firstIndex(
             where: { $0.id == episode.id }
         ) else {
             playbackError = "This episode is no longer in the episode list."
+            resolutionFailureCode = "EPISODE_NOT_FOUND"
+            trace("Episode validation failed: not in queue")
             return false
         }
 
         guard supports(language, for: episode) else {
             playbackError = "This episode is not available in the selected language."
+            resolutionFailureCode = "EPISODE_LANGUAGE_UNAVAILABLE"
+            trace("Episode validation failed: language unavailable")
             return false
         }
 
         guard !isResolving else {
+            trace("Skipped duplicate concurrent resolve request")
             return false
         }
 
@@ -1777,6 +1984,9 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                 }
 
                 do {
+                    let attemptStart = Date()
+                    let parameterKind = reference == episode.href ? "href" : "id"
+                    trace("Calling extractStreamUrl with \(parameterKind) reference")
                     let parameters: [Any] = forceRefresh
                         ? [reference, language.lowercased(), true]
                         : [reference, language.lowercased()]
@@ -1784,12 +1994,24 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         handler: "extractStreamUrl",
                         arguments: parameters
                     )
-
-                    var choices = try ModuleRuntimeDecoder.streams(
-                        from: response,
-                        title: episodeTitle,
-                        baseURL: runtime.baseURL
-                    )
+                    guard activeRequestID == requestID else { return false }
+                    trace("Handler completed in \(String(format: "%.1f", Date().timeIntervalSince(attemptStart))) seconds")
+                    trace("Handler returned: \(ModulePlaybackDiagnostics.responseShape(response))")
+                    let decoded: [ModuleResolvedStream]
+                    do {
+                        decoded = try ModuleRuntimeDecoder.streams(
+                            from: response,
+                            title: episodeTitle,
+                            baseURL: runtime.baseURL
+                        )
+                    } catch {
+                        resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
+                        trace("Decode rejected all candidates; \(resolutionFailureCode ?? "unknown")")
+                        throw error
+                    }
+                    var choices = decoded
+                    diagnosticCandidateCount = choices.count
+                    trace("Decoder accepted \(choices.count) stream(s); native=\(choices.filter { !$0.isWebEmbed }.count), web=\(choices.filter(\.isWebEmbed).count)")
 
                     guard activeRequestID == requestID else {
                         return false
@@ -1836,8 +2058,12 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     availableStreams = choices
                     currentStream = preferredStream
                     playbackError = nil
+                    resolutionFailureCode = nil
+                    trace("Selected \(preferredStream.isWebEmbed ? "web embed" : "native stream") using server-health ranking")
                     return true
                 } catch {
+                    resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
+                    trace("\(reference == episode.href ? "href" : "id") attempt failed after \(String(format: "%.1f", Date().timeIntervalSince(attemptStart)))s: \(resolutionFailureCode ?? "unknown")")
                     if let moduleError = error as? ModuleRuntimeError,
                        case .handlerTimedOut = moduleError {
                         throw moduleError
@@ -1852,7 +2078,9 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                 return false
             }
 
+            resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
             playbackError = error.localizedDescription
+            trace("Resolution stopped: \(resolutionFailureCode ?? "unknown")")
             return false
         }
     }
@@ -2256,6 +2484,22 @@ enum ModuleRuntimeDecoder {
         title: String,
         baseURL: URL
     ) throws -> [ModuleResolvedStream] {
+        // Some modules serialize a valid streams/servers JSON object into a
+        // string. Decode only bounded JSON containers; never evaluate code,
+        // guess opaque provider tokens, or alter normal HTTPS/MP4/HLS URLs.
+        func jsonContainer(_ value: String) -> Any? {
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard (text.hasPrefix("{") || text.hasPrefix("[")),
+                  text.utf8.count <= 524_288,
+                  let data = text.data(using: .utf8),
+                  let result = try? JSONSerialization.jsonObject(with: data),
+                  result is [String: Any] || result is [Any] else { return nil }
+            return result
+        }
+        if let text = value as? String,
+           let nested = jsonContainer(text) {
+            return try streams(from: nested, title: title, baseURL: baseURL)
+        }
         let root = value as? [String: Any] ?? [:]
         let maximumChoices = 24
         let maximumDepth = 5
@@ -2369,6 +2613,11 @@ enum ModuleRuntimeDecoder {
             guard depth <= maximumDepth, choices.count < maximumChoices else { return }
 
             if let direct = entry as? String {
+                if let nested = jsonContainer(direct) {
+                    walk(nested, label: label, headers: headers,
+                         type: type, depth: depth + 1)
+                    return
+                }
                 append(urlString: direct, label: label, headers: headers,
                        streamType: type, subtitleContainer: nil)
                 return
@@ -2642,6 +2891,7 @@ struct ModuleBrowserView: View {
     @State private var isSearching = false
     @State private var runtimePreparationError: String?
     @State private var searchFailure: String?
+    @State private var lastSearchDiagnostics: String?
     @State private var activePreparationID: UUID?
     @State private var activeSearchID: UUID?
 
@@ -2679,13 +2929,24 @@ struct ModuleBrowserView: View {
             } else if !isTrusted {
                 trustRequired
             } else if let runtimePreparationError {
-                KinetiqAsyncStateView(
-                    kind: .failure,
-                    title: "Module Could Not Load",
-                    message: runtimePreparationError,
-                    actionTitle: "Retry Module Loading"
-                ) {
-                    Task { await prepareRuntime() }
+                VStack(spacing: 12) {
+                    KinetiqAsyncStateView(
+                        kind: .failure,
+                        title: "Module Could Not Load",
+                        message: runtimePreparationError,
+                        actionTitle: "Retry Module Loading"
+                    ) {
+                        Task { await prepareRuntime() }
+                    }
+                    Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = [
+                            "Kinetiq module diagnostics · Batch 05E",
+                            "Source: \(ModulePlaybackDiagnostics.redact(source.title, limit: 80))",
+                            "Phase: initialize runtime",
+                            "Details: \(ModulePlaybackDiagnostics.redact(runtimePreparationError))"
+                        ].joined(separator: "\n")
+                    }
+                    .buttonStyle(.bordered)
                 }
             } else if runtime == nil {
                 runtimeLoading
@@ -2818,6 +3079,7 @@ struct ModuleBrowserView: View {
         completedSearchQuery = nil
         runtimePreparationError = nil
         searchFailure = nil
+        lastSearchDiagnostics = nil
 
         guard let record = installedRecord,
               packageStore.isInstalled(source),
@@ -2882,23 +3144,38 @@ struct ModuleBrowserView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 34)
                 } else if let searchFailure {
-                    KinetiqAsyncStateView(
-                        kind: .failure,
-                        title: "Search Failed",
-                        message: searchFailure,
-                        actionTitle: "Retry Search"
-                    ) {
-                        Task { await searchAnime(queryOverride: completedSearchQuery) }
+                    VStack(spacing: 10) {
+                        KinetiqAsyncStateView(
+                            kind: .failure,
+                            title: "Search Failed",
+                            message: searchFailure,
+                            actionTitle: "Retry Search"
+                        ) {
+                            Task { await searchAnime(queryOverride: completedSearchQuery) }
+                        }
+                        Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = lastSearchDiagnostics
+                                ?? "No search diagnostics available."
+                        }
+                        .buttonStyle(.bordered)
                     }
                     .padding(.top, 20)
                 } else if results.isEmpty {
-                    KinetiqAsyncStateView(
-                        kind: .empty,
-                        title: completedSearchQuery == nil ? "Search Anime" : "No Matches",
-                        message: completedSearchQuery == nil
-                            ? "Enter a title or choose a topic from Explore."
-                            : "The source returned no results for \"\(completedSearchQuery ?? "")\". Try another search."
-                    )
+                    VStack(spacing: 10) {
+                        KinetiqAsyncStateView(
+                            kind: .empty,
+                            title: completedSearchQuery == nil ? "Search Anime" : "No Matches",
+                            message: completedSearchQuery == nil
+                                ? "Enter a title or choose a topic from Explore."
+                                : "The source returned no results for \"\(completedSearchQuery ?? "")\". Try another search."
+                        )
+                        if let lastSearchDiagnostics {
+                            Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = lastSearchDiagnostics
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
                     .padding(.top, 20)
                 } else {
                     collectionResults(
@@ -3377,6 +3654,7 @@ struct ModuleBrowserView: View {
         completedSearchQuery = query
         results = []
         searchFailure = nil
+        lastSearchDiagnostics = nil
         defer {
             if activeSearchID == requestID {
                 isSearching = false
@@ -3395,11 +3673,25 @@ struct ModuleBrowserView: View {
                 baseURL: runtime.baseURL,
                 maximumResults: runtime.maximumHomeResults
             )
+            if results.isEmpty {
+                lastSearchDiagnostics = [
+                    "Kinetiq module diagnostics · Batch 05E",
+                    "Source: \(ModulePlaybackDiagnostics.redact(source.title, limit: 80))",
+                    "Phase: searchResults",
+                    "Handler returned: \(ModulePlaybackDiagnostics.responseShape(response))",
+                    "Decoded search results: 0",
+                    "Query length: \(query.count) characters (text omitted)",
+                    "Possible cause: no results or incompatible response format"
+                ].joined(separator: "\n")
+            }
         } catch {
             guard !Task.isCancelled,
                   activeSearchID == requestID,
                   self.runtime === runtime else { return }
             searchFailure = error.localizedDescription
+            lastSearchDiagnostics = ModulePlaybackDiagnostics.simpleReport(
+                source: source.title, phase: "searchResults", error: error
+            )
         }
     }
 
@@ -3439,14 +3731,41 @@ struct ModuleAnimeDetailsView: View {
     @State private var isResolvingStream = false
 
     @State private var detailsFailure: String?
+    @State private var detailsFailureDiagnostics: String?
     @State private var activeDetailsRequestID: UUID?
     @State private var errorMessage: String?
+    @State private var lastPlaybackDiagnostics: String?
+    @State private var lastPlaybackFailure: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     detailsHeader
+
+                    if let lastPlaybackDiagnostics {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Label("Last playback failed", systemImage: "exclamationmark.triangle.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                            Text(lastPlaybackFailure ?? "The module could not resolve this episode.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                UIPasteboard.general.string = lastPlaybackDiagnostics
+                            } label: {
+                                Label("Copy Diagnostics", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(KinetiqPalette.accent)
+                            .accessibilityLabel("Copy the last failed playback diagnostics")
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.08),
+                                    in: RoundedRectangle(cornerRadius: 14))
+                    }
 
                     episodeSection
                 }
@@ -3479,7 +3798,12 @@ struct ModuleAnimeDetailsView: View {
             .task {
                 await loadDetailsAndEpisodes()
             }
-            .fullScreenCover(item: $selectedPlaybackSession) { session in
+            .fullScreenCover(item: $selectedPlaybackSession, onDismiss: {
+                if let report = playbackSession?.playerFailureDiagnostics {
+                    lastPlaybackDiagnostics = report
+                    lastPlaybackFailure = playbackSession?.playerFailureReason
+                }
+            }) { session in
                 KinetiqModulePlayerView(session: session)
                     .preferredColorScheme(.dark)
                     .presentationBackground(.black)
@@ -3496,6 +3820,11 @@ struct ModuleAnimeDetailsView: View {
                     }
                 )
             ) {
+                Button("Copy Diagnostics") {
+                    UIPasteboard.general.string = lastPlaybackDiagnostics
+                        ?? "No playback diagnostic report is available."
+                    errorMessage = nil
+                }
                 Button("OK", role: .cancel) {
                     errorMessage = nil
                 }
@@ -3648,21 +3977,40 @@ struct ModuleAnimeDetailsView: View {
                 )
                 .frame(minHeight: 150)
             } else if let detailsFailure {
-                KinetiqAsyncStateView(
-                    kind: .failure,
-                    title: "Episodes Unavailable",
-                    message: detailsFailure,
-                    actionTitle: "Retry Episodes"
-                ) {
-                    Task { await loadDetailsAndEpisodes() }
+                VStack(spacing: 10) {
+                    KinetiqAsyncStateView(
+                        kind: .failure,
+                        title: "Episodes Unavailable",
+                        message: detailsFailure,
+                        actionTitle: "Retry Episodes"
+                    ) {
+                        Task { await loadDetailsAndEpisodes() }
+                    }
+                    Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = detailsFailureDiagnostics
+                            ?? "Episode diagnostics were unavailable."
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .frame(minHeight: 150)
             } else if episodes.isEmpty {
-                KinetiqAsyncStateView(
-                    kind: .empty,
-                    title: "No Episodes",
-                    message: "This source did not return any episodes for this title."
-                )
+                VStack(spacing: 10) {
+                    KinetiqAsyncStateView(
+                        kind: .empty,
+                        title: "No Episodes",
+                        message: "This source did not return any episodes for this title."
+                    )
+                    Button("Copy Diagnostics", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = [
+                            "Kinetiq module diagnostics · Batch 05E",
+                            "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
+                            "Phase: extractEpisodes",
+                            "Outcome: no episodes decoded",
+                            "Note: source may be empty or its schema may be incompatible"
+                        ].joined(separator: "\n")
+                    }
+                    .buttonStyle(.bordered)
+                }
                 .frame(minHeight: 150)
             } else if visibleEpisodes.isEmpty {
                 ContentUnavailableView(
@@ -3784,6 +4132,7 @@ struct ModuleAnimeDetailsView: View {
         isLoading = true
         episodes = []
         detailsFailure = nil
+        detailsFailureDiagnostics = nil
 
         defer {
             if activeDetailsRequestID == requestID {
@@ -3866,10 +4215,20 @@ struct ModuleAnimeDetailsView: View {
 
             detailsFailure =
                 "The source did not return a recognizable episode list."
+            detailsFailureDiagnostics = [
+                "Kinetiq module diagnostics · Batch 05E",
+                "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
+                "Phase: extractEpisodes",
+                "Result: no decodable episodes after \(attempted.count) reference(s)",
+                "Handler errors: none (returned empty/unrecognized lists)"
+            ].joined(separator: "\n")
         } catch {
             guard !Task.isCancelled,
                   activeDetailsRequestID == requestID else { return }
             detailsFailure = error.localizedDescription
+            detailsFailureDiagnostics = ModulePlaybackDiagnostics.simpleReport(
+                source: sourceName, phase: "extractDetails / extractEpisodes", error: error
+            )
         }
     }
 
@@ -3885,6 +4244,8 @@ struct ModuleAnimeDetailsView: View {
         }
 
         isResolvingStream = true
+        lastPlaybackDiagnostics = nil
+        lastPlaybackFailure = nil
         defer {
             isResolvingStream = false
         }
@@ -3921,6 +4282,10 @@ struct ModuleAnimeDetailsView: View {
             )
             selectedPlaybackSession = session
         } else {
+            lastPlaybackDiagnostics = session.diagnosticSummary
+            lastPlaybackFailure = ModulePlaybackDiagnostics.redact(
+                session.playbackError ?? "The episode stream could not be resolved."
+            )
             errorMessage = session.playbackError
                 ?? "The episode stream could not be resolved."
         }

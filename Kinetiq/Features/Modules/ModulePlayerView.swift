@@ -148,6 +148,17 @@ struct KinetiqModulePlayerView: View {
                 if let error = playback.errorMessage {
                     VStack(spacing: 12) {
                         playbackErrorOverlay(error)
+                        Button {
+                            UIPasteboard.general.string = playback.diagnosticSummary
+                        } label: {
+                            Label("Copy Diagnostics", systemImage: "doc.on.doc")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 11)
+                                .background(.white.opacity(0.14), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                         if let stream = session.currentStream,
                            ModuleWebFallbackPolicy.allows(stream.url) {
                             Button(action: openWebFallback) {
@@ -232,7 +243,21 @@ struct KinetiqModulePlayerView: View {
             .onDisappear {
                 autoHideTask?.cancel()
                 feedbackTask?.cancel()
+                if let reason = playback.errorMessage {
+                    session.recordPlayerFailure(
+                        diagnostics: playback.diagnosticSummary, reason: reason
+                    )
+                } else {
+                    session.clearPlayerFailure()
+                }
                 playback.stop()
+            }
+            .onChange(of: playback.errorMessage) { _, failure in
+                if let failure {
+                    session.recordPlayerFailure(
+                        diagnostics: playback.diagnosticSummary, reason: failure
+                    )
+                }
             }
             .onReceive(NotificationCenter.default.publisher(
                 for: UIApplication.willResignActiveNotification
@@ -1364,10 +1389,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     var diagnosticSummary: String {
         let lines: [String] = [
             "Kinetiq module playback diagnostics",
-            "Source: \(session.sourceName)",
-            "Episode: \(session.currentEpisode?.number ?? "Unknown")",
+            "Source: \(ModulePlaybackDiagnostics.redact(session.sourceName, limit: 80))",
+            "Episode: \(ModulePlaybackDiagnostics.redact(session.currentEpisode?.number ?? "Unknown", limit: 30))",
             "Language: \(session.selectedLanguage)",
-            "Server label: \(session.currentStream?.label ?? "None")",
+            "Server label: \(ModulePlaybackDiagnostics.redact(session.currentStream?.label ?? "None", limit: 80))",
             "Server health: \(session.currentStream.map { serverHealthStatus(for: $0) } ?? "Not tested")",
             "Source-provided servers: \(session.availableStreams.count)",
             "Tried servers: \(attemptedStreamIDs.count)",
@@ -1381,7 +1406,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             "Current presentation: \(videoQuality.presentedResolution ?? "Not reported")",
             "Events:"
         ]
-        return (lines + diagnosticEvents).joined(separator: "\n")
+        return (lines.map { ModulePlaybackDiagnostics.redact($0) } +
+                diagnosticEvents + ["", session.diagnosticSummary])
+            .joined(separator: "\n")
     }
 
     func serverHealthStatus(for stream: ModuleResolvedStream) -> String {
@@ -1398,7 +1425,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     private func note(_ event: String) {
-        diagnosticEvents.append(event)
+        diagnosticEvents.append(ModulePlaybackDiagnostics.redact(event))
         if diagnosticEvents.count > 14 {
             diagnosticEvents.removeFirst(diagnosticEvents.count - 14)
         }
@@ -1895,6 +1922,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         let reason = lastHTTPStatus.map { "HTTP \($0)" }
             ?? "AVPlayer failure"
+        let failureCode: String
+        switch lastHTTPStatus {
+        case 401, 403: failureCode = "HTTP_AUTHORIZATION_REJECTED"
+        case 404, 410: failureCode = "HTTP_MEDIA_NOT_FOUND"
+        case 429: failureCode = "HTTP_RATE_LIMITED"
+        case let .some(code) where (500...599).contains(code):
+            failureCode = "HTTP_PROVIDER_FAILURE"
+        case .some: failureCode = "HTTP_MEDIA_RESPONSE_FAILURE"
+        case .none: failureCode = "AVPLAYER_STARTUP_OR_DECODE_FAILURE"
+        }
+        note("Stage=AVPlayer; code=\(failureCode); status=\(lastHTTPStatus.map(String.init) ?? "unknown")")
         note("\(reason) on \(stream.hostName)")
 
         // Exactly one automatic retry per server. If the server rejects
