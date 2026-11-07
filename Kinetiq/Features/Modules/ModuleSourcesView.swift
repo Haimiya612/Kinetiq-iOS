@@ -385,19 +385,22 @@ final class ModuleSourceStore: ObservableObject {
     }
 
     var activeSourceTitle: String {
-        activeSource?.title ?? "Local Library"
+        if isLocalLibrarySelected { return "Local Library" }
+        return activeSource?.title ?? "Source Unavailable"
     }
 
     var activeSourceSubtitle: String {
         guard let activeSource else {
-            return "Personal media on this device"
+            return isLocalLibrarySelected
+                ? "Personal media on this device"
+                : "Refresh repositories to reconnect"
         }
-
         return "\(activeSource.repositoryName) • \(activeSource.subtitle)"
     }
 
     var activeSourceSymbol: String {
-        activeSource?.symbol ?? "iphone"
+        activeSource?.symbol
+            ?? (isLocalLibrarySelected ? "iphone" : "exclamationmark.triangle")
     }
 
     func sources(
@@ -502,6 +505,19 @@ final class ModuleSourceStore: ObservableObject {
 
     // MARK: Refresh
 
+    /// A failed repository may have no cached modules after app relaunch.
+    /// Preserve the user's choice until a successful response proves it gone.
+    static func selectionBelongsToFailedRepository(
+        _ selectedSourceID: String,
+        in repositories: [ModuleRepositoryRecord]
+    ) -> Bool {
+        guard selectedSourceID != localLibraryID else { return false }
+        return repositories.contains {
+            $0.refreshError != nil &&
+            selectedSourceID.hasPrefix($0.url.absoluteString + "|")
+        }
+    }
+
     func refreshAll() async {
         let savedURLs =
             UserDefaults.standard.stringArray(forKey: Self.repositoriesKey)
@@ -551,8 +567,13 @@ final class ModuleSourceStore: ObservableObject {
             !isLocalLibrarySelected,
             !availableSources.contains(where: {
                 $0.id == selectedSourceID
-            })
+            }),
+            !Self.selectionBelongsToFailedRepository(
+                selectedSourceID,
+                in: refreshedRepositories
+            )
         {
+            // Only drop an obsolete selection after a successful refresh.
             selectLocalLibrary()
         }
     }
@@ -733,7 +754,13 @@ struct ModuleSourcesView: View {
             // MARK: Connected Repositories
 
             Section {
-                if store.repositories.isEmpty {
+                if store.repositories.isEmpty && store.isRefreshing {
+                    KinetiqAsyncStateView(
+                        kind: .loading,
+                        title: "Refreshing Repositories",
+                        message: "Retrieving your saved module catalogues."
+                    )
+                } else if store.repositories.isEmpty {
                     ContentUnavailableView(
                         "No Repositories",
                         systemImage: "square.stack.3d.up",
@@ -763,9 +790,16 @@ struct ModuleSourcesView: View {
                             }
 
                             if let refreshError = repository.refreshError {
-                                Text(refreshError)
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(refreshError)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+
+                                    Button("Retry Repository Refresh") {
+                                        Task { await store.refreshAll() }
+                                    }
+                                    .disabled(store.isRefreshing)
+                                }
                             }
                         } label: {
                             HStack {

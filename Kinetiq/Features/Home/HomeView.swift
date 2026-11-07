@@ -68,7 +68,7 @@ private struct ContinueWatchingThumbnailView: View {
 
 // MARK: - Home Media Mode
 
-private enum HomeMediaMode: String, CaseIterable, Identifiable {
+enum HomeMediaMode: String, CaseIterable, Identifiable {
     case video = "Video"
     case manga = "Manga"
 
@@ -79,6 +79,26 @@ private enum HomeMediaMode: String, CaseIterable, Identifiable {
         case .video: "play.rectangle.fill"
         case .manga: "book.closed.fill"
         }
+    }
+}
+
+// MARK: - Home Content Routing
+
+/// Manga is a separate experience regardless of the selected video source.
+enum HomeContentRoute: Equatable {
+    case manga
+    case localVideo
+    case remoteVideo
+    case unavailableSource
+
+    static func resolve(
+        mode: HomeMediaMode,
+        isLocalLibrarySelected: Bool,
+        sourceAvailable: Bool
+    ) -> HomeContentRoute {
+        if mode == .manga { return .manga }
+        if isLocalLibrarySelected { return .localVideo }
+        return sourceAvailable ? .remoteVideo : .unavailableSource
     }
 }
 
@@ -109,16 +129,21 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 27) {
                     header
 
-                    if !moduleSourceStore.isLocalLibrarySelected {
-    if let activeSource = moduleSourceStore.activeSource {
-        ModuleBrowserView(source: activeSource)
-    } else {
-        selectedModulePlaceholder
-    }
-} else if selectedMode == .video {
-                        videoContent
-                    } else {
+                    switch HomeContentRoute.resolve(
+                        mode: selectedMode,
+                        isLocalLibrarySelected: moduleSourceStore.isLocalLibrarySelected,
+                        sourceAvailable: moduleSourceStore.activeSource != nil
+                    ) {
+                    case .manga:
                         mangaPlaceholder
+                    case .localVideo:
+                        videoContent
+                    case .remoteVideo:
+                        if let activeSource = moduleSourceStore.activeSource {
+                            ModuleBrowserView(source: activeSource)
+                        }
+                    case .unavailableSource:
+                        selectedModulePlaceholder
                     }
                 }
                 .padding(.horizontal, 21)
@@ -319,84 +344,15 @@ struct HomeView: View {
     // MARK: Selected Module Placeholder
 
     private var selectedModulePlaceholder: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: moduleSourceStore.activeSourceSymbol)
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(KinetiqPalette.accent)
-                .frame(width: 62, height: 62)
-                .background(
-                    KinetiqPalette.accent.opacity(0.12),
-                    in: RoundedRectangle(
-                        cornerRadius: 19,
-                        style: .continuous
-                    )
-                )
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("SOURCE SELECTED")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .tracking(1.8)
-                    .foregroundStyle(KinetiqPalette.accent)
-
-                Text(moduleSourceStore.activeSourceTitle)
-                    .font(.system(size: 27, weight: .bold, design: .rounded))
-                    .tracking(-0.8)
-
-                Text(
-                    "This source is connected to Kinetiq's repository catalogue. Module browsing and playback will appear here when the module runtime is integrated."
-                )
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button(action: onModules) {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.stack.3d.up.fill")
-                    Text("Manage Sources")
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                }
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .padding(15)
-                .background(
-                    Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(
-                        cornerRadius: 17,
-                        style: .continuous
-                    )
-                )
-            }
-            .buttonStyle(.plain)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(
-            LinearGradient(
-                colors: [
-                    KinetiqPalette.accent.opacity(0.13),
-                    KinetiqPalette.violet.opacity(0.07),
-                    Color(uiColor: .secondarySystemGroupedBackground)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(
-                cornerRadius: 25,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: 25,
-                style: .continuous
-            )
-            .strokeBorder(
-                Color.primary.opacity(0.05),
-                lineWidth: 0.8
-            )
+        KinetiqAsyncStateView(
+            kind: moduleSourceStore.isRefreshing ? .loading : .failure,
+            title: moduleSourceStore.isRefreshing ? "Refreshing Sources" : "Source Unavailable",
+            message: moduleSourceStore.isRefreshing
+                ? "Checking the repository for your previously selected source."
+                : "Your source selection is preserved. The repository could not provide this module; refresh to reconnect.",
+            actionTitle: "Retry Repository Refresh"
+        ) {
+            Task { await moduleSourceStore.refreshAll() }
         }
         .padding(.top, 12)
     }

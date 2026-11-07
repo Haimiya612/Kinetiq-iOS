@@ -5,6 +5,108 @@ import JavaScriptCore
 import SwiftUI
 import UIKit
 
+// MARK: - Shared Async UI (Batch 04A)
+
+struct KinetiqAsyncStateView: View {
+    enum Kind: Equatable {
+        case loading
+        case empty
+        case failure
+    }
+
+    let kind: Kind
+    let title: String
+    let message: String
+    let actionTitle: String?
+    let action: (() -> Void)?
+
+    init(
+        kind: Kind,
+        title: String,
+        message: String,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
+        self.kind = kind
+        self.title = title
+        self.message = message
+        self.actionTitle = actionTitle
+        self.action = action
+    }
+
+    private var stateSymbol: String {
+        switch kind {
+        case .loading: "arrow.triangle.2.circlepath"
+        case .empty: "square.stack.3d.up"
+        case .failure: "exclamationmark.triangle"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 15) {
+            ZStack {
+                Circle()
+                    .fill(KinetiqPalette.accent.opacity(0.09))
+                    .frame(width: 74, height: 74)
+
+                Circle()
+                    .strokeBorder(KinetiqPalette.accent.opacity(0.13), lineWidth: 1)
+                    .frame(width: 74, height: 74)
+
+                if kind == .loading {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(KinetiqPalette.accent)
+                } else {
+                    Image(systemName: stateSymbol)
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .symbolRenderingMode(.hierarchical)
+                        .accessibilityHidden(true)
+                }
+            }
+
+            VStack(spacing: 7) {
+                Text(title)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if kind == .failure, let actionTitle, let action {
+                Button(action: action) {
+                    Label(actionTitle, systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(KinetiqPalette.accent)
+                .padding(.top, 5)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 28)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 23, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 23, style: .continuous)
+                .strokeBorder(KinetiqPalette.accent.opacity(0.1), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+}
+
 // MARK: - Runtime Errors
 
 enum ModuleRuntimeError: LocalizedError {
@@ -2153,9 +2255,10 @@ struct ModuleBrowserView: View {
 
     @State private var isPreparingRuntime = false
     @State private var isSearching = false
+    @State private var runtimePreparationError: String?
+    @State private var searchFailure: String?
 
     @State private var showingTrustConfirmation = false
-    @State private var errorMessage: String?
 
     private var installedRecord: InstalledModuleRecord? {
         packageStore.installedModule(for: source)
@@ -2188,6 +2291,15 @@ struct ModuleBrowserView: View {
                 notInstalled
             } else if !isTrusted {
                 trustRequired
+            } else if let runtimePreparationError {
+                KinetiqAsyncStateView(
+                    kind: .failure,
+                    title: "Module Could Not Load",
+                    message: runtimePreparationError,
+                    actionTitle: "Retry Module Loading"
+                ) {
+                    Task { await prepareRuntime() }
+                }
             } else if runtime == nil {
                 runtimeLoading
             } else {
@@ -2206,23 +2318,6 @@ struct ModuleBrowserView: View {
                     sourceName: source.title
                 )
             }
-        }
-        .alert(
-            "Module",
-            isPresented: Binding(
-                get: { errorMessage != nil },
-                set: {
-                    if !$0 {
-                        errorMessage = nil
-                    }
-                }
-            )
-        ) {
-            Button("OK", role: .cancel) {
-                errorMessage = nil
-            }
-        } message: {
-            Text(errorMessage ?? "An unexpected error occurred.")
         }
         .alert(
             "Trust \(source.title)?",
@@ -2307,11 +2402,11 @@ struct ModuleBrowserView: View {
     // MARK: Runtime Loading
 
     private var runtimeLoading: some View {
-        ContentUnavailableView {
-            ProgressView()
-        } description: {
-            Text("Loading \(source.title)…")
-        }
+        KinetiqAsyncStateView(
+            kind: .loading,
+            title: "Loading \(source.title)",
+            message: "Preparing the installed module runtime."
+        )
     }
 
     private func prepareRuntime() async {
@@ -2319,6 +2414,8 @@ struct ModuleBrowserView: View {
         results = []
         searchQuery = ""
         completedSearchQuery = nil
+        runtimePreparationError = nil
+        searchFailure = nil
 
         guard let record = installedRecord,
               packageStore.isInstalled(source) else {
@@ -2341,7 +2438,7 @@ struct ModuleBrowserView: View {
 
             runtime = loadedRuntime
         } catch {
-            errorMessage = error.localizedDescription
+            runtimePreparationError = error.localizedDescription
         }
     }
 
@@ -2381,15 +2478,23 @@ struct ModuleBrowserView: View {
                     ProgressView("Searching \(source.title)…")
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 34)
+                } else if let searchFailure {
+                    KinetiqAsyncStateView(
+                        kind: .failure,
+                        title: "Search Failed",
+                        message: searchFailure,
+                        actionTitle: "Retry Search"
+                    ) {
+                        Task { await searchAnime(queryOverride: completedSearchQuery) }
+                    }
+                    .padding(.top, 20)
                 } else if results.isEmpty {
-                    ContentUnavailableView(
-                        completedSearchQuery == nil ? "Search Anime" : "No Matches",
-                        systemImage: "magnifyingglass",
-                        description: Text(
-                            completedSearchQuery == nil
-                                ? "Enter a title or choose a topic from Explore."
-                                : "The source returned no results for \"\(completedSearchQuery ?? "")\". Try another search."
-                        )
+                    KinetiqAsyncStateView(
+                        kind: .empty,
+                        title: completedSearchQuery == nil ? "Search Anime" : "No Matches",
+                        message: completedSearchQuery == nil
+                            ? "Enter a title or choose a topic from Explore."
+                            : "The source returned no results for \"\(completedSearchQuery ?? "")\". Try another search."
                     )
                     .padding(.top, 20)
                 } else {
@@ -2857,8 +2962,8 @@ struct ModuleBrowserView: View {
     }
 
     @MainActor
-    private func searchAnime() async {
-        let query = searchQuery.trimmingCharacters(
+    private func searchAnime(queryOverride: String? = nil) async {
+        let query = (queryOverride ?? searchQuery).trimmingCharacters(
             in: .whitespacesAndNewlines
         )
         guard !query.isEmpty,
@@ -2868,7 +2973,7 @@ struct ModuleBrowserView: View {
         isSearching = true
         completedSearchQuery = query
         results = []
-        errorMessage = nil
+        searchFailure = nil
         defer { isSearching = false }
 
         do {
@@ -2885,7 +2990,7 @@ struct ModuleBrowserView: View {
             )
         } catch {
             if self.runtime === runtime {
-                errorMessage = error.localizedDescription
+                searchFailure = error.localizedDescription
             }
         }
     }
@@ -2925,6 +3030,7 @@ struct ModuleAnimeDetailsView: View {
     @State private var isLoading = true
     @State private var isResolvingStream = false
 
+    @State private var detailsFailure: String?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -3077,10 +3183,6 @@ struct ModuleAnimeDetailsView: View {
                     .foregroundStyle(KinetiqPalette.accent)
             }
 
-            if isLoading {
-                ProgressView("Loading episodes…")
-                    .padding(.top, 5)
-            }
         }
     }
 
@@ -3129,16 +3231,31 @@ struct ModuleAnimeDetailsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !isLoading && episodes.isEmpty {
-                ContentUnavailableView(
-                    "No Episodes",
-                    systemImage: "rectangle.stack",
-                    description: Text(
-                        "This source did not return any episodes for this title."
-                    )
+            if isLoading && episodes.isEmpty {
+                KinetiqAsyncStateView(
+                    kind: .loading,
+                    title: "Loading Episodes",
+                    message: "Retrieving details and episodes from \(sourceName)."
                 )
                 .frame(minHeight: 150)
-            } else if !isLoading && visibleEpisodes.isEmpty {
+            } else if let detailsFailure {
+                KinetiqAsyncStateView(
+                    kind: .failure,
+                    title: "Episodes Unavailable",
+                    message: detailsFailure,
+                    actionTitle: "Retry Episodes"
+                ) {
+                    Task { await loadDetailsAndEpisodes() }
+                }
+                .frame(minHeight: 150)
+            } else if episodes.isEmpty {
+                KinetiqAsyncStateView(
+                    kind: .empty,
+                    title: "No Episodes",
+                    message: "This source did not return any episodes for this title."
+                )
+                .frame(minHeight: 150)
+            } else if visibleEpisodes.isEmpty {
                 ContentUnavailableView(
                     "No Matching Episodes",
                     systemImage: "line.3.horizontal.decrease.circle",
@@ -3255,7 +3372,7 @@ struct ModuleAnimeDetailsView: View {
     private func loadDetailsAndEpisodes() async {
         isLoading = true
         episodes = []
-        errorMessage = nil
+        detailsFailure = nil
 
         defer {
             isLoading = false
@@ -3327,10 +3444,10 @@ struct ModuleAnimeDetailsView: View {
                 throw lastError
             }
 
-            errorMessage =
+            detailsFailure =
                 "The source did not return a recognizable episode list."
         } catch {
-            errorMessage = error.localizedDescription
+            detailsFailure = error.localizedDescription
         }
     }
 
