@@ -1983,8 +1983,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     continue
                 }
 
+                let attemptStart = Date()
                 do {
-                    let attemptStart = Date()
                     let parameterKind = reference == episode.href ? "href" : "id"
                     trace("Calling extractStreamUrl with \(parameterKind) reference")
                     let parameters: [Any] = forceRefresh
