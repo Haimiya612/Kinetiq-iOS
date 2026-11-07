@@ -269,6 +269,7 @@ enum ModulePlaybackDiagnostics {
         ]
         var groups = 0, fields = 0, https = 0, http = 0, relative = 0, opaque = 0
         var objects = 0, arrays = 0, visited = 0
+        var emptyArrays = 0, errorFields = 0, reportedFailure = 0
         func candidate(_ string: String) {
             fields += 1
             let value = string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -286,6 +287,7 @@ enum ModulePlaybackDiagnostics {
             }
             if let array = entry as? [Any] {
                 arrays += 1
+                if array.isEmpty { emptyArrays += 1 }
                 if isCandidate, array.count == 2,
                    let second = array[1] as? String {
                     candidate(second)
@@ -300,6 +302,9 @@ enum ModulePlaybackDiagnostics {
                 objects += 1
                 for (name, child) in object.prefix(48) {
                     let key = name.lowercased()
+                    // Presence only: never copy provider error messages or tokens.
+                    if ["error", "errors", "reason", "message"].contains(key) { errorFields += 1 }
+                    if key == "success", let success = child as? Bool, !success { reportedFailure += 1 }
                     guard !exclusions.contains(key) else { continue }
                     if containers.contains(key) { groups += 1 }
                     let looksLikeNamedServer = isCandidate &&
@@ -315,12 +320,12 @@ enum ModulePlaybackDiagnostics {
         walk(value, depth: 0, isCandidate: value is String || value is [Any])
         let kind: String = value is [String: Any] ? "object"
             : value is [Any] ? "array" : value is String ? "string" : "other"
-        return "type=\(kind), groups=\(groups), objects=\(objects), arrays=\(arrays), url fields=\(fields), HTTPS=\(https), HTTP=\(http), relative=\(relative), opaque=\(opaque)"
+        return "type=\(kind), groups=\(groups), objects=\(objects), arrays=\(arrays), empty arrays=\(emptyArrays), error fields=\(errorFields), success=false=\(reportedFailure), url fields=\(fields), HTTPS=\(https), HTTP=\(http), relative=\(relative), opaque=\(opaque)"
     }
 
     static func simpleReport(source: String, phase: String, error: Error) -> String {
         [
-            "Kinetiq module diagnostics · Batch 05E",
+            "Kinetiq module diagnostics · Batch 05F",
             "Source: \(redact(source, limit: 80))",
             "Phase: \(phase)",
             "Code: \(code(for: error))",
@@ -409,6 +414,23 @@ private actor SynthetiqModuleNetworkClient {
     private let gate: ModuleRequestGate
     private let session: URLSession
 
+    // Batch 05F: bounded, non-identifying evidence for Error 01. No URLs,
+    // hostnames, cookies, headers, request bodies, or module response bodies.
+    private var totalRequests = 0
+    private var okResponses = 0
+    private var unauthorizedResponses = 0
+    private var notFoundResponses = 0
+    private var rateLimitedResponses = 0
+    private var serverErrorResponses = 0
+    private var otherResponses = 0
+    private var transportFailures = 0
+    private var binaryResponses = 0
+    private var lastNetworkFailure = "none"
+
+    func diagnosticSummary() -> String {
+        "requests=\(totalRequests), 2xx=\(okResponses), 401/403=\(unauthorizedResponses), 404=\(notFoundResponses), 429=\(rateLimitedResponses), 5xx=\(serverErrorResponses), other HTTP=\(otherResponses), transport failures=\(transportFailures), binary bodies=\(binaryResponses), last transport class=\(lastNetworkFailure)"
+    }
+
     init(
         baseURL: URL,
         maximumResponseBytes: Int,
@@ -462,6 +484,7 @@ private actor SynthetiqModuleNetworkClient {
         body: String
     ) async throws -> [String: Any] {
         await gate.acquire()
+        totalRequests += 1
 
         defer {
             Task {
@@ -552,6 +575,20 @@ private actor SynthetiqModuleNetworkClient {
                 for: request
             )
         } catch {
+            transportFailures += 1
+            if let urlError = error as? URLError {
+                switch urlError.code {
+                case .timedOut: lastNetworkFailure = "timeout"
+                case .cannotFindHost: lastNetworkFailure = "DNS"
+                case .cannotConnectToHost: lastNetworkFailure = "connection"
+                case .secureConnectionFailed, .serverCertificateUntrusted:
+                    lastNetworkFailure = "TLS"
+                case .notConnectedToInternet: lastNetworkFailure = "offline"
+                default: lastNetworkFailure = "other URL session failure"
+                }
+            } else {
+                lastNetworkFailure = "URL session failure"
+            }
             throw ModuleRuntimeError.handlerFailed(
                 "Source request failed: \(error.localizedDescription)"
             )
@@ -571,6 +608,15 @@ private actor SynthetiqModuleNetworkClient {
             throw ModuleRuntimeError.responseTooLarge
         }
 
+        switch httpResponse.statusCode {
+        case 200...299: okResponses += 1
+        case 401, 403: unauthorizedResponses += 1
+        case 404: notFoundResponses += 1
+        case 429: rateLimitedResponses += 1
+        case 500...599: serverErrorResponses += 1
+        default: otherResponses += 1
+        }
+
         let responseHeaders = Dictionary(
             uniqueKeysWithValues: httpResponse.allHeaderFields.compactMap {
                 key, value -> (String, String)? in
@@ -586,17 +632,29 @@ private actor SynthetiqModuleNetworkClient {
             }
         )
 
-        let responseBody = String(
-            data: responseData,
-            encoding: .utf8
-        ) ?? ""
+        // Provider modules inspect .body.charCodeAt(n) to verify actual
+        // MPEG-TS/MP4 segment signatures. A non-UTF-8 body must NEVER turn
+        // into "" merely because it is binary. Latin-1 maps each byte 1:1
+        // into JS character codes 0...255 without rewriting the bytes.
+        let mediaType = (responseHeaders["content-type"] ?? "").lowercased()
+        let explicitlyBinary = mediaType.hasPrefix("video/") ||
+            mediaType.hasPrefix("audio/") || mediaType.hasPrefix("image/") ||
+            mediaType.contains("octet-stream") ||
+            mediaType.contains("mpeg2-transport") ||
+            mediaType.contains("application/mp2t")
+        let isBinary = explicitlyBinary || String(data: responseData, encoding: .utf8) == nil
+        if isBinary { binaryResponses += 1 }
+        let responseBody = isBinary
+            ? (String(data: responseData, encoding: .isoLatin1) ?? "")
+            : (String(data: responseData, encoding: .utf8) ?? "")
 
         return [
             "status": httpResponse.statusCode,
             "ok": (200...299).contains(httpResponse.statusCode),
             "url": httpResponse.url?.absoluteString ?? "",
             "headers": responseHeaders,
-            "body": responseBody
+            "body": responseBody,
+            "binary": isBinary
         ]
     }
 }
@@ -892,6 +950,10 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         await networkClient.cookies(for: streamURL)
     }
 
+    func networkDiagnosticSummary() async -> String {
+        await networkClient.diagnosticSummary()
+    }
+
     // MARK: Browser-compatible timer bridge
 
     // These methods are invoked by JavaScriptCore on the serial jsQueue.
@@ -1057,33 +1119,58 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
             try {
                 const raw = JSON.parse(payloadJSON || "{}");
                 const rawHeaders = raw.headers || {};
+                // Some modules index response.headers['content-type'] directly;
+                // others call .get('Content-Type'). Support both contracts.
+                const responseHeaders = Object.create(null);
+                for (const key of Object.keys(rawHeaders)) {
+                    const value = String(rawHeaders[key]);
+                    responseHeaders[key] = value;
+                    responseHeaders[key.toLowerCase()] = value;
+                }
+                Object.defineProperties(responseHeaders, {
+                    get: { value: function(name) {
+                        const wanted = String(name).toLowerCase();
+                        return Object.prototype.hasOwnProperty.call(this, wanted)
+                            ? this[wanted] : null;
+                    }},
+                    has: { value: function(name) {
+                        return this.get(name) !== null;
+                    }},
+                    forEach: { value: function(callback) {
+                        for (const key of Object.keys(rawHeaders)) {
+                            callback(String(rawHeaders[key]), key.toLowerCase(), this);
+                        }
+                    }},
+                    entries: { value: function() {
+                        return Object.keys(rawHeaders).map(
+                            key => [key.toLowerCase(), String(rawHeaders[key])]
+                        )[Symbol.iterator]();
+                    }}
+                });
 
                 const response = {
                     status: Number(raw.status || 0),
                     ok: Boolean(raw.ok),
                     url: String(raw.url || ""),
                     body: String(raw.body || ""),
-                    headers: {
-                        get: function(name) {
-                            const wanted = String(name).toLowerCase();
-                            const key = Object.keys(rawHeaders).find(
-                                item => item.toLowerCase() === wanted
-                            );
-                            return key ? String(rawHeaders[key]) : null;
-                        },
-                        has: function(name) {
-                            return this.get(name) !== null;
-                        },
-                        forEach: function(callback) {
-                            for (const key of Object.keys(rawHeaders)) {
-                                callback(String(rawHeaders[key]), key.toLowerCase(), this);
+                    headers: responseHeaders,
+                    // Standard Fetch byte API. For binary responses the body is
+                    // byte-preserving Latin-1; other responses are encoded as UTF-8.
+                    arrayBuffer: async function() {
+                        const body = String(raw.body || '');
+                        if (raw.binary) {
+                            const bytes = new Uint8Array(body.length);
+                            for (let i = 0; i < body.length; i++) {
+                                bytes[i] = body.charCodeAt(i) & 255;
                             }
-                        },
-                        entries: function() {
-                            return Object.keys(rawHeaders).map(
-                                key => [key.toLowerCase(), String(rawHeaders[key])]
-                            )[Symbol.iterator]();
+                            return bytes.buffer;
                         }
+                        const encoded = unescape(encodeURIComponent(body));
+                        const bytes = new Uint8Array(encoded.length);
+                        for (let i = 0; i < encoded.length; i++) {
+                            bytes[i] = encoded.charCodeAt(i);
+                        }
+                        return bytes.buffer;
                     },
                     json: async function() {
                         return JSON.parse(String(raw.body || ""));
@@ -1832,7 +1919,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     /// Available before the AVPlayer screen exists (Error 01 and handler failures).
     var diagnosticSummary: String {
         let header = [
-            "Kinetiq module diagnostics · Batch 05E",
+            "Kinetiq module diagnostics · Batch 05F",
             "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
             "Episode number: \(ModulePlaybackDiagnostics.redact(diagnosticEpisodeNumber ?? currentEpisode?.number ?? "Unknown", limit: 30))",
             "Language: \(diagnosticLanguage)",
@@ -1972,6 +2059,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
             let references = [episode.href, episode.id]
             var attempted = Set<String>()
             var lastError: Error?
+            var didRetryEmptyResult = false
 
             for rawReference in references {
                 let reference = rawReference.trimmingCharacters(
@@ -1997,6 +2085,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     guard activeRequestID == requestID else { return false }
                     trace("Handler completed in \(String(format: "%.1f", Date().timeIntervalSince(attemptStart))) seconds")
                     trace("Handler returned: \(ModulePlaybackDiagnostics.responseShape(response))")
+                    trace("Source network: \(await runtime.networkDiagnosticSummary())")
                     let decoded: [ModuleResolvedStream]
                     do {
                         decoded = try ModuleRuntimeDecoder.streams(
@@ -2006,8 +2095,35 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         )
                     } catch {
                         resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
-                        trace("Decode rejected all candidates; \(resolutionFailureCode ?? "unknown")")
-                        throw error
+                        trace("No accepted candidates on initial extraction: \(resolutionFailureCode ?? "unknown")")
+                        // This is distinct from a player startup error: the
+                        // source has not supplied anything AVPlayer can open.
+                        // One explicit refresh may bypass stale provider cache
+                        // and lets the module retry cold-start servers.
+                        guard !forceRefresh, !didRetryEmptyResult,
+                              let moduleError = error as? ModuleRuntimeError,
+                              case .invalidStream = moduleError else {
+                            throw error
+                        }
+                        didRetryEmptyResult = true
+                        trace("Retrying extractStreamUrl once with refresh=true")
+                        let fresh = try await runtime.call(
+                            handler: "extractStreamUrl",
+                            arguments: [reference, language.lowercased(), true]
+                        )
+                        guard activeRequestID == requestID else { return false }
+                        trace("Refresh returned: \(ModulePlaybackDiagnostics.responseShape(fresh))")
+                        trace("Source network after refresh: \(await runtime.networkDiagnosticSummary())")
+                        do {
+                            decoded = try ModuleRuntimeDecoder.streams(
+                                from: fresh, title: episodeTitle,
+                                baseURL: runtime.baseURL
+                            )
+                            trace("Refresh found \(decoded.count) playable candidate(s)")
+                        } catch {
+                            trace("Refresh still returned no accepted stream")
+                            throw error
+                        }
                     }
                     var choices = decoded
                     diagnosticCandidateCount = choices.count
@@ -2068,6 +2184,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                        case .handlerTimedOut = moduleError {
                         throw moduleError
                     }
+                    trace("Source network at failure: \(await runtime.networkDiagnosticSummary())")
                     lastError = error
                 }
             }
@@ -2502,7 +2619,7 @@ enum ModuleRuntimeDecoder {
         }
         let root = value as? [String: Any] ?? [:]
         let maximumChoices = 24
-        let maximumDepth = 5
+        let maximumDepth = 6
         var choices: [ModuleResolvedStream] = []
         var seen = Set<String>()
 
@@ -2546,6 +2663,23 @@ enum ModuleRuntimeDecoder {
                 && !low.contains(".m3u8") && !low.contains(".mp4")
         }
 
+        let additionalURLKeys = [
+            "videoUrl", "videoURL", "video_url", "stream_url", "playUrl",
+            "playURL", "play_url", "playbackUrl", "playbackURL",
+            "manifestUrl", "manifestURL", "hlsUrl", "hlsURL",
+            "masterUrl", "masterURL", "playlistUrl", "playlistURL",
+            "hls", "m3u8", "mp4"
+        ]
+        let directURLKeys = [
+            "url", "streamUrl", "streamURL", "file", "src", "link", "href"
+        ] + additionalURLKeys
+        let streamContainerKeys = [
+            "streams", "sources", "servers", "links", "mirrors", "qualities",
+            "variants", "videos", "files", "data", "result", "stream", "source", "video",
+            "playback", "playlist", "media", "serverList", "server_list",
+            "availableStreams", "available_servers", "urlList", "url_list"
+        ]
+
         func append(
             urlString: String?,
             label: String?,
@@ -2554,8 +2688,17 @@ enum ModuleRuntimeDecoder {
             subtitleContainer: [String: Any]?
         ) {
             guard choices.count < maximumChoices,
-                  let urlString,
-                  let url = resolvedURL(urlString, baseURL: baseURL),
+                  let urlString else { return }
+            let candidate = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = candidate.lowercased()
+            // Bare opaque provider IDs are not media URLs and must not become
+            // fabricated URLs relative to the module homepage.
+            let isUsableReference = lower.hasPrefix("https://") ||
+                lower.hasPrefix("http://") || candidate.hasPrefix("/") ||
+                candidate.contains("/") || [".m3u8", ".mp4", ".m4v", ".mov", ".ts"]
+                    .contains(where: { lower.hasPrefix($0) || lower.hasSuffix($0) })
+            guard isUsableReference,
+                  let url = resolvedURL(candidate, baseURL: baseURL),
                   url.user == nil, url.password == nil else { return }
 
             // Reject insecure or local provider pages before listing them.
@@ -2598,7 +2741,9 @@ enum ModuleRuntimeDecoder {
             ))
         }
 
-        let initialHeaders = asHeaders(root["headers"])
+        let initialHeaders = mergeHeaders(
+            asHeaders(root["requestHeaders"]), asHeaders(root["headers"])
+        )
         let initialType = string(root, keys: ["streamType", "type"]) ?? "auto"
 
         // Each branch inherits its *own* headers, rather than applying
@@ -2647,8 +2792,7 @@ enum ModuleRuntimeDecoder {
             let ownType = string(object, keys: ["streamType", "type"]) ?? type
             let ownLabel = string(object, keys: ["label", "name", "title", "server", "quality", "provider"])
                 ?? label
-            let ownURL = string(object,
-                keys: ["url", "streamUrl", "streamURL", "file", "src", "link", "href"])
+            let ownURL = string(object, keys: directURLKeys)
             if ownURL != nil {
                 append(urlString: ownURL, label: ownLabel, headers: ownHeaders,
                        streamType: ownType, subtitleContainer: object)
@@ -2657,7 +2801,8 @@ enum ModuleRuntimeDecoder {
             // file. Keep those choices visible, but tag them so AVPlayer
             // never tries to decode an HTML document as video.
             for webKey in ["embedUrl", "embedURL", "iframeUrl", "iframeURL",
-                           "playerUrl", "playerURL", "webUrl", "webURL", "embed", "iframe"] {
+                           "playerUrl", "playerURL", "webUrl", "webURL",
+                           "playerPage", "player_page", "embed", "iframe"] {
                 if let page = object[webKey] as? String {
                     append(urlString: page, label: ownLabel, headers: [:],
                            streamType: "embed", subtitleContainer: nil)
@@ -2671,9 +2816,7 @@ enum ModuleRuntimeDecoder {
             // Some modules wrap maps of server names in `data` / `result`
             // without a `servers` key. Only accept entries that look like
             // playable stream URLs or nested stream dictionaries.
-            let containerKeys = ["streams", "sources", "servers", "links", "mirrors",
-                                 "qualities", "variants", "videos", "files", "data", "result",
-                                 "stream", "source", "video"]
+            let containerKeys = streamContainerKeys
             let excludedMetadata = Set([
                 "poster", "image", "cover", "thumbnail", "artwork", "banner", "icon",
                 "subtitles", "captions", "tracks", "description", "title", "name",
@@ -2694,9 +2837,7 @@ enum ModuleRuntimeDecoder {
                                streamType: ownType, subtitleContainer: object)
                     } else if let nested = candidate as? [String: Any],
                               nested.keys.contains(where: {
-                                  ["url", "streamUrl", "streamURL", "file", "src", "link",
-                                   "streams", "sources", "servers", "qualities", "variants"]
-                                      .contains($0)
+                                  (directURLKeys + streamContainerKeys).contains($0)
                               }) {
                         walk(nested, label: name, headers: ownHeaders,
                              type: ownType, depth: depth + 1)
@@ -2710,9 +2851,7 @@ enum ModuleRuntimeDecoder {
                 guard let nested = object[key] else { continue }
                 if let mapping = nested as? [String: Any],
                    !mapping.keys.contains(where: {
-                       ["url", "streamUrl", "streamURL", "file", "src", "link", "href",
-                        "streams", "sources", "servers", "qualities", "variants", "data", "result", "stream", "source", "video"]
-                           .contains($0)
+                       (directURLKeys + streamContainerKeys).contains($0)
                    }) {
                     // e.g. { "Vidstream": {"url": "..."}, "Mirror": "https://..." }
                     for name in mapping.keys.sorted().prefix(maximumChoices) {
@@ -2732,15 +2871,12 @@ enum ModuleRuntimeDecoder {
         } else {
             // Preserve the source's ordering of viable streams, followed by
             // server alternatives, then the direct URL as a last resort.
-            for key in ["streams", "sources", "servers", "links", "mirrors",
-                        "qualities", "variants", "videos", "files", "data", "result",
-                        "stream", "source", "video"] {
+            for key in streamContainerKeys {
                 if let group = root[key] {
                     walk(group, headers: initialHeaders, type: initialType)
                 }
             }
-            if let direct = string(root,
-                keys: ["url", "streamUrl", "streamURL", "file", "src", "link", "href"]) {
+            if let direct = string(root, keys: directURLKeys) {
                 append(urlString: direct,
                        label: string(root, keys: ["label", "name", "quality"]) ?? "Auto",
                        headers: initialHeaders,
@@ -2748,7 +2884,8 @@ enum ModuleRuntimeDecoder {
                        subtitleContainer: root)
             }
             for webKey in ["embedUrl", "embedURL", "iframeUrl", "iframeURL",
-                           "playerUrl", "playerURL", "webUrl", "webURL", "embed", "iframe"] {
+                           "playerUrl", "playerURL", "webUrl", "webURL",
+                           "playerPage", "player_page", "embed", "iframe"] {
                 if let page = root[webKey] as? String {
                     append(urlString: page,
                            label: string(root, keys: ["label", "name", "quality"]) ?? "Web player",
@@ -2940,7 +3077,7 @@ struct ModuleBrowserView: View {
                     }
                     Button("Copy Diagnostics", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = [
-                            "Kinetiq module diagnostics · Batch 05E",
+                            "Kinetiq module diagnostics · Batch 05F",
                             "Source: \(ModulePlaybackDiagnostics.redact(source.title, limit: 80))",
                             "Phase: initialize runtime",
                             "Details: \(ModulePlaybackDiagnostics.redact(runtimePreparationError))"
@@ -3675,7 +3812,7 @@ struct ModuleBrowserView: View {
             )
             if results.isEmpty {
                 lastSearchDiagnostics = [
-                    "Kinetiq module diagnostics · Batch 05E",
+                    "Kinetiq module diagnostics · Batch 05F",
                     "Source: \(ModulePlaybackDiagnostics.redact(source.title, limit: 80))",
                     "Phase: searchResults",
                     "Handler returned: \(ModulePlaybackDiagnostics.responseShape(response))",
@@ -4002,7 +4139,7 @@ struct ModuleAnimeDetailsView: View {
                     )
                     Button("Copy Diagnostics", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = [
-                            "Kinetiq module diagnostics · Batch 05E",
+                            "Kinetiq module diagnostics · Batch 05F",
                             "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
                             "Phase: extractEpisodes",
                             "Outcome: no episodes decoded",
@@ -4216,7 +4353,7 @@ struct ModuleAnimeDetailsView: View {
             detailsFailure =
                 "The source did not return a recognizable episode list."
             detailsFailureDiagnostics = [
-                "Kinetiq module diagnostics · Batch 05E",
+                "Kinetiq module diagnostics · Batch 05F",
                 "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
                 "Phase: extractEpisodes",
                 "Result: no decodable episodes after \(attempted.count) reference(s)",
