@@ -567,7 +567,7 @@ private struct ModulePlayerOptionsSheet: View {
                     ForEach(session.availableStreams) { stream in
                         optionRow(
                             title: stream.label,
-                            subtitle: "\(stream.hostName) • \(stream.streamType.uppercased())",
+                            subtitle: "\(stream.hostName) • \(playback.serverHealthStatus(for: stream))",
                             symbol: "server.rack",
                             selected: session.currentStream?.id == stream.id
                         ) {
@@ -900,6 +900,21 @@ private struct ModulePlayerOptionsSheet: View {
                     "Server choices",
                     value: String(session.availableStreams.count)
                 )
+                if let current = session.currentStream {
+                    informationRow(
+                        "Server health",
+                        value: playback.serverHealthStatus(for: current)
+                    )
+                }
+                Button {
+                    playback.resetServerHealth()
+                } label: {
+                    Label("Reset learned server health", systemImage: "arrow.counterclockwise")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 5)
                 informationRow(
                     "Playback state",
                     value: playback.playbackStatus
@@ -1275,6 +1290,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     // Some providers remain in "waiting" forever without sending a stall
     // notification. Watch startup and post-start buffering independently.
     private var startedCurrentItem = false
+    private var playbackProofItem: ObjectIdentifier?
+    private var playbackProofAnchor: Double?
+    private var verifiedPlayingStreamID: UUID?
+    private var streamStartedLoadingAt = Date()
     private var wantsToPlay = true
     private var refreshedEpisodeKey: String?
     private var loadedEpisodeKey: String?
@@ -1349,6 +1368,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             "Episode: \(session.currentEpisode?.number ?? "Unknown")",
             "Language: \(session.selectedLanguage)",
             "Server label: \(session.currentStream?.label ?? "None")",
+            "Server health: \(session.currentStream.map { serverHealthStatus(for: $0) } ?? "Not tested")",
             "Source-provided servers: \(session.availableStreams.count)",
             "Tried servers: \(attemptedStreamIDs.count)",
             "Refreshed links: \(refreshedEpisodeKey == loadedEpisodeKey && loadedEpisodeKey != nil ? "Yes" : "No")",
@@ -1362,6 +1382,19 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             "Events:"
         ]
         return (lines + diagnosticEvents).joined(separator: "\n")
+    }
+
+    func serverHealthStatus(for stream: ModuleResolvedStream) -> String {
+        ModuleServerHealthStore.shared.status(
+            for: stream,
+            sourceID: session.sourceID,
+            sourceName: session.sourceName
+        )
+    }
+
+    func resetServerHealth() {
+        ModuleServerHealthStore.shared.resetAll()
+        note("Server health history cleared by user")
     }
 
     private func note(_ event: String) {
@@ -1402,6 +1435,34 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
                 if self.player.timeControlStatus == .playing {
                     self.savePlaybackProgress(force: false)
+                    if !self.isRestoringPosition,
+                       let item = self.player.currentItem,
+                       let stream = self.session.currentStream,
+                       !stream.isWebEmbed,
+                       item.presentationSize.width > 0,
+                       item.presentationSize.height > 0,
+                       self.lastStreamID == stream.id,
+                       self.verifiedPlayingStreamID != stream.id {
+                        let itemID = ObjectIdentifier(item)
+                        if self.playbackProofItem != itemID {
+                            self.playbackProofItem = itemID
+                            self.playbackProofAnchor = seconds
+                        } else if let start = self.playbackProofAnchor,
+                                  seconds >= start + 1.25 {
+                            // AVPlayer 'ready' or 'playing' alone is not
+                            // evidence of actual video progress. Only count
+                            // advancing playback as a verified success.
+                            self.verifiedPlayingStreamID = stream.id
+                            let elapsed = Date().timeIntervalSince(self.streamStartedLoadingAt)
+                            ModuleServerHealthStore.shared.recordSuccess(
+                                stream,
+                                sourceID: self.session.sourceID,
+                                sourceName: self.session.sourceName,
+                                startupSeconds: elapsed
+                            )
+                            self.note("Verified playback progress on \(stream.hostName)")
+                        }
+                    }
                 }
             }
         }
@@ -1514,6 +1575,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         startupTask?.cancel()
         startupTask = nil
         startedCurrentItem = false
+        playbackProofItem = nil
+        playbackProofAnchor = nil
+        verifiedPlayingStreamID = nil
+        streamStartedLoadingAt = Date()
         wantsToPlay = true
 
         attemptedStreamIDs.insert(stream.id)
@@ -1522,6 +1587,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         lastHTTPStatus = nil
         playbackStatus = "Opening \(stream.label)"
         note("Opening \(stream.label) on \(stream.hostName)")
+        note("Server health: \(serverHealthStatus(for: stream))")
         errorMessage = nil
         isBuffering = true
         isPlaying = false
@@ -1752,9 +1818,14 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     private func scheduleStartupWatchdog(for item: AVPlayerItem) {
         startupTask?.cancel()
+        let timeout = session.currentStream.map {
+            ModuleServerHealthStore.shared.startupTimeout(
+                for: $0, sourceID: session.sourceID, sourceName: session.sourceName
+            )
+        } ?? 24
         startupTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .seconds(24))
+                try await Task.sleep(for: .seconds(timeout))
                 guard !Task.isCancelled,
                       let self,
                       !self.hasStopped,
@@ -1766,7 +1837,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 self.note("Startup timed out before video began playing")
                 self.handleStreamFailure(
                     for: item,
-                    message: "The server did not start playback within 24 seconds."
+                    message: "The server did not start playback within \(Int(timeout)) seconds."
                 )
             } catch {
                 // Playing, paused, switched servers, or closed the player.
@@ -1851,9 +1922,20 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             return
         }
 
-        if let alternate = session.availableStreams.first(where: {
-            !attemptedStreamIDs.contains($0.id)
-        }) {
+        // A transient first failure gets a single retry; only an exhausted
+        // attempt is persisted as unhealthy. Never record manual pause/close.
+        ModuleServerHealthStore.shared.recordFailure(
+            stream, sourceID: session.sourceID, sourceName: session.sourceName
+        )
+        note("Server health: failed after retry; try independent host next")
+
+        if let alternate = ModuleServerHealthStore.shared.nextUntried(
+            from: session.availableStreams,
+            excluding: attemptedStreamIDs,
+            avoidingHost: stream.hostName,
+            sourceID: session.sourceID,
+            sourceName: session.sourceName
+        ) {
             playbackStatus = "Switching to \(alternate.label)"
             note("Automatic fallback: \(alternate.label)")
             if session.selectStream(alternate) {

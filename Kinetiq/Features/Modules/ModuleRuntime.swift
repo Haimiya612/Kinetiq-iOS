@@ -1817,6 +1817,14 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         return false
                     }
 
+                    // Batch 05D: use recent, verified playback results to
+                    // avoid repeatedly opening known-broken hosts. New hosts
+                    // keep their source-provided order; native precedes web.
+                    choices = ModuleServerHealthStore.shared.ordered(
+                        choices,
+                        sourceID: sourceID,
+                        sourceName: sourceName
+                    )
                     guard let preferredStream = choices.first else {
                         throw ModuleRuntimeError.invalidStream
                     }
@@ -3915,6 +3923,242 @@ struct ModuleAnimeDetailsView: View {
         } else {
             errorMessage = session.playbackError
                 ?? "The episode stream could not be resolved."
+        }
+    }
+}
+
+
+// MARK: - Batch 05D: Privacy-Safe Server Health History
+
+/// Keeps small, expiring reliability samples for a module's video hosts.
+/// Persisted keys are SHA-256 digests of module identity + host + playback
+/// kind. URLs, paths, query tokens, cookies, headers, and stream titles are
+/// NEVER persisted. This is only a ranking hint, not a network probe.
+@MainActor
+final class ModuleServerHealthStore {
+    static let shared = ModuleServerHealthStore()
+
+    private struct Sample: Codable {
+        var successes = 0
+        var failures = 0
+        var lastSuccess: TimeInterval = 0
+        var lastFailure: TimeInterval = 0
+        var updatedAt: TimeInterval = 0
+        var meanStartupSeconds: Double = 0
+    }
+
+    private let storageKey = "kinetiq.module.serverHealth.v1"
+    private let retentionSeconds: TimeInterval = 14 * 24 * 60 * 60
+    private let maximumRecords = 192
+    private let defaults: UserDefaults
+    private var samples: [String: Sample]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: storageKey),
+           let stored = try? JSONDecoder().decode([String: Sample].self, from: data) {
+            let cutoff = Date().timeIntervalSince1970 - retentionSeconds
+            samples = stored.filter { key, sample in
+                key.count == 64 && sample.updatedAt >= cutoff
+            }
+        } else {
+            samples = [:]
+        }
+        prune()
+    }
+
+    private func identity(
+        _ stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String
+    ) -> String? {
+        guard let host = stream.url.host?.lowercased(), !host.isEmpty else {
+            return nil
+        }
+        let scope = ((sourceID?.isEmpty == false ? sourceID : nil) ?? sourceName)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !scope.isEmpty else { return nil }
+        let mediaKind = stream.isWebEmbed ? "embed" : "native"
+        let raw = scope + "\u{1F}" + host + "\u{1F}" + mediaKind
+        return SHA256.hash(data: Data(raw.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func sample(
+        for stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Sample? {
+        guard let key = identity(stream, sourceID: sourceID, sourceName: sourceName),
+              let value = samples[key],
+              now - value.updatedAt < retentionSeconds else { return nil }
+        return value
+    }
+
+    /// Positive means playback has previously advanced; negative means
+    /// the host recently exhausted its retries. Unknown stays neutral so
+    /// fresh modules retain their source-provided order.
+    func score(
+        _ stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String
+    ) -> Double {
+        guard let value = sample(for: stream, sourceID: sourceID, sourceName: sourceName) else {
+            return 0
+        }
+        let now = Date().timeIntervalSince1970
+        let successAge = now - value.lastSuccess
+        let failureAge = now - value.lastFailure
+        var score = 0.0
+        if value.successes > 0 && successAge < retentionSeconds {
+            let freshness = successAge < 48 * 3_600 ? 1.0 : 0.55
+            score += min(Double(value.successes), 4) * 2.25 * freshness
+            if value.meanStartupSeconds > 0 && value.meanStartupSeconds < 8 {
+                score += 0.35
+            }
+        }
+        if value.failures > 0 && failureAge < retentionSeconds {
+            let freshness = failureAge < 48 * 3_600 ? 1.0 : 0.35
+            score -= min(Double(value.failures), 4) * 3.5 * freshness
+        }
+        // Most recent verified observation wins on mixed-history hosts.
+        if value.lastSuccess > value.lastFailure { score += 1.5 }
+        if value.lastFailure > value.lastSuccess { score -= 1.5 }
+        return score
+    }
+
+    func ordered(
+        _ choices: [ModuleResolvedStream],
+        sourceID: String?,
+        sourceName: String
+    ) -> [ModuleResolvedStream] {
+        let scored = choices.enumerated().map { index, stream in
+            (index, stream, score(stream, sourceID: sourceID, sourceName: sourceName))
+        }
+        return scored.sorted { a, b in
+            // A working native player is always preferred to a web embed.
+            if a.1.isWebEmbed != b.1.isWebEmbed { return !a.1.isWebEmbed }
+            if abs(a.2 - b.2) > 0.001 { return a.2 > b.2 }
+            return a.0 < b.0
+        }.map(\.1)
+    }
+
+    func nextUntried(
+        from choices: [ModuleResolvedStream],
+        excluding attempted: Set<UUID>,
+        avoidingHost: String?,
+        sourceID: String?,
+        sourceName: String
+    ) -> ModuleResolvedStream? {
+        let remaining = ordered(choices.filter { !attempted.contains($0.id) },
+                                sourceID: sourceID, sourceName: sourceName)
+        // Preserve native-first behavior even when the next native variant
+        // shares a host with the failed stream. WebKit is the last resort.
+        let native = remaining.filter { !$0.isWebEmbed }
+        let candidates = native.isEmpty ? remaining : native
+        if let host = avoidingHost?.lowercased(),
+           let independent = candidates.first(where: { $0.hostName.lowercased() != host }) {
+            return independent
+        }
+        return candidates.first
+    }
+
+    func status(
+        for stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String
+    ) -> String {
+        guard let value = sample(for: stream, sourceID: sourceID, sourceName: sourceName) else {
+            return "Not tested"
+        }
+        if value.lastSuccess > value.lastFailure {
+            return "Previously played successfully"
+        }
+        if value.failures > 0 {
+            return "Recent playback failures"
+        }
+        return "Not tested"
+    }
+
+    func startupTimeout(
+        for stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String
+    ) -> Double {
+        guard let value = sample(for: stream, sourceID: sourceID, sourceName: sourceName) else {
+            return 24
+        }
+        if value.lastSuccess > value.lastFailure,
+           value.meanStartupSeconds > 17 {
+            // Known cold-start servers deserve a larger budget.
+            return min(42, max(24, value.meanStartupSeconds * 1.7))
+        }
+        if value.lastFailure > value.lastSuccess && value.failures >= 2 {
+            return 16
+        }
+        return 24
+    }
+
+    func recordSuccess(
+        _ stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String,
+        startupSeconds: Double
+    ) {
+        guard !stream.isWebEmbed,
+              let key = identity(stream, sourceID: sourceID, sourceName: sourceName) else { return }
+        let now = Date().timeIntervalSince1970
+        var value = samples[key] ?? Sample()
+        let latency = min(max(startupSeconds.isFinite ? startupSeconds : 0, 0), 120)
+        value.meanStartupSeconds = value.meanStartupSeconds > 0
+            ? value.meanStartupSeconds * 0.65 + latency * 0.35
+            : latency
+        value.successes = min(value.successes + 1, 20)
+        value.lastSuccess = now
+        value.updatedAt = now
+        samples[key] = value
+        persist()
+    }
+
+    func recordFailure(
+        _ stream: ModuleResolvedStream,
+        sourceID: String?,
+        sourceName: String
+    ) {
+        guard !stream.isWebEmbed,
+              let key = identity(stream, sourceID: sourceID, sourceName: sourceName) else { return }
+        let now = Date().timeIntervalSince1970
+        var value = samples[key] ?? Sample()
+        value.failures = min(value.failures + 1, 20)
+        value.lastFailure = now
+        value.updatedAt = now
+        samples[key] = value
+        persist()
+    }
+
+    /// Explicit user action; does not affect installed modules or history.
+    func resetAll() {
+        samples.removeAll()
+        defaults.removeObject(forKey: storageKey)
+    }
+
+    private func prune() {
+        let cutoff = Date().timeIntervalSince1970 - retentionSeconds
+        samples = samples.filter { $0.value.updatedAt >= cutoff }
+        if samples.count > maximumRecords {
+            let keep = samples.sorted { $0.value.updatedAt > $1.value.updatedAt }
+                .prefix(maximumRecords)
+            samples = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+    }
+
+    private func persist() {
+        prune()
+        if let data = try? JSONEncoder().encode(samples) {
+            defaults.set(data, forKey: storageKey)
         }
     }
 }
