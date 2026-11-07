@@ -2231,6 +2231,27 @@ private enum ModuleCatalogueSort: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// MARK: - Module Browser Preferences
+
+private enum ModuleBrowserPreferences {
+    private static let key = "kinetiq.modules.catalogueSections.v1"
+
+    static func section(for sourceID: String) -> ModuleCatalogueSection {
+        let entries = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        return ModuleCatalogueSection(rawValue: entries[sourceID] ?? "") ?? .explore
+    }
+
+    static func save(_ section: ModuleCatalogueSection, for sourceID: String) {
+        guard !sourceID.isEmpty else { return }
+        var entries = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        if entries.count >= 100 && entries[sourceID] == nil {
+            entries.removeValue(forKey: entries.keys.sorted().first ?? "")
+        }
+        entries[sourceID] = section.rawValue
+        UserDefaults.standard.set(entries, forKey: key)
+    }
+}
+
 // MARK: - Module Browser
 
 struct ModuleBrowserView: View {
@@ -2257,6 +2278,8 @@ struct ModuleBrowserView: View {
     @State private var isSearching = false
     @State private var runtimePreparationError: String?
     @State private var searchFailure: String?
+    @State private var activePreparationID: UUID?
+    @State private var activeSearchID: UUID?
 
     @State private var showingTrustConfirmation = false
 
@@ -2307,7 +2330,17 @@ struct ModuleBrowserView: View {
             }
         }
         .task(id: runtimeIdentity) {
+            catalogueSection = ModuleBrowserPreferences.section(for: source.id)
             await prepareRuntime()
+        }
+        .onChange(of: catalogueSection) { _, section in
+            ModuleBrowserPreferences.save(section, for: source.id)
+        }
+        .onDisappear {
+            activeSearchID = nil
+            activePreparationID = nil
+            isSearching = false
+            isPreparingRuntime = false
         }
         .sheet(item: $selectedItem) { item in
             if let runtime {
@@ -2409,7 +2442,12 @@ struct ModuleBrowserView: View {
         )
     }
 
+    @MainActor
     private func prepareRuntime() async {
+        let requestID = UUID()
+        activePreparationID = requestID
+        activeSearchID = nil
+        isSearching = false
         runtime = nil
         results = []
         searchQuery = ""
@@ -2418,26 +2456,27 @@ struct ModuleBrowserView: View {
         searchFailure = nil
 
         guard let record = installedRecord,
-              packageStore.isInstalled(source) else {
-            return
-        }
-
-        guard ModuleRuntimeTrustStore.isTrusted(record) else {
+              packageStore.isInstalled(source),
+              ModuleRuntimeTrustStore.isTrusted(record) else {
             return
         }
 
         isPreparingRuntime = true
         defer {
-            isPreparingRuntime = false
+            if activePreparationID == requestID {
+                isPreparingRuntime = false
+            }
         }
 
         do {
-            let loadedRuntime = try SynthetiqModuleRuntime(
-                record: record
-            )
-
+            let loadedRuntime = try SynthetiqModuleRuntime(record: record)
+            guard !Task.isCancelled,
+                  activePreparationID == requestID,
+                  runtimeIdentity == "\(record.sourceID)|\(record.packageSHA256)" else { return }
             runtime = loadedRuntime
         } catch {
+            guard !Task.isCancelled,
+                  activePreparationID == requestID else { return }
             runtimePreparationError = error.localizedDescription
         }
     }
@@ -2947,7 +2986,7 @@ struct ModuleBrowserView: View {
             }
             .disabled(searchQuery.trimmingCharacters(
                 in: .whitespacesAndNewlines
-            ).isEmpty || isSearching)
+            ).isEmpty)
             .accessibilityLabel("Search anime")
         }
         .padding(.horizontal, 15)
@@ -2966,32 +3005,37 @@ struct ModuleBrowserView: View {
         let query = (queryOverride ?? searchQuery).trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard !query.isEmpty,
-              !isSearching,
-              let runtime else { return }
+        guard !query.isEmpty, let runtime else { return }
 
+        let requestID = UUID()
+        activeSearchID = requestID
         isSearching = true
         completedSearchQuery = query
         results = []
         searchFailure = nil
-        defer { isSearching = false }
+        defer {
+            if activeSearchID == requestID {
+                isSearching = false
+            }
+        }
 
         do {
             let response = try await runtime.call(
                 handler: "searchResults", arguments: [query]
             )
-            // A delayed result from a previously selected source must not
-            // be displayed under the newly selected module identity.
-            guard self.runtime === runtime else { return }
+            guard !Task.isCancelled,
+                  activeSearchID == requestID,
+                  self.runtime === runtime else { return }
             results = ModuleRuntimeDecoder.searchResults(
                 from: response,
                 baseURL: runtime.baseURL,
                 maximumResults: runtime.maximumHomeResults
             )
         } catch {
-            if self.runtime === runtime {
-                searchFailure = error.localizedDescription
-            }
+            guard !Task.isCancelled,
+                  activeSearchID == requestID,
+                  self.runtime === runtime else { return }
+            searchFailure = error.localizedDescription
         }
     }
 
@@ -3031,6 +3075,7 @@ struct ModuleAnimeDetailsView: View {
     @State private var isResolvingStream = false
 
     @State private var detailsFailure: String?
+    @State private var activeDetailsRequestID: UUID?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -3370,12 +3415,16 @@ struct ModuleAnimeDetailsView: View {
 
     @MainActor
     private func loadDetailsAndEpisodes() async {
+        let requestID = UUID()
+        activeDetailsRequestID = requestID
         isLoading = true
         episodes = []
         detailsFailure = nil
 
         defer {
-            isLoading = false
+            if activeDetailsRequestID == requestID {
+                isLoading = false
+            }
         }
 
         do {
@@ -3383,6 +3432,9 @@ struct ModuleAnimeDetailsView: View {
                 handler: "extractDetails",
                 arguments: [item.href]
             )
+
+            guard !Task.isCancelled,
+                  activeDetailsRequestID == requestID else { return }
 
             let resolvedDetails = ModuleRuntimeDecoder.details(
                 from: detailsResponse,
@@ -3420,6 +3472,8 @@ struct ModuleAnimeDetailsView: View {
                         arguments: [reference]
                     )
 
+                    guard !Task.isCancelled,
+                          activeDetailsRequestID == requestID else { return }
                     let foundEpisodes = ModuleRuntimeDecoder.episodes(
                         from: response
                     )
@@ -3440,6 +3494,8 @@ struct ModuleAnimeDetailsView: View {
                 }
             }
 
+            guard !Task.isCancelled,
+                  activeDetailsRequestID == requestID else { return }
             if let lastError {
                 throw lastError
             }
@@ -3447,6 +3503,8 @@ struct ModuleAnimeDetailsView: View {
             detailsFailure =
                 "The source did not return a recognizable episode list."
         } catch {
+            guard !Task.isCancelled,
+                  activeDetailsRequestID == requestID else { return }
             detailsFailure = error.localizedDescription
         }
     }

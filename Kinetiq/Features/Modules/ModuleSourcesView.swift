@@ -14,7 +14,7 @@ struct ModuleRepositoryDocument: Decodable {
     let signature: String?
 }
 
-struct ModuleRepositoryPresentation: Decodable, Hashable {
+struct ModuleRepositoryPresentation: Codable, Hashable {
     let category: String?
     let purpose: String?
     let recommended: Bool?
@@ -23,7 +23,7 @@ struct ModuleRepositoryPresentation: Decodable, Hashable {
     let iconUrl: String?
 }
 
-struct ModuleRepositoryModule: Decodable, Hashable, Identifiable {
+struct ModuleRepositoryModule: Codable, Hashable, Identifiable {
     let moduleId: String
     let moduleFamilyId: String?
     let moduleIdentity: String?
@@ -187,7 +187,7 @@ struct ModuleRepositoryModule: Decodable, Hashable, Identifiable {
     }
 }
 
-struct ModuleRepositoryRecord: Identifiable {
+struct ModuleRepositoryRecord: Identifiable, Codable {
     let url: URL
     var repositoryId: String?
     var name: String
@@ -302,6 +302,7 @@ struct ModuleSourceOption: Identifiable {
 private enum ModuleRepositoryError: LocalizedError {
     case invalidURL
     case duplicate
+    case operationInProgress
     case invalidResponse
     case responseTooLarge
     case invalidDocument
@@ -315,6 +316,9 @@ private enum ModuleRepositoryError: LocalizedError {
 
         case .duplicate:
             return "This repository has already been added."
+
+        case .operationInProgress:
+            return "A repository operation is already running. Try again when it finishes."
 
         case .invalidResponse:
             return "The server did not return a successful response."
@@ -352,6 +356,11 @@ final class ModuleSourceStore: ObservableObject {
     private static let selectedSourceKey =
         "kinetiq.modules.selectedSource"
 
+    private static let repositoryCacheKey =
+        "kinetiq.modules.repositoryCache.v1"
+
+    private static let maximumRepositoryCacheBytes = 2_000_000
+
     @Published private(set) var repositories: [ModuleRepositoryRecord] = []
 
     @Published private(set) var selectedSourceID: String
@@ -364,6 +373,23 @@ final class ModuleSourceStore: ObservableObject {
         selectedSourceID =
             UserDefaults.standard.string(forKey: Self.selectedSourceKey)
             ?? Self.localLibraryID
+
+        // Restore catalogue and icons immediately. Network refresh happens
+        // afterwards; temporary outages must not erase usable module metadata.
+        if let data = UserDefaults.standard.data(forKey: Self.repositoryCacheKey),
+           data.count <= Self.maximumRepositoryCacheBytes,
+           let cached = try? JSONDecoder().decode([ModuleRepositoryRecord].self, from: data) {
+            let savedURLs = Set(UserDefaults.standard.stringArray(
+                forKey: Self.repositoriesKey
+            ) ?? [])
+            repositories = cached.filter { savedURLs.contains($0.url.absoluteString) }
+        }
+    }
+
+    private func persistRepositoryCache() {
+        guard let data = try? JSONEncoder().encode(repositories),
+              data.count <= Self.maximumRepositoryCacheBytes else { return }
+        UserDefaults.standard.set(data, forKey: Self.repositoryCacheKey)
     }
 
     // MARK: Available Sources
@@ -450,9 +476,14 @@ final class ModuleSourceStore: ObservableObject {
 
         hasLoadedSavedRepositories = true
         await refreshAll()
+        if Task.isCancelled {
+            // A cancelled first launch must retry on the next Home appearance.
+            hasLoadedSavedRepositories = false
+        }
     }
 
     func addRepository(from rawValue: String) async throws {
+        guard !isRefreshing else { throw ModuleRepositoryError.operationInProgress }
         let url = try validatedRepositoryURL(rawValue)
 
         let savedURLs =
@@ -474,6 +505,7 @@ final class ModuleSourceStore: ObservableObject {
         let repository = try await fetchRepository(from: url)
 
         repositories.append(repository)
+        persistRepositoryCache()
 
         saveRepositoryURLs(
             savedURLs + [url.absoluteString]
@@ -484,6 +516,7 @@ final class ModuleSourceStore: ObservableObject {
         repositories.removeAll {
             $0.id == repository.id
         }
+        persistRepositoryCache()
 
         let savedURLs =
             UserDefaults.standard.stringArray(forKey: Self.repositoriesKey)
@@ -519,6 +552,10 @@ final class ModuleSourceStore: ObservableObject {
     }
 
     func refreshAll() async {
+        // Multiple tabs and pull-to-refresh can request the same refresh.
+        // Avoid an older request overwriting a newer catalogue.
+        guard !isRefreshing else { return }
+
         let savedURLs =
             UserDefaults.standard.stringArray(forKey: Self.repositoriesKey)
             ?? []
@@ -537,6 +574,7 @@ final class ModuleSourceStore: ObservableObject {
 
             do {
                 let repository = try await fetchRepository(from: url)
+                guard !Task.isCancelled else { return }
                 refreshedRepositories.append(repository)
             } catch {
                 let previous = repositories.first {
@@ -561,7 +599,9 @@ final class ModuleSourceStore: ObservableObject {
             }
         }
 
+        guard !Task.isCancelled else { return }
         repositories = refreshedRepositories
+        persistRepositoryCache()
 
         if
             !isLocalLibrarySelected,
@@ -724,6 +764,7 @@ struct ModuleSourcesView: View {
                     }
                     .disabled(
                         isAddingRepository
+                        || store.isRefreshing
                         || repositoryURL.trimmingCharacters(
                             in: .whitespacesAndNewlines
                         ).isEmpty

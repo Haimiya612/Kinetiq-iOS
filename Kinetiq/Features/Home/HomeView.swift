@@ -113,8 +113,16 @@ struct HomeView: View {
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
     let onOpenLibrary: () -> Void
 
-    @State private var selectedMode: HomeMediaMode = .video
+    @AppStorage("kinetiq.home.selectedMode.v1")
+    private var selectedModeRawValue = HomeMediaMode.video.rawValue
+
     @State private var appeared = false
+    @State private var showingSourcePicker = false
+    @State private var openManageModulesAfterDismiss = false
+
+    private var selectedMode: HomeMediaMode {
+        HomeMediaMode(rawValue: selectedModeRawValue) ?? .video
+    }
 
     @StateObject private var moduleSourceStore = ModuleSourceStore.shared
 
@@ -141,6 +149,7 @@ struct HomeView: View {
                     case .remoteVideo:
                         if let activeSource = moduleSourceStore.activeSource {
                             ModuleBrowserView(source: activeSource)
+                                .id(activeSource.id) // Prevent state crossing between module identities.
                         }
                     case .unavailableSource:
                         selectedModulePlaceholder
@@ -153,6 +162,23 @@ struct HomeView: View {
         }
         .padding(.top, 10)
         .background(Color(uiColor: .systemBackground))
+        .sheet(isPresented: $showingSourcePicker, onDismiss: {
+            if openManageModulesAfterDismiss {
+                openManageModulesAfterDismiss = false
+                onModules()
+            }
+        }) {
+            KinetiqSourcePickerSheet(
+                store: moduleSourceStore,
+                onManageModules: {
+                    openManageModulesAfterDismiss = true
+                    showingSourcePicker = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(30)
+        }
         .task {
             await moduleSourceStore.loadSavedRepositoriesIfNeeded()
         }
@@ -197,146 +223,60 @@ struct HomeView: View {
     // MARK: Source / Module Picker
 
     private var sourcePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Text("ACTIVE SOURCE")
-                    .font(
-                        .system(
-                            size: 9,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(1.7)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.6)
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Text("SOURCE")
-                    .font(
-                        .system(
-                            size: 8,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(1.2)
+                Label("KINETIQ SOURCES", systemImage: "square.stack.3d.up")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .foregroundStyle(KinetiqPalette.accent)
             }
 
-            Menu {
-                // Manage Modules always remains at the top.
-                Button(action: onModules) {
-                    Label(
-                        "Manage Modules",
-                        systemImage: "square.stack.3d.up.fill"
-                    )
-                }
-
-                Divider()
-
-                // Connected repository modules appear beneath the manager.
-                ForEach(moduleSourceStore.repositories) { repository in
-                    Section(repository.name) {
-                        let sources = moduleSourceStore.sources(in: repository)
-
-                        if sources.isEmpty {
-                            Text("No modules available")
-                        } else {
-                            ForEach(sources) { source in
-                                Button {
-                                    moduleSourceStore.selectSource(source.id)
-                                } label: {
-                                    Label(
-                                        source.title,
-                                        systemImage: moduleSourceStore.isSelected(source.id)
-                                            ? "checkmark.circle.fill"
-                                            : source.symbol
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Local Library deliberately remains at the bottom.
-                Divider()
-
-                Button {
-                    moduleSourceStore.selectLocalLibrary()
-                } label: {
-                    Label(
-                        "Local Library",
-                        systemImage: moduleSourceStore.isLocalLibrarySelected
-                            ? "checkmark.circle.fill"
-                            : "iphone"
-                    )
-                }
-
+            Button {
+                showingSourcePicker = true
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: moduleSourceStore.activeSourceSymbol)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(KinetiqPalette.accent)
-                        .frame(width: 37, height: 37)
-                        .background(
-                            KinetiqPalette.accent.opacity(0.12),
-                            in: RoundedRectangle(
-                                cornerRadius: 12,
-                                style: .continuous
-                            )
-                        )
+                    KinetiqModuleIcon(source: moduleSourceStore.activeSource, size: 44)
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(moduleSourceStore.activeSourceTitle)
-                            .font(
-                                .system(
-                                    size: 14,
-                                    weight: .bold,
-                                    design: .rounded
-                                )
-                            )
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
 
                         Text(moduleSourceStore.activeSourceSubtitle)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 8)
 
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .frame(width: 31, height: 31)
+                        .background(KinetiqPalette.accent.opacity(0.10), in: Circle())
                 }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
                 .background(
                     Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(
-                        cornerRadius: 17,
-                        style: .continuous
-                    )
+                    in: RoundedRectangle(cornerRadius: 19, style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(
-                        cornerRadius: 17,
-                        style: .continuous
-                    )
-                    .strokeBorder(
-                        Color.primary.opacity(0.045),
-                        lineWidth: 0.7
-                    )
+                    RoundedRectangle(cornerRadius: 19, style: .continuous)
+                        .strokeBorder(KinetiqPalette.accent.opacity(0.13), lineWidth: 1)
                 }
-                .contentShape(Rectangle())
+                .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(
-                "Active source: \(moduleSourceStore.activeSourceTitle). Choose a source or manage modules."
-            )
+            .accessibilityLabel("Choose source. Current: \(moduleSourceStore.activeSourceTitle)")
+            .accessibilityHint("Opens the Kinetiq module source picker with repository icons")
         }
         .padding(.horizontal, 21)
     }
@@ -371,7 +311,7 @@ struct HomeView: View {
                                 dampingFraction: 0.78
                             )
                     ) {
-                        selectedMode = mode
+                        selectedModeRawValue = mode.rawValue
                     }
                 } label: {
                     HStack(spacing: 8) {
@@ -1129,5 +1069,321 @@ private extension View {
                     .delay(delay),
                 value: appeared
             )
+    }
+}
+// MARK: - Kinetiq Source Icon
+
+/// Uses a repository-provided icon when its HTTPS URL points to a supported image.
+/// SF Symbols remain visible for missing, untrusted or failed images.
+struct KinetiqModuleIcon: View {
+    let source: ModuleSourceOption?
+    var size: CGFloat = 44
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: max(11, size * 0.27), style: .continuous)
+                .fill(KinetiqPalette.accent.opacity(0.12))
+
+            if let source, let iconURL = source.iconURL {
+                AsyncImage(url: iconURL, transaction: Transaction(animation: .easeInOut(duration: 0.15))) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .padding(5)
+                    case .empty, .failure:
+                        fallback
+                    @unknown default:
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: max(11, size * 0.27), style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private var fallback: some View {
+        Image(systemName: source?.symbol ?? "iphone")
+            .font(.system(size: size * 0.40, weight: .semibold))
+            .foregroundStyle(KinetiqPalette.accent)
+    }
+}
+
+// MARK: - Kinetiq Custom Source Picker
+
+/// Custom SwiftUI picker replaces the system Menu, which cannot reliably show
+/// third-party URL images in module rows. Source names remain provider-owned.
+@MainActor
+private struct KinetiqSourcePickerSheet: View {
+    @ObservedObject var store: ModuleSourceStore
+    let onManageModules: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var normalizedSearch: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func visibleSources(in repository: ModuleRepositoryRecord) -> [ModuleSourceOption] {
+        store.sources(in: repository).filter { source in
+            normalizedSearch.isEmpty ||
+            source.title.localizedCaseInsensitiveContains(normalizedSearch) ||
+            source.subtitle.localizedCaseInsensitiveContains(normalizedSearch) ||
+            source.module.moduleId.localizedCaseInsensitiveContains(normalizedSearch) ||
+            repository.name.localizedCaseInsensitiveContains(normalizedSearch)
+        }
+    }
+
+    private var hasMatchingSources: Bool {
+        store.repositories.contains { !visibleSources(in: $0).isEmpty }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    introduction
+                    searchField
+                    manageModulesRow
+
+                    if store.repositories.isEmpty && store.isRefreshing {
+                        ProgressView("Refreshing connected repositories…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 28)
+                    } else if !hasMatchingSources {
+                        ContentUnavailableView(
+                            normalizedSearch.isEmpty ? "No Module Sources" : "No Matching Modules",
+                            systemImage: "square.stack.3d.up",
+                            description: Text(normalizedSearch.isEmpty
+                                ? "Add a module repository to get started."
+                                : "Try searching for another module or repository.")
+                        )
+                        .frame(minHeight: 125)
+                    }
+
+                    ForEach(store.repositories) { repository in
+                        let sources = visibleSources(in: repository)
+                        if !sources.isEmpty {
+                            repositorySection(repository, sources: sources)
+                        } else if normalizedSearch.isEmpty, let error = repository.refreshError {
+                            repositoryError(repository, error: error)
+                        }
+                    }
+
+                    localLibrarySection
+                }
+                .padding(.horizontal, 19)
+                .padding(.top, 18)
+                .padding(.bottom, 24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Sources")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .tint(KinetiqPalette.accent)
+    }
+
+    private var introduction: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 23, weight: .semibold))
+                .foregroundStyle(KinetiqPalette.accent)
+                .frame(width: 52, height: 52)
+                .background(KinetiqPalette.accent.opacity(0.11),
+                            in: RoundedRectangle(cornerRadius: 16))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your media, your sources")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                Text("\(store.availableSources.count) modules across \(store.repositories.count) repositories")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Find a module or repository", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Clear source search")
+            }
+        }
+        .padding(13)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 15))
+    }
+
+    private var manageModulesRow: some View {
+        Button(action: onManageModules) {
+            HStack(spacing: 13) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(KinetiqPalette.accent)
+                    .frame(width: 42, height: 42)
+                    .background(KinetiqPalette.accent.opacity(0.11),
+                                in: RoundedRectangle(cornerRadius: 13))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Manage Modules")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Install, trust and refresh sources")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(11)
+            .background(Color(uiColor: .secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func repositorySection(
+        _ repository: ModuleRepositoryRecord,
+        sources: [ModuleSourceOption]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(repository.name.uppercased())
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.3)
+                Spacer()
+                Text("\(sources.count) MODULES")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 3)
+
+            VStack(spacing: 1) {
+                ForEach(sources) { source in
+                    sourceRow(source)
+                    if source.id != sources.last?.id {
+                        Divider().padding(.leading, 66)
+                    }
+                }
+            }
+            .background(Color(uiColor: .secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 18))
+
+            if let error = repository.refreshError {
+                Text("Cached catalogue · \(error)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func sourceRow(_ source: ModuleSourceOption) -> some View {
+        let selected = store.isSelected(source.id)
+        return Button {
+            store.selectSource(source.id)
+            dismiss()
+        } label: {
+            HStack(spacing: 12) {
+                KinetiqModuleIcon(source: source, size: 45)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(source.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(source.subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 4)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 21))
+                        .foregroundStyle(KinetiqPalette.accent)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(selected ? KinetiqPalette.accent.opacity(0.065) : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(source.title), \(source.subtitle)\(selected ? ", selected" : "")")
+    }
+
+    private func repositoryError(_ repository: ModuleRepositoryRecord, error: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(repository.name).font(.headline)
+            Text(error).font(.caption).foregroundStyle(.secondary)
+            Button("Retry Refresh") { Task { await store.refreshAll() } }
+                .disabled(store.isRefreshing)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var localLibrarySection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("ON THIS IPHONE")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(1.3)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 3)
+
+            Button {
+                store.selectLocalLibrary()
+                dismiss()
+            } label: {
+                HStack(spacing: 12) {
+                    KinetiqModuleIcon(source: nil, size: 45)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local Library")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("Your imported files and personal media")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if store.isLocalLibrarySelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(KinetiqPalette.accent)
+                    }
+                }
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 18))
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
