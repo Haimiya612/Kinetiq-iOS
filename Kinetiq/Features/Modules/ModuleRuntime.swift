@@ -488,6 +488,13 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         String: CheckedContinuation<Any, Error>
     ] = [:]
 
+    // Browser-like timers for modules that use Promise.race, cooldowns,
+    // delayed provider probes, and retry backoff. Accessed ONLY on jsQueue.
+    // Timers are bounded, never evaluated as JavaScript strings, and do not
+    // persist across runtime instances.
+    private var scheduledTimers: [String: DispatchWorkItem] = [:]
+    private let maximumPendingTimers = 64
+
     // MARK: Initialization
 
     init(record: InstalledModuleRecord) throws {
@@ -640,6 +647,21 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                     }
                 }
 
+            // A timer callback must execute on the SAME serial queue as
+            // JSContext. Calling JSContext from a background URLSession or
+            // timer thread would cause intermittent crashes/corruption.
+            let timerScheduleBridge:
+                @convention(block)
+                (String, Double) -> Bool = { [weak self] token, delay in
+                    self?.scheduleModuleTimer(token: token, delay: delay) ?? false
+                }
+
+            let timerCancelBridge:
+                @convention(block)
+                (String) -> Void = { [weak self] token in
+                    self?.cancelModuleTimer(token: token)
+                }
+
             let completionBridge:
                 @convention(block)
                 (String, String, String) -> Void = {
@@ -660,6 +682,15 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
             javascriptContext.setObject(
                 completionBridge,
                 forKeyedSubscript: "__kinetiqComplete" as NSString
+            )
+
+            javascriptContext.setObject(
+                timerScheduleBridge,
+                forKeyedSubscript: "__kinetiqScheduleTimer" as NSString
+            )
+            javascriptContext.setObject(
+                timerCancelBridge,
+                forKeyedSubscript: "__kinetiqCancelTimer" as NSString
             )
 
             javascriptContext.evaluateScript(
@@ -715,6 +746,42 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         await networkClient.cookies(for: streamURL)
     }
 
+    // MARK: Browser-compatible timer bridge
+
+    // These methods are invoked by JavaScriptCore on the serial jsQueue.
+    // Do not call them from the main thread or the networking actor.
+    private func scheduleModuleTimer(token: String, delay: Double) -> Bool {
+        guard !token.isEmpty, token.count <= 64,
+              scheduledTimers.count < maximumPendingTimers || scheduledTimers[token] != nil else {
+            return false
+        }
+
+        scheduledTimers[token]?.cancel()
+        scheduledTimers.removeValue(forKey: token)
+
+        let clampedDelay = delay.isFinite
+            ? min(max(delay, 1), 60_000)
+            : 1
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scheduledTimers.removeValue(forKey: token)
+            self.context?.objectForKeyedSubscript("__kinetiqFireTimer")?
+                .call(withArguments: [token])
+        }
+
+        scheduledTimers[token] = work
+        jsQueue.asyncAfter(
+            deadline: .now() + clampedDelay / 1_000,
+            execute: work
+        )
+        return true
+    }
+
+    private func cancelModuleTimer(token: String) {
+        scheduledTimers.removeValue(forKey: token)?.cancel()
+    }
+
     // MARK: JavaScript Runtime Bootstrap
 
     private static let runtimeBootstrap = """
@@ -727,6 +794,61 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
             info: function() {},
             warn: function() {},
             error: function() {}
+        };
+
+        // Synthetiq modules may use browser timer APIs for cooldowns and
+        // provider races. JavaScriptCore has no event loop/timers by default.
+        // Never evaluate string callbacks; bound concurrency and deadlines.
+        const timers = Object.create(null);
+        let nextTimerID = 0;
+
+        function scheduleTimer(callback, delay, repeating, args) {
+            if (typeof callback !== 'function') {
+                throw new TypeError('Timer callback must be a function');
+            }
+            const id = String(++nextTimerID);
+            let ms = Number(delay);
+            if (!Number.isFinite(ms)) ms = 1;
+            ms = Math.max(repeating ? 100 : 1, Math.min(ms, 60000));
+            const task = { callback: callback, args: args, repeat: repeating, delay: ms };
+            timers[id] = task;
+            if (!__kinetiqScheduleTimer(id, ms)) {
+                delete timers[id];
+                throw new Error('Too many pending module timers');
+            }
+            return Number(id);
+        }
+
+        globalThis.setTimeout = function(callback, delay, ...args) {
+            return scheduleTimer(callback, delay, false, args);
+        };
+        globalThis.setInterval = function(callback, delay, ...args) {
+            return scheduleTimer(callback, delay, true, args);
+        };
+        globalThis.clearTimeout = function(id) {
+            const key = String(id);
+            delete timers[key];
+            __kinetiqCancelTimer(key);
+        };
+        globalThis.clearInterval = globalThis.clearTimeout;
+        globalThis.__kinetiqFireTimer = function(id) {
+            const key = String(id);
+            const task = timers[key];
+            if (!task) return;
+            if (!task.repeat) delete timers[key];
+            try {
+                task.callback.apply(undefined, task.args);
+            } catch (error) {
+                // A provider timer error must not corrupt the runtime queue.
+                if (globalThis.console && typeof console.error === 'function') {
+                    console.error('Module timer callback failed');
+                }
+            } finally {
+                if (task.repeat && timers[key] === task &&
+                    !__kinetiqScheduleTimer(key, task.delay)) {
+                    delete timers[key];
+                }
+            }
         };
 
         globalThis.fetchv2 = function(
@@ -798,12 +920,23 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                     headers: {
                         get: function(name) {
                             const wanted = String(name).toLowerCase();
-
                             const key = Object.keys(rawHeaders).find(
                                 item => item.toLowerCase() === wanted
                             );
-
                             return key ? String(rawHeaders[key]) : null;
+                        },
+                        has: function(name) {
+                            return this.get(name) !== null;
+                        },
+                        forEach: function(callback) {
+                            for (const key of Object.keys(rawHeaders)) {
+                                callback(String(rawHeaders[key]), key.toLowerCase(), this);
+                            }
+                        },
+                        entries: function() {
+                            return Object.keys(rawHeaders).map(
+                                key => [key.toLowerCase(), String(rawHeaders[key])]
+                            )[Symbol.iterator]();
                         }
                     },
                     json: async function() {
@@ -819,6 +952,87 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                 request.reject(error);
             }
         };
+
+        // A small standards-compatible fetch() adapter for modules ported
+        // from browser environments. Both fetch and fetchv2 share the same
+        // HTTPS-only native client, transient cookies and response caps.
+        function normalizeFetchHeaders(input) {
+            if (!input) return {};
+            if (typeof input.forEach === 'function') {
+                const result = {};
+                input.forEach((value, key) => { result[String(key)] = String(value); });
+                return result;
+            }
+            if (Array.isArray(input)) {
+                const result = {};
+                input.forEach(pair => {
+                    if (pair && pair.length >= 2) result[String(pair[0])] = String(pair[1]);
+                });
+                return result;
+            }
+            return input;
+        }
+        if (typeof globalThis.fetch !== 'function') {
+            globalThis.fetch = function(input, init) {
+                const options = init || {};
+                const target = input && typeof input === 'object' && input.url
+                    ? input.url : input;
+                const requestHeaders = options.headers ||
+                    (input && typeof input === 'object' ? input.headers : undefined);
+                return globalThis.fetchv2(
+                    String(target),
+                    normalizeFetchHeaders(requestHeaders),
+                    String(options.method || (input && input.method) || 'GET'),
+                    options.body === undefined || options.body === null
+                        ? '' : String(options.body)
+                );
+            };
+        }
+
+        // Minimal base64 APIs needed by some module extraction scripts.
+        // These operate on binary strings, matching window.atob/btoa.
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        if (typeof globalThis.atob !== 'function') {
+            globalThis.atob = function(input) {
+                const normalized = String(input).replace(/[\\t\\n\\f\\r ]/g, '');
+                if (normalized.length % 4 === 1 ||
+                    /[^A-Za-z0-9+/=]/.test(normalized) ||
+                    /=/.test(normalized.replace(/={0,2}$/, ''))) {
+                    throw new TypeError('Invalid base64');
+                }
+                const data = normalized.replace(/=+$/, '');
+                let buffer = 0, bits = 0, output = '';
+                for (const character of data) {
+                    buffer = (buffer << 6) | alphabet.indexOf(character);
+                    bits += 6;
+                    if (bits >= 8) {
+                        bits -= 8;
+                        output += String.fromCharCode((buffer >>> bits) & 255);
+                    }
+                }
+                return output;
+            };
+        }
+        if (typeof globalThis.btoa !== 'function') {
+            globalThis.btoa = function(input) {
+                const data = String(input);
+                let output = '';
+                for (let i = 0; i < data.length; i += 3) {
+                    const a = data.charCodeAt(i);
+                    const b = i + 1 < data.length ? data.charCodeAt(i + 1) : 0;
+                    const c = i + 2 < data.length ? data.charCodeAt(i + 2) : 0;
+                    if (a > 255 || b > 255 || c > 255) {
+                        throw new TypeError('Invalid binary string');
+                    }
+                    output += alphabet[a >>> 2];
+                    output += alphabet[((a & 3) << 4) | (b >>> 4)];
+                    output += i + 1 < data.length
+                        ? alphabet[((b & 15) << 2) | (c >>> 6)] : '=';
+                    output += i + 2 < data.length ? alphabet[c & 63] : '=';
+                }
+                return output;
+            };
+        }
 
         globalThis.__kinetiqInvoke = async function(
             handlerName,
@@ -884,7 +1098,14 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         }
 
         let callID = UUID().uuidString
-        let timeout = timeoutMilliseconds
+        // Source extractors may probe several CDNs or retry slow providers.
+        // Keep normal browsing responsive, but allow a bounded longer budget
+        // for the episode-to-stream step (cold starts can exceed 30 seconds).
+        // This does not weaken the network client's per-request size/timeout
+        // caps, nor let an extractor execute indefinitely.
+        let timeout = handler == "extractStreamUrl"
+            ? max(timeoutMilliseconds, 60_000)
+            : timeoutMilliseconds
 
         return try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Any, Error>) in
@@ -1460,7 +1681,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     @discardableResult
     func play(
         episode: ModuleAnimeEpisode,
-        language: String
+        language: String,
+        forceRefresh: Bool = false
     ) async -> Bool {
         guard let index = episodes.firstIndex(
             where: { $0.id == episode.id }
@@ -1511,12 +1733,12 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                 }
 
                 do {
+                    let parameters: [Any] = forceRefresh
+                        ? [reference, language.lowercased(), true]
+                        : [reference, language.lowercased()]
                     let response = try await runtime.call(
                         handler: "extractStreamUrl",
-                        arguments: [
-                            reference,
-                            language.lowercased()
-                        ]
+                        arguments: parameters
                     )
 
                     var choices = try ModuleRuntimeDecoder.streams(
@@ -1675,7 +1897,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
 
         return await play(
             episode: currentEpisode,
-            language: selectedLanguage
+            language: selectedLanguage,
+            forceRefresh: true
         )
     }
 }
@@ -1971,34 +2194,60 @@ enum ModuleRuntimeDecoder {
 
     // MARK: Stream Resolution
 
-    /// The Synthetiq V3 contract permits [label, URL], a direct URL, and
-    /// stream dictionaries. This decoder also supports lists of labeled
-    /// alternatives from compatible providers. A single malformed server
-    /// never prevents another valid server from being used.
+    /// Recognize the Synthetiq direct URL/pair contract and bounded nested
+    /// server, source, mirror and quality containers. Providers do not all
+    /// serialize their options at the same nesting level. Only URLs already
+    /// supplied by the selected module are offered; Kinetiq never invents a
+    /// stream or silently switches to a different module/source.
     static func streams(
         from value: Any,
         title: String,
         baseURL: URL
     ) throws -> [ModuleResolvedStream] {
         let root = value as? [String: Any] ?? [:]
-        let inheritedHeaders = root["headers"] as? [String: String] ?? [:]
-        let inheritedType = string(
-            root,
-            keys: ["streamType", "type"]
-        ) ?? "auto"
-
+        let maximumChoices = 24
+        let maximumDepth = 5
         var choices: [ModuleResolvedStream] = []
         var seen = Set<String>()
-        let maximumChoices = 24
 
-        func isServerLabel(_ text: String) -> Bool {
-            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { return false }
-            let lowered = value.lowercased()
-            return !value.contains("/")
-                && !value.contains("://")
-                && !lowered.contains(".m3u8")
-                && !lowered.contains(".mp4")
+        func asHeaders(_ object: Any?) -> [String: String] {
+            guard let dictionary = object as? [String: Any] else { return [:] }
+            var result: [String: String] = [:]
+            for (name, value) in dictionary {
+                guard let text = value as? String,
+                      name.count <= 80,
+                      text.count <= 2_048,
+                      !name.contains("\r"), !name.contains("\n"),
+                      !text.contains("\r"), !text.contains("\n") else { continue }
+                result[name] = text
+            }
+            return result
+        }
+
+        func mergeHeaders(
+            _ parent: [String: String],
+            _ child: [String: String]
+        ) -> [String: String] {
+            var merged = parent
+            // Header names are case-insensitive; a child override must not
+            // accidentally send two differing Referer/Authorization fields.
+            for (key, value) in child {
+                if let existing = merged.keys.first(where: {
+                    $0.caseInsensitiveCompare(key) == .orderedSame
+                }) {
+                    merged.removeValue(forKey: existing)
+                }
+                merged[key] = value
+            }
+            return merged
+        }
+
+        func labelLooksLikeName(_ value: String) -> Bool {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            let low = trimmed.lowercased()
+            return !trimmed.contains("/") && !trimmed.contains("://")
+                && !low.contains(".m3u8") && !low.contains(".mp4")
         }
 
         func append(
@@ -2006,149 +2255,179 @@ enum ModuleRuntimeDecoder {
             label: String?,
             headers: [String: String],
             streamType: String,
-            subtitleContainer: [String: Any]? = nil
+            subtitleContainer: [String: Any]?
         ) {
             guard choices.count < maximumChoices,
                   let urlString,
-                  let url = resolvedURL(urlString, baseURL: baseURL) else {
-                return
-            }
+                  let url = resolvedURL(urlString, baseURL: baseURL),
+                  url.user == nil, url.password == nil else { return }
 
-            let displayLabel = label?.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            ) ?? ""
-            // Labels originate from third-party module output. A label that
-            // looks like a URL could accidentally expose a signed token.
-            let sensitiveLabel = displayLabel.lowercased().contains("://")
-                || displayLabel.lowercased().contains("token=")
-                || displayLabel.lowercased().contains("signature=")
-            let safeLabel = displayLabel.isEmpty || sensitiveLabel
+            let incomingLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let lowerLabel = incomingLabel.lowercased()
+            let hiddenToken = lowerLabel.contains("://")
+                || lowerLabel.contains("token=")
+                || lowerLabel.contains("signature=")
+                || lowerLabel.contains("key=")
+            let safeLabel = incomingLabel.isEmpty || hiddenToken
                 ? (url.host ?? "Auto")
-                : String(displayLabel.prefix(80))
+                : String(incomingLabel.prefix(80))
 
-            // Keep distinct header-bearing streams even on the same URL.
-            let headerSignature = headers.keys.sorted().map {
-                "\($0.lowercased())=\(headers[$0] ?? "")"
-            }.joined(separator: "&")
-            let key = url.absoluteString + "|" + headerSignature
+            let headerSignature = headers.keys.sorted(by: {
+                $0.lowercased() < $1.lowercased()
+            }).map { "\($0.lowercased())=\(headers[$0] ?? "")" }
+                .joined(separator: "&")
+            let fingerprint = url.absoluteString + "|" + headerSignature
+            guard seen.insert(fingerprint).inserted else { return }
 
-            guard seen.insert(key).inserted else { return }
-
-            choices.append(
-                ModuleResolvedStream(
-                    title: title,
-                    label: safeLabel,
-                    url: url,
-                    headers: headers,
-                    streamType: streamType,
-                    subtitles: ModuleRemoteSubtitleDecoder.tracks(
-                        root: root, entry: subtitleContainer,
-                        streamURL: url, streamHeaders: headers, baseURL: baseURL
-                    )
+            choices.append(ModuleResolvedStream(
+                title: title,
+                label: safeLabel,
+                url: url,
+                headers: headers,
+                streamType: streamType,
+                subtitles: ModuleRemoteSubtitleDecoder.tracks(
+                    root: root,
+                    entry: subtitleContainer,
+                    streamURL: url,
+                    streamHeaders: headers,
+                    baseURL: baseURL
                 )
-            )
+            ))
         }
 
-        func parseEntry(_ entry: Any, defaultLabel: String? = nil) {
-            if let urlString = entry as? String {
-                append(
-                    urlString: urlString,
-                    label: defaultLabel,
-                    headers: inheritedHeaders,
-                    streamType: inheritedType
-                )
+        let initialHeaders = asHeaders(root["headers"])
+        let initialType = string(root, keys: ["streamType", "type"]) ?? "auto"
+
+        // Each branch inherits its *own* headers, rather than applying
+        // another server's credentials or Referer to unrelated mirrors.
+        func walk(
+            _ entry: Any,
+            label: String? = nil,
+            headers: [String: String] = [:],
+            type: String = "auto",
+            depth: Int = 0
+        ) {
+            guard depth <= maximumDepth, choices.count < maximumChoices else { return }
+
+            if let direct = entry as? String {
+                append(urlString: direct, label: label, headers: headers,
+                       streamType: type, subtitleContainer: nil)
                 return
             }
 
-            if let pair = entry as? [String],
-               pair.count == 2,
-               isServerLabel(pair[0]) {
-                append(
-                    urlString: pair[1],
-                    label: pair[0],
-                    headers: inheritedHeaders,
-                    streamType: inheritedType
-                )
-                return
-            }
-
-            if let dictionary = entry as? [String: Any] {
-                let itemHeaders = dictionary["headers"] as? [String: String] ?? [:]
-                let mergedHeaders = inheritedHeaders.merging(itemHeaders) {
-                    _, incoming in incoming
-                }
-
-                let streamLabel = string(
-                    dictionary,
-                    keys: ["label", "name", "title", "quality", "server"]
-                ) ?? defaultLabel
-
-                let streamType = string(
-                    dictionary,
-                    keys: ["streamType", "type"]
-                ) ?? inheritedType
-
-                append(
-                    urlString: string(
-                        dictionary,
-                        keys: ["url", "streamUrl", "file", "src", "href", "link"]
-                    ),
-                    label: streamLabel,
-                    headers: mergedHeaders,
-                    streamType: streamType,
-                    subtitleContainer: dictionary
-                )
-            }
-        }
-
-        if let direct = value as? String {
-            parseEntry(direct, defaultLabel: "Auto")
-        } else if let list = value as? [Any] {
-            if list.count == 2,
-               let first = list[0] as? String,
-               let second = list[1] as? String,
-               isServerLabel(first) {
-                parseEntry([first, second])
-            } else {
-                for element in list.prefix(maximumChoices) {
-                    parseEntry(element)
-                }
-            }
-        } else if !root.isEmpty {
-            for key in ["streams", "sources", "servers", "links"] {
-                guard let group = root[key] else { continue }
-
-                if let list = group as? [Any] {
-                    if list.count == 2,
-                       let first = list[0] as? String,
-                       let second = list[1] as? String,
-                       isServerLabel(first) {
-                        parseEntry([first, second])
-                    } else {
-                        for element in list.prefix(maximumChoices) {
-                            parseEntry(element)
-                        }
+            if let list = entry as? [Any] {
+                if list.count == 2,
+                   let name = list[0] as? String,
+                   let url = list[1] as? String,
+                   labelLooksLikeName(name) {
+                    append(urlString: url, label: name, headers: headers,
+                           streamType: type, subtitleContainer: nil)
+                } else {
+                    for item in list.prefix(maximumChoices) {
+                        walk(item, label: label, headers: headers,
+                             type: type, depth: depth + 1)
                     }
-                } else if let mapping = group as? [String: Any] {
-                    for key in mapping.keys.sorted().prefix(maximumChoices) {
-                        if let entry = mapping[key] {
-                            parseEntry(entry, defaultLabel: key)
-                        }
+                }
+                return
+            }
+
+            guard let object = entry as? [String: Any] else { return }
+            let ownHeaders = mergeHeaders(
+                headers,
+                mergeHeaders(asHeaders(object["requestHeaders"]), asHeaders(object["headers"]))
+            )
+            let ownType = string(object, keys: ["streamType", "type"]) ?? type
+            let ownLabel = string(object, keys: ["label", "name", "title", "server", "quality", "provider"])
+                ?? label
+            let ownURL = string(object,
+                keys: ["url", "streamUrl", "streamURL", "file", "src", "link", "href"])
+            if ownURL != nil {
+                append(urlString: ownURL, label: ownLabel, headers: ownHeaders,
+                       streamType: ownType, subtitleContainer: object)
+            }
+
+            // Some modules wrap maps of server names in `data` / `result`
+            // without a `servers` key. Only accept entries that look like
+            // playable stream URLs or nested stream dictionaries.
+            let containerKeys = ["streams", "sources", "servers", "links", "mirrors",
+                                 "qualities", "variants", "videos", "files", "data", "result",
+                                 "stream", "source", "video"]
+            let excludedMetadata = Set([
+                "poster", "image", "cover", "thumbnail", "artwork", "banner", "icon",
+                "subtitles", "captions", "tracks", "description", "title", "name",
+                "headers", "requestheaders", "type", "streamtype", "provider",
+                "language", "lang", "id", "episode", "quality", "duration", "metadata"
+            ])
+            if ownURL == nil,
+               !object.keys.contains(where: { containerKeys.contains($0) }),
+               depth < maximumDepth {
+                for name in object.keys.sorted().prefix(maximumChoices) {
+                    guard !excludedMetadata.contains(name.lowercased()),
+                          let candidate = object[name] else { continue }
+                    if let urlString = candidate as? String,
+                       let url = resolvedURL(urlString, baseURL: baseURL),
+                       !["jpg", "jpeg", "png", "webp", "gif", "svg", "avif", "vtt", "srt"]
+                          .contains(url.pathExtension.lowercased()) {
+                        append(urlString: urlString, label: name, headers: ownHeaders,
+                               streamType: ownType, subtitleContainer: object)
+                    } else if let nested = candidate as? [String: Any],
+                              nested.keys.contains(where: {
+                                  ["url", "streamUrl", "streamURL", "file", "src", "link",
+                                   "streams", "sources", "servers", "qualities", "variants"]
+                                      .contains($0)
+                              }) {
+                        walk(nested, label: name, headers: ownHeaders,
+                             type: ownType, depth: depth + 1)
+                    }
+                }
+            }
+
+            // Ordered streams first; qualities and mirrors are used as
+            // additional playable alternatives if their entries have URLs.
+            for key in containerKeys {
+                guard let nested = object[key] else { continue }
+                if let mapping = nested as? [String: Any],
+                   !mapping.keys.contains(where: {
+                       ["url", "streamUrl", "streamURL", "file", "src", "link", "href",
+                        "streams", "sources", "servers", "qualities", "variants", "data", "result", "stream", "source", "video"]
+                           .contains($0)
+                   }) {
+                    // e.g. { "Vidstream": {"url": "..."}, "Mirror": "https://..." }
+                    for name in mapping.keys.sorted().prefix(maximumChoices) {
+                        guard let candidate = mapping[name] else { continue }
+                        walk(candidate, label: name, headers: ownHeaders,
+                             type: ownType, depth: depth + 1)
                     }
                 } else {
-                    parseEntry(group)
+                    walk(nested, label: ownLabel, headers: ownHeaders,
+                         type: ownType, depth: depth + 1)
                 }
             }
-
-            // Some modules expose a preferred direct URL alongside mirrors.
-            // Prefer explicit server lists, then use the direct URL as backup.
-            parseEntry(root, defaultLabel: "Auto")
         }
 
-        guard !choices.isEmpty else {
-            throw ModuleRuntimeError.invalidStream
+        if root.isEmpty {
+            walk(value, label: "Auto", headers: initialHeaders, type: initialType)
+        } else {
+            // Preserve the source's ordering of viable streams, followed by
+            // server alternatives, then the direct URL as a last resort.
+            for key in ["streams", "sources", "servers", "links", "mirrors",
+                        "qualities", "variants", "videos", "files", "data", "result",
+                        "stream", "source", "video"] {
+                if let group = root[key] {
+                    walk(group, headers: initialHeaders, type: initialType)
+                }
+            }
+            if let direct = string(root,
+                keys: ["url", "streamUrl", "streamURL", "file", "src", "link", "href"]) {
+                append(urlString: direct,
+                       label: string(root, keys: ["label", "name", "quality"]) ?? "Auto",
+                       headers: initialHeaders,
+                       streamType: initialType,
+                       subtitleContainer: root)
+            }
         }
 
+        guard !choices.isEmpty else { throw ModuleRuntimeError.invalidStream }
         return choices
     }
 

@@ -517,7 +517,7 @@ private struct ModulePlayerOptionsSheet: View {
                     }
 
                     if session.availableStreams.count == 1 {
-                        Text("This module returned one playable stream. Other servers appear here only when the module provides them.")
+                        Text("This module returned one stream. Kinetiq will retry it and refresh the episode link once if it fails; additional servers require real alternatives from the module.")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.58))
                     }
@@ -809,6 +809,10 @@ private struct ModulePlayerOptionsSheet: View {
                 informationRow(
                     "Selected server",
                     value: session.currentStream?.label ?? "None"
+                )
+                informationRow(
+                    "Server choices",
+                    value: String(session.availableStreams.count)
                 )
                 informationRow(
                     "Playback state",
@@ -1179,6 +1183,15 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var stalledObserver: NSObjectProtocol?
     private var recoveryTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
+
+    // A ready AVPlayerItem is not evidence that frames are actually playing.
+    // Some providers remain in "waiting" forever without sending a stall
+    // notification. Watch startup and post-start buffering independently.
+    private var startedCurrentItem = false
+    private var wantsToPlay = true
+    private var refreshedEpisodeKey: String?
+    private var loadedEpisodeKey: String?
 
     private var attemptedStreamIDs = Set<UUID>()
     private var automaticRetriedIDs = Set<UUID>()
@@ -1250,6 +1263,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             "Episode: \(session.currentEpisode?.number ?? "Unknown")",
             "Language: \(session.selectedLanguage)",
             "Server label: \(session.currentStream?.label ?? "None")",
+            "Source-provided servers: \(session.availableStreams.count)",
+            "Tried servers: \(attemptedStreamIDs.count)",
+            "Refreshed links: \(refreshedEpisodeKey == loadedEpisodeKey && loadedEpisodeKey != nil ? "Yes" : "No")",
             "Host: \(session.currentStream?.hostName ?? "None")",
             "Stream type: \(session.currentStream?.streamType ?? "Unknown")",
             "Playback state: \(playbackStatus)",
@@ -1311,18 +1327,32 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             options: [.initial, .new]
         ) { [weak self] observedPlayer, _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, !self.hasStopped else { return }
 
-                self.isPlaying =
-                    observedPlayer.timeControlStatus == .playing
+                let status = observedPlayer.timeControlStatus
+                self.isPlaying = status == .playing
+                self.isBuffering = status == .waitingToPlayAtSpecifiedRate
 
-                self.isBuffering =
-                    observedPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate
-
-                if observedPlayer.timeControlStatus == .playing {
+                switch status {
+                case .playing:
+                    self.startedCurrentItem = true
                     self.playbackStatus = "Playing"
+                    self.startupTask?.cancel()
+                    self.startupTask = nil
                     self.stallTask?.cancel()
                     self.stallTask = nil
+                case .waitingToPlayAtSpecifiedRate:
+                    if self.wantsToPlay,
+                       self.startedCurrentItem,
+                       let item = self.player.currentItem {
+                        self.playbackStatus = "Buffering stream"
+                        self.scheduleStallRecovery(for: item)
+                    }
+                case .paused:
+                    self.stallTask?.cancel()
+                    self.stallTask = nil
+                @unknown default:
+                    break
                 }
             }
         }
@@ -1378,6 +1408,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         lastSavedProgressAt = .distantPast
         isRestoringPosition = true
 
+        let episodeKey = (session.currentEpisode?.id ?? "") + "|" + session.selectedLanguage
+        if loadedEpisodeKey != episodeKey {
+            loadedEpisodeKey = episodeKey
+            refreshedEpisodeKey = nil
+        }
+
         let choices = Set(session.availableStreams.map(\.id))
         if choices != knownStreamChoices {
             knownStreamChoices = choices
@@ -1389,6 +1425,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         recoveryTask = nil
         stallTask?.cancel()
         stallTask = nil
+        startupTask?.cancel()
+        startupTask = nil
+        startedCurrentItem = false
+        wantsToPlay = true
 
         attemptedStreamIDs.insert(stream.id)
         isHandlingStreamFailure = false
@@ -1462,6 +1502,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         player.replaceCurrentItem(with: item)
         videoQuality.configure(for: item)
+        scheduleStartupWatchdog(for: item)
 
         itemStatusObservation = item.observe(
             \.status,
@@ -1504,13 +1545,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                                       self.player.currentItem === observedItem else { return }
                                 self.isRestoringPosition = false
                                 self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
-                                self.player.playImmediately(atRate: self.playbackRate)
+                                if self.wantsToPlay {
+                                    self.player.playImmediately(atRate: self.playbackRate)
+                                }
                             }
                         }
                     } else {
                         self.isRestoringPosition = false
                         self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
-                        self.player.playImmediately(atRate: self.playbackRate)
+                        if self.wantsToPlay {
+                            self.player.playImmediately(atRate: self.playbackRate)
+                        }
                     }
 
                     Task { [weak self] in
@@ -1608,6 +1653,30 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     // MARK: Bounded Recovery and Diagnostics
 
+    private func scheduleStartupWatchdog(for item: AVPlayerItem) {
+        startupTask?.cancel()
+        startupTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(24))
+                guard !Task.isCancelled,
+                      let self,
+                      !self.hasStopped,
+                      self.wantsToPlay,
+                      !self.startedCurrentItem,
+                      !self.isHandlingStreamFailure,
+                      self.player.currentItem === item else { return }
+
+                self.note("Startup timed out before video began playing")
+                self.handleStreamFailure(
+                    for: item,
+                    message: "The server did not start playback within 24 seconds."
+                )
+            } catch {
+                // Playing, paused, switched servers, or closed the player.
+            }
+        }
+    }
+
     private func scheduleStallRecovery(for item: AVPlayerItem) {
         guard !hasStopped, player.currentItem === item else { return }
 
@@ -1644,6 +1713,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
               let stream = session.currentStream else { return }
 
         isHandlingStreamFailure = true
+        startupTask?.cancel()
+        startupTask = nil
+        stallTask?.cancel()
+        stallTask = nil
 
         // Read only a numeric status: never expose token-bearing URLs or
         // raw response headers from AVFoundation logs.
@@ -1686,16 +1759,44 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         }) {
             playbackStatus = "Switching to \(alternate.label)"
             note("Automatic fallback: \(alternate.label)")
-            _ = session.selectStream(alternate)
+            if session.selectStream(alternate) {
+                return
+            }
+            note("Unable to select next server")
+        }
+
+        // Signed URLs and provider APIs can rotate between extractions.
+        // Refresh *once* per episode/language after exhausting the module's
+        // known alternatives. Never loop indefinitely on identical links.
+        if let episodeKey = loadedEpisodeKey,
+           refreshedEpisodeKey != episodeKey {
+            refreshedEpisodeKey = episodeKey
+            playbackStatus = "Refreshing server links"
+            note("All known servers failed; re-resolving episode once")
+            recoveryTask?.cancel()
+            recoveryTask = Task { @MainActor [weak self] in
+                guard let self, !self.hasStopped else { return }
+                let success = await self.session.retryCurrent()
+                guard !Task.isCancelled, !self.hasStopped else { return }
+                if success {
+                    self.note("Episode links refreshed; opening new stream")
+                    // session.currentStream publishes the new player handoff.
+                } else {
+                    self.playbackStatus = "Playback failed"
+                    self.errorMessage = self.session.playbackError
+                        ?? "The source could not refresh its stream links."
+                    self.note("Source could not refresh stream links")
+                }
+            }
             return
         }
 
         playbackStatus = "Playback failed"
-        if authorizationRejected {
-            errorMessage = "The server denied playback (HTTP \(lastHTTPStatus ?? 403)). Try a different source or language."
-        } else {
-            errorMessage = message
-        }
+        let count = max(session.availableStreams.count, 1)
+        let suffix = authorizationRejected
+            ? "Last server returned HTTP \(lastHTTPStatus ?? 403)."
+            : message
+        errorMessage = "Tried all \(count) available server(s). \(suffix) Check Diagnostics or choose another source."
     }
 
     // MARK: Stream Tracks and Metadata
@@ -1821,10 +1922,21 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     // MARK: Playback Controls
 
     func togglePlayback() {
-        if player.timeControlStatus == .playing {
+        let waitingOrPlaying = player.timeControlStatus == .playing
+            || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        if wantsToPlay && waitingOrPlaying {
+            wantsToPlay = false
+            startupTask?.cancel()
+            startupTask = nil
+            stallTask?.cancel()
+            stallTask = nil
             persistCurrentProgress()
             player.pause()
         } else {
+            wantsToPlay = true
+            if let item = player.currentItem, !startedCurrentItem {
+                scheduleStartupWatchdog(for: item)
+            }
             player.playImmediately(atRate: playbackRate)
         }
     }
@@ -1946,6 +2058,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         stallTask?.cancel()
         automaticRetriedIDs.removeAll()
         attemptedStreamIDs.removeAll()
+        refreshedEpisodeKey = nil
         playbackStatus = "Retrying manually"
         note("Manual retry: \(stream.label)")
         lastStreamID = nil
@@ -2032,6 +2145,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         recoveryTask = nil
         stallTask?.cancel()
         stallTask = nil
+        startupTask?.cancel()
+        startupTask = nil
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = nil
