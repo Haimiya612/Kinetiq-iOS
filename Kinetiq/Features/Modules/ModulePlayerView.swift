@@ -3,6 +3,7 @@ import AVKit
 import AVFoundation
 import Combine
 import UIKit
+import WebKit
 
 // MARK: - Module Player Panels
 
@@ -49,6 +50,7 @@ struct KinetiqModulePlayerView: View {
 
     @State private var controlsVisible = true
     @State private var activePanel: ModulePlayerPanel?
+    @State private var webPlayerStream: ModuleResolvedStream?
 
     @State private var isSeeking = false
     @State private var seekPosition: Double = 0
@@ -144,8 +146,22 @@ struct KinetiqModulePlayerView: View {
                 }
 
                 if let error = playback.errorMessage {
-                    playbackErrorOverlay(error)
-                        .zIndex(5)
+                    VStack(spacing: 12) {
+                        playbackErrorOverlay(error)
+                        if let stream = session.currentStream,
+                           ModuleWebFallbackPolicy.allows(stream.url) {
+                            Button(action: openWebFallback) {
+                                Label("Try Web Player", systemImage: "globe")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 11)
+                                    .background(.white.opacity(0.14), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .zIndex(5)
                 }
 
                 if let activePanel {
@@ -158,6 +174,20 @@ struct KinetiqModulePlayerView: View {
                             .combined(with: .opacity)
                     )
                     .zIndex(6)
+                }
+
+                if let webPlayerStream {
+                    ModuleWebFallbackPlayer(
+                        stream: webPlayerStream,
+                        episodeTitle: session.currentEpisodeTitle,
+                        onClose: {
+                            self.webPlayerStream = nil
+                            self.activePanel = .servers
+                            self.revealControls()
+                        }
+                    )
+                    .transition(.opacity)
+                    .zIndex(20)
                 }
             }
             .frame(
@@ -194,6 +224,10 @@ struct KinetiqModulePlayerView: View {
             )
             .onAppear {
                 revealControls()
+                displayEmbeddedPlayerIfNeeded()
+            }
+            .onChange(of: session.currentStream?.id) { _, _ in
+                displayEmbeddedPlayerIfNeeded()
             }
             .onDisappear {
                 autoHideTask?.cancel()
@@ -250,6 +284,30 @@ struct KinetiqModulePlayerView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .background(.black)
+    }
+
+    // MARK: - Web-only Player Fallback (Batch 05C)
+
+    private func displayEmbeddedPlayerIfNeeded() {
+        guard let stream = session.currentStream else {
+            webPlayerStream = nil
+            return
+        }
+        if stream.isWebEmbed && ModuleWebFallbackPolicy.allows(stream.url) {
+            playback.player.pause()
+            activePanel = nil
+            webPlayerStream = stream
+        } else {
+            webPlayerStream = nil
+        }
+    }
+
+    private func openWebFallback() {
+        guard let stream = session.currentStream,
+              ModuleWebFallbackPolicy.allows(stream.url) else { return }
+        playback.player.pause()
+        activePanel = nil
+        webPlayerStream = stream
     }
 
     // MARK: - Shared Player Chrome (Batch 05A)
@@ -351,7 +409,8 @@ struct KinetiqModulePlayerView: View {
             ModulePlayerOptionsSheet(
                 panel: panel,
                 playback: playback,
-                session: session
+                session: session,
+                onOpenWebPlayer: openWebFallback
             ) {
                 activePanel = nil
             }
@@ -463,6 +522,7 @@ private struct ModulePlayerOptionsSheet: View {
     let panel: ModulePlayerPanel
     @ObservedObject var playback: ModulePlayerPlaybackController
     @ObservedObject var session: ModuleEpisodePlaybackSession
+    let onOpenWebPlayer: () -> Void
     let onClose: () -> Void
 
     private let speeds: [Float] = [
@@ -797,6 +857,32 @@ private struct ModulePlayerOptionsSheet: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white)
                     }
+                }
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("WEB PLAYBACK FALLBACK")
+                if let stream = session.currentStream,
+                   ModuleWebFallbackPolicy.allows(stream.url) {
+                    Button(action: onOpenWebPlayer) {
+                        Label("Try Web Player", systemImage: "globe")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    Text("Opens this source-provided address in a private WebKit view. Native controls, PiP and external captions may be unavailable there.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                } else {
+                    Text("No secure browser fallback is available for this server.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
                 }
 
                 Rectangle()
@@ -1454,6 +1540,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         externalSubtitles.configure(tracks: stream.subtitles)
 
         removeCurrentItemObservers()
+
+        if stream.isWebEmbed {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            isBuffering = false
+            isPlaying = false
+            playbackStatus = "Web player available"
+            note("Source supplied a browser embed rather than a native video")
+            // The view opens the isolated WebKit player for this source.
+            return
+        }
 
         var assetOptions: [String: Any] = [:]
 
@@ -2959,3 +3056,156 @@ struct KinetiqUnifiedPlayerFailureOverlay: View {
     }
 }
 
+
+
+// MARK: - WebKit-only fallback for provider-supplied player pages (Batch 05C)
+// This view is intentionally distinct from the unified native player: WebKit
+// cannot guarantee native AVPlayer controls, external subtitle rendering, or
+// PiP. It is a secondary option for authorized provider embed pages only.
+@MainActor
+private struct ModuleWebFallbackPlayer: View {
+    let stream: ModuleResolvedStream
+    let episodeTitle: String
+    let onClose: () -> Void
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onClose) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 40, height: 40)
+                        .background(.white.opacity(0.12), in: Circle())
+                }
+                .accessibilityLabel("Return to native player")
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(episodeTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                    Text("Web Player · \(stream.hostName)")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "globe")
+                    .foregroundStyle(KinetiqPalette.cyan)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            if let failure {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 24))
+                    Text("Web player unavailable")
+                        .font(.headline)
+                    Text(failure)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                    Button("Back to Kinetiq", action: onClose)
+                        .buttonStyle(.borderedProminent)
+                }
+                .foregroundStyle(.white)
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ModuleEphemeralWebView(url: stream.url, failure: $failure)
+                    .background(.black)
+            }
+
+            HStack {
+                Image(systemName: "lock.shield")
+                Text("Private web session · no app credentials shared")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.white.opacity(0.55))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+        }
+        .background(.black)
+        .ignoresSafeArea(.container, edges: .bottom)
+    }
+}
+
+@MainActor
+private struct ModuleEphemeralWebView: UIViewRepresentable {
+    let url: URL
+    @Binding var failure: String?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(failure: $failure)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+        webView.navigationDelegate = context.coordinator
+        if ModuleWebFallbackPolicy.allows(url) {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            webView.load(request)
+        } else {
+            failure = "This server does not provide a permitted HTTPS web address."
+        }
+        return webView
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        uiView.stopLoading()
+        uiView.navigationDelegate = nil
+        uiView.loadHTMLString("", baseURL: nil)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding var failure: String?
+
+        init(failure: Binding<String?>) {
+            _failure = failure
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            // Let same-page media subresources load normally; block new
+            // windows, non-HTTPS top-level redirects, and local addresses.
+            if navigationAction.targetFrame == nil {
+                decisionHandler(.cancel)
+                return
+            }
+            if navigationAction.targetFrame?.isMainFrame == true {
+                guard let url = navigationAction.request.url,
+                      ModuleWebFallbackPolicy.allows(url) else {
+                    failure = "This web player tried to navigate to an unsupported address."
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            failure = "The provider's web page could not finish loading."
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            failure = "The provider's web page could not be opened."
+        }
+    }
+}

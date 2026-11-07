@@ -1593,7 +1593,51 @@ struct ModuleResolvedStream: Identifiable, Sendable {
 
     /// Never display the full URL: it may contain signed query tokens.
     var hostName: String { url.host ?? "Unknown host" }
+
+    /// Only explicit web/embed variants or known embed paths bypass AVPlayer.
+    /// Ordinary HLS and MP4 links remain native even when hosted by a web CDN.
+    var isWebEmbed: Bool {
+        let kind = streamType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["embed", "iframe", "web", "webview", "html", "browser", "playerpage"]
+            .contains(kind) { return true }
+        if ["mp4", "m3u8", "mov", "m4v", "mpd", "webm", "mkv"]
+            .contains(url.pathExtension.lowercased()) { return false }
+        return url.pathComponents.contains { part in
+            ["embed", "iframe"].contains(part.lowercased())
+        }
+    }
 }
+
+/// Restrict the optional web player to remote HTTPS pages. No app cookies,
+/// module Authorization headers, or native AVURLAsset credentials are copied
+/// to WebKit; browser playback deliberately runs in an ephemeral data store.
+enum ModuleWebFallbackPolicy {
+    static func allows(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") {
+            return false
+        }
+        if host == "::1" || host == "[::1]" || host == "0:0:0:0:0:0:0:1" {
+            return false
+        }
+        let octets = host.split(separator: ".")
+        if octets.count == 4, octets.allSatisfy({ Int($0) != nil }) {
+            let numbers = octets.compactMap { UInt8($0) }
+            guard numbers.count == 4 else { return false }
+            // Block loopback, private, link-local and multicast ranges.
+            let a = numbers[0], b = numbers[1]
+            if a == 0 || a == 10 || a == 127 || a >= 224 ||
+                (a == 169 && b == 254) ||
+                (a == 172 && (16...31).contains(b)) ||
+                (a == 192 && b == 168) ||
+                (a == 100 && (64...127).contains(b)) { return false }
+        }
+        return true
+    }
+}
+
 
 // MARK: - Module Episode Playback Session
 
@@ -2262,6 +2306,13 @@ enum ModuleRuntimeDecoder {
                   let url = resolvedURL(urlString, baseURL: baseURL),
                   url.user == nil, url.password == nil else { return }
 
+            // Reject insecure or local provider pages before listing them.
+            let isEmbedPage = ["embed", "iframe", "web", "webview", "html", "browser", "playerpage"]
+                .contains(streamType.lowercased()) || url.pathComponents.contains {
+                    ["embed", "iframe"].contains($0.lowercased())
+                }
+            if isEmbedPage && !ModuleWebFallbackPolicy.allows(url) { return }
+
             let incomingLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let lowerLabel = incomingLabel.lowercased()
             let hiddenToken = lowerLabel.contains("://")
@@ -2345,6 +2396,20 @@ enum ModuleRuntimeDecoder {
                 append(urlString: ownURL, label: ownLabel, headers: ownHeaders,
                        streamType: ownType, subtitleContainer: object)
             }
+            // Web-only providers return a player page rather than a media
+            // file. Keep those choices visible, but tag them so AVPlayer
+            // never tries to decode an HTML document as video.
+            for webKey in ["embedUrl", "embedURL", "iframeUrl", "iframeURL",
+                           "playerUrl", "playerURL", "webUrl", "webURL", "embed", "iframe"] {
+                if let page = object[webKey] as? String {
+                    append(urlString: page, label: ownLabel, headers: [:],
+                           streamType: "embed", subtitleContainer: nil)
+                } else if let pages = object[webKey] as? [Any] {
+                    walk(pages, label: ownLabel, headers: [:], type: "embed", depth: depth + 1)
+                } else if let webEntry = object[webKey] as? [String: Any] {
+                    walk(webEntry, label: ownLabel, headers: [:], type: "embed", depth: depth + 1)
+                }
+            }
 
             // Some modules wrap maps of server names in `data` / `result`
             // without a `servers` key. Only accept entries that look like
@@ -2424,6 +2489,18 @@ enum ModuleRuntimeDecoder {
                        headers: initialHeaders,
                        streamType: initialType,
                        subtitleContainer: root)
+            }
+            for webKey in ["embedUrl", "embedURL", "iframeUrl", "iframeURL",
+                           "playerUrl", "playerURL", "webUrl", "webURL", "embed", "iframe"] {
+                if let page = root[webKey] as? String {
+                    append(urlString: page,
+                           label: string(root, keys: ["label", "name", "quality"]) ?? "Web player",
+                           headers: [:], streamType: "embed", subtitleContainer: nil)
+                } else if let pages = root[webKey] as? [Any] {
+                    walk(pages, label: "Web player", headers: [:], type: "embed")
+                } else if let webEntry = root[webKey] as? [String: Any] {
+                    walk(webEntry, label: "Web player", headers: [:], type: "embed")
+                }
             }
         }
 
