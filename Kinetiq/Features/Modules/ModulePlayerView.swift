@@ -252,173 +252,46 @@ struct KinetiqModulePlayerView: View {
         .background(.black)
     }
 
-    // MARK: Overlay Layout
+    // MARK: - Shared Player Chrome (Batch 05A)
+    // The same component is used by local playback in LibraryView.swift.
+    // The module session continues to own streams, quality, episodes and captions.
 
-    private func controlOverlay(
-        safeAreaInsets: EdgeInsets
-    ) -> some View {
-        ZStack {
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.58), location: 0),
-                    .init(color: .clear, location: 0.27),
-                    .init(color: .clear, location: 0.60),
-                    .init(color: .black.opacity(0.70), location: 1)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
-
-            VStack(spacing: 0) {
-                topControls
-                    .padding(.top, max(safeAreaInsets.top, 14))
-
-                Spacer(minLength: 18)
-                centreControls
-                Spacer(minLength: 18)
-
-                bottomControls
-                    .padding(
-                        .bottom,
-                        max(safeAreaInsets.bottom, 15)
-                    )
-            }
-            .padding(.horizontal, 16)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: Top Controls
-
-    private var topControls: some View {
-        HStack(spacing: 11) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(.black.opacity(0.34), in: Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(.white.opacity(0.14), lineWidth: 1)
-                    )
-            }
-            .accessibilityLabel("Close player")
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("NOW PLAYING")
-                    .font(
-                        .system(
-                            size: 9,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(1.8)
-                    .foregroundStyle(KinetiqPalette.cyan)
-
-                Text(session.currentEpisodeTitle)
-                    .font(
-                        .system(
-                            size: 14,
-                            weight: .semibold,
-                            design: .rounded
-                        )
-                    )
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
-            ModuleAirPlayButton()
-                .frame(width: 40, height: 40)
-                .background(.black.opacity(0.34), in: Circle())
-                .overlay(
-                    Circle()
-                        .stroke(.white.opacity(0.14), lineWidth: 1)
+    private func controlOverlay(safeAreaInsets: EdgeInsets) -> some View {
+        KinetiqUnifiedPlayerChrome(
+            safeAreaInsets: safeAreaInsets,
+            title: session.currentEpisodeTitle,
+            playing: playback.isPlaying,
+            busy: playback.isResolvingEpisode,
+            aspectFill: playback.isAspectFill,
+            pictureInPictureAvailable: pictureInPicture.isPossible,
+            displayedTime: displayedTime,
+            duration: playback.duration,
+            elapsedLabel: ModulePlayerPlaybackController.timeString(displayedTime),
+            durationLabel: playback.formattedDuration,
+            panels: ModulePlayerPanel.allCases.map { option in
+                KinetiqUnifiedPlayerChrome.Panel(
+                    id: option.rawValue,
+                    symbol: option.symbol,
+                    selected: activePanel == option
                 )
-                .accessibilityLabel("AirPlay")
-
-            if pictureInPicture.isPossible {
-                Button {
-                    pictureInPicture.start()
-                } label: {
-                    Image(systemName: "pip")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(.black.opacity(0.34), in: Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(
-                                    .white.opacity(0.14),
-                                    lineWidth: 1
-                                )
-                        )
-                }
-                .accessibilityLabel("Start Picture in Picture")
-            }
-
-            Button {
+            },
+            airPlayControl: AnyView(ModuleAirPlayButton()),
+            onClose: { dismiss() },
+            onStartPictureInPicture: { pictureInPicture.start() },
+            onToggleAspect: {
                 playback.isAspectFill.toggle()
                 scheduleAutoHide()
-            } label: {
-                Image(
-                    systemName: playback.isAspectFill
-                        ? "arrow.down.right.and.arrow.up.left"
-                        : "arrow.up.left.and.arrow.down.right"
-                )
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
-                .background(.black.opacity(0.34), in: Circle())
-                .overlay(
-                    Circle()
-                        .stroke(.white.opacity(0.14), lineWidth: 1)
-                )
-            }
-            .accessibilityLabel(
-                playback.isAspectFill
-                    ? "Fit video to screen"
-                    : "Fill screen with video"
-            )
-        }
-    }
-
-    // MARK: Centre Controls
-
-    private var centreControls: some View {
-        HStack(spacing: 13) {
-            Button {
+            },
+            onPrevious: {
                 playback.playPrevious()
                 revealControls()
-            } label: {
-                Image(systemName: "backward.end.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 52)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Previous episode")
-
-            Button {
+            },
+            onRewind: {
                 playback.seek(by: -10)
                 showSeekFeedback("−10 seconds")
                 scheduleAutoHide()
-            } label: {
-                Image(systemName: "gobackward.10")
-                    .font(.system(size: 25, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 58)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Back 10 seconds")
-
-            Button {
+            },
+            onTogglePlay: {
                 playback.togglePlayback()
                 if playback.isPlaying {
                     scheduleAutoHide()
@@ -428,163 +301,35 @@ struct KinetiqModulePlayerView: View {
                         controlsVisible = true
                     }
                 }
-            } label: {
-                Image(
-                    systemName: playback.isPlaying
-                        ? "pause.fill"
-                        : "play.fill"
-                )
-                .font(.system(size: 25, weight: .bold))
-                .foregroundStyle(.white)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 72, height: 72)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(
-                    Circle().fill(.black.opacity(0.18))
-                )
-                .overlay(
-                    Circle()
-                        .stroke(.white.opacity(0.24), lineWidth: 1)
-                )
-                .shadow(
-                    color: .black.opacity(0.28),
-                    radius: 18,
-                    y: 7
-                )
-            }
-            .accessibilityLabel(
-                playback.isPlaying ? "Pause" : "Play"
-            )
-
-            Button {
+            },
+            onForward: {
                 playback.seek(by: 10)
                 showSeekFeedback("+10 seconds")
                 scheduleAutoHide()
-            } label: {
-                Image(systemName: "goforward.10")
-                    .font(.system(size: 25, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 58)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Forward 10 seconds")
-
-            Button {
+            },
+            onNext: {
                 playback.playNext()
                 revealControls()
-            } label: {
-                Image(systemName: "forward.end.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 52)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Next episode")
-        }
-        .buttonStyle(.plain)
-        .disabled(playback.isResolvingEpisode)
-        .opacity(playback.isResolvingEpisode ? 0.55 : 1)
-    }
-
-    // MARK: Bottom Controls
-
-    private var bottomControls: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 4) {
-                Slider(
-                    value: Binding(
-                        get: { displayedTime },
-                        set: { value in
-                            isSeeking = true
-                            seekPosition = value
-                        }
-                    ),
-                    in: 0...max(playback.duration, 1),
-                    onEditingChanged: { editing in
-                        if editing {
-                            cancelAutoHide()
-                        } else {
-                            playback.seek(to: seekPosition)
-                            isSeeking = false
-                            scheduleAutoHide()
-                        }
-                    }
-                )
-                .tint(KinetiqPalette.cyan)
-                .accessibilityLabel("Playback position")
-
-                HStack {
-                    Text(
-                        ModulePlayerPlaybackController.timeString(
-                            displayedTime
-                        )
-                    )
-
-                    Spacer()
-
-                    Text(playback.formattedDuration)
-                }
-                .font(
-                    .system(
-                        size: 10,
-                        weight: .semibold,
-                        design: .monospaced
-                    )
-                )
-                .foregroundStyle(.white.opacity(0.88))
-            }
-
-            playerMenuBar
-        }
-    }
-
-    private var playerMenuBar: some View {
-        HStack(spacing: 1) {
-            ForEach(ModulePlayerPanel.allCases) { panel in
-                Button {
-                    activePanel = activePanel == panel
-                        ? nil
-                        : panel
-                    controlsVisible = true
+            },
+            onSeekChanged: { value in
+                isSeeking = true
+                seekPosition = value
+            },
+            onSeekEditingChanged: { editing in
+                if editing {
                     cancelAutoHide()
-                } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: panel.symbol)
-                            .font(
-                                .system(size: 15, weight: .semibold)
-                            )
-
-                        Text(panel.rawValue)
-                            .font(
-                                .system(size: 8, weight: .semibold)
-                            )
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-                    .foregroundStyle(
-                        activePanel == panel
-                            ? KinetiqPalette.cyan
-                            : .white.opacity(0.92)
-                    )
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .contentShape(Rectangle())
+                } else {
+                    playback.seek(to: seekPosition)
+                    isSeeking = false
+                    scheduleAutoHide()
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(panel.rawValue)
+            },
+            onPanelSelected: { name in
+                guard let panel = ModulePlayerPanel(rawValue: name) else { return }
+                activePanel = activePanel == panel ? nil : panel
+                controlsVisible = true
+                cancelAutoHide()
             }
-        }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .background(Capsule().fill(.black.opacity(0.27)))
-        .overlay(
-            Capsule().stroke(.white.opacity(0.14), lineWidth: 1)
-        )
-        .shadow(
-            color: .black.opacity(0.22),
-            radius: 16,
-            y: 6
         )
     }
 
@@ -617,69 +362,20 @@ struct KinetiqModulePlayerView: View {
         .ignoresSafeArea()
     }
 
-    // MARK: Playback Error
-
-    private func playbackErrorOverlay(
-        _ error: String
-    ) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(.orange)
-
-            Text("Playback issue")
-                .font(.headline)
-                .foregroundStyle(.white)
-
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
-
-            HStack(spacing: 10) {
-                Button {
-                    playback.retryCurrentStream()
-                    revealControls()
-                } label: {
-                    Label(
-                        "Try again",
-                        systemImage: "arrow.clockwise"
-                    )
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 11)
-                    .background(KinetiqPalette.cyan, in: Capsule())
-                }
-
-                Button {
-                    playback.dismissError()
-                    playback.playNext()
-                    revealControls()
-                } label: {
-                    Label(
-                        "Skip",
-                        systemImage: "forward.end.fill"
-                    )
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 11)
-                    .background(.white.opacity(0.13), in: Capsule())
-                }
+    // MARK: - Shared Playback Failure Presentation
+    private func playbackErrorOverlay(_ error: String) -> some View {
+        KinetiqUnifiedPlayerFailureOverlay(
+            message: error,
+            onRetry: {
+                playback.retryCurrentStream()
+                revealControls()
+            },
+            onSkip: {
+                playback.dismissError()
+                playback.playNext()
+                revealControls()
             }
-            .padding(.top, 5)
-        }
-        .padding(24)
-        .background(
-            .ultraThinMaterial,
-            in: RoundedRectangle(cornerRadius: 20)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(.white.opacity(0.12), lineWidth: 1)
-        )
-        .padding(30)
     }
 
     // MARK: Seek Feedback
@@ -774,78 +470,13 @@ private struct ModulePlayerOptionsSheet: View {
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(.white.opacity(0.35))
-                .frame(width: 38, height: 4)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
-
-            HStack {
-                HStack(spacing: 10) {
-                    Image(systemName: panel.symbol)
-                        .foregroundStyle(KinetiqPalette.cyan)
-
-                    Text(panel.rawValue)
-                        .font(
-                            .system(
-                                size: 17,
-                                weight: .bold,
-                                design: .rounded
-                            )
-                        )
-                        .foregroundStyle(.white)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.8))
-                        .frame(width: 32, height: 32)
-                        .background(.white.opacity(0.10), in: Circle())
-                }
-                .accessibilityLabel("Close options")
-            }
-            .padding(.horizontal, 19)
-            .padding(.bottom, 14)
-
-            Rectangle()
-                .fill(.white.opacity(0.10))
-                .frame(height: 1)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    panelContent
-                }
-                .padding(18)
-            }
-            .frame(maxHeight: 390)
+        KinetiqUnifiedPlayerOptionsFrame(
+            title: panel.rawValue,
+            symbol: panel.symbol,
+            onClose: onClose
+        ) {
+            panelContent
         }
-        .background(.ultraThinMaterial)
-        .background(
-            Color(red: 0.035, green: 0.045, blue: 0.065)
-                .opacity(0.90)
-        )
-        .clipShape(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 24,
-                topTrailingRadius: 24
-            )
-        )
-        .overlay(alignment: .top) {
-            UnevenRoundedRectangle(
-                topLeadingRadius: 24,
-                topTrailingRadius: 24
-            )
-            .stroke(.white.opacity(0.13), lineWidth: 1)
-        }
-        .shadow(
-            color: .black.opacity(0.32),
-            radius: 25,
-            y: -5
-        )
     }
 
     @ViewBuilder
@@ -2846,3 +2477,370 @@ final class ModuleVideoQualityController: ObservableObject {
         if presentedResolution != text { presentedResolution = text }
     }
 }
+
+// MARK: - Batch 05A Shared Visual Layer
+// This is deliberately compiled in ModulePlayerView.swift, which is already
+// listed in the Kinetiq app target's PBXSourcesBuildPhase. The earlier
+// KinetiqUnifiedPlayer.swift standalone file is NOT in that build phase.
+
+// MARK: - Unified visual layer
+//
+// The renderer is deliberately independent of AVPlayer and module/networking
+// objects. Local and remote playback adapters both drive this same interface.
+// Every visible action is forwarded to the active playback engine.
+
+@MainActor
+struct KinetiqUnifiedPlayerChrome: View {
+    struct Panel: Identifiable {
+        let id: String
+        let symbol: String
+        let selected: Bool
+    }
+
+    let safeAreaInsets: EdgeInsets
+    let title: String
+    let playing: Bool
+    let busy: Bool
+    let aspectFill: Bool
+    let pictureInPictureAvailable: Bool
+    let displayedTime: Double
+    let duration: Double
+    let elapsedLabel: String
+    let durationLabel: String
+    let panels: [Panel]
+    let airPlayControl: AnyView
+
+    let onClose: () -> Void
+    let onStartPictureInPicture: () -> Void
+    let onToggleAspect: () -> Void
+    let onPrevious: () -> Void
+    let onRewind: () -> Void
+    let onTogglePlay: () -> Void
+    let onForward: () -> Void
+    let onNext: () -> Void
+    let onSeekChanged: (Double) -> Void
+    let onSeekEditingChanged: (Bool) -> Void
+    let onPanelSelected: (String) -> Void
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.58), location: 0),
+                    .init(color: .clear, location: 0.27),
+                    .init(color: .clear, location: 0.60),
+                    .init(color: .black.opacity(0.70), location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                header
+                    .padding(.top, max(safeAreaInsets.top, 14))
+                Spacer(minLength: 18)
+                transport
+                Spacer(minLength: 18)
+                footer
+                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var header: some View {
+        HStack(spacing: 11) {
+            headerButton("chevron.down", label: "Close player", size: 15, action: onClose)
+                .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("NOW PLAYING")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.8)
+                    .foregroundStyle(KinetiqPalette.cyan)
+
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            airPlayControl
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                .accessibilityLabel("AirPlay")
+
+            if pictureInPictureAvailable {
+                headerButton("pip", label: "Start Picture in Picture", size: 15, action: onStartPictureInPicture)
+            }
+
+            headerButton(
+                aspectFill
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right",
+                label: aspectFill ? "Fit video to screen" : "Fill screen with video",
+                size: 14,
+                action: onToggleAspect
+            )
+        }
+    }
+
+    private func headerButton(
+        _ symbol: String,
+        label: String,
+        size: CGFloat,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.34), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var transport: some View {
+        HStack(spacing: 13) {
+            transportButton("backward.end.fill", size: 18, width: 38,
+                            label: "Previous", action: onPrevious)
+            transportButton("gobackward.10", size: 25, width: 44,
+                            label: "Back 10 seconds", action: onRewind)
+
+            Button(action: onTogglePlay) {
+                Image(systemName: playing ? "pause.fill" : "play.fill")
+                    .font(.system(size: 25, weight: .bold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 72, height: 72)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().fill(.black.opacity(0.18)))
+                    .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.28), radius: 18, y: 7)
+            }
+            .accessibilityLabel(playing ? "Pause" : "Play")
+
+            transportButton("goforward.10", size: 25, width: 44,
+                            label: "Forward 10 seconds", action: onForward)
+            transportButton("forward.end.fill", size: 18, width: 38,
+                            label: "Next", action: onNext)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .opacity(busy ? 0.55 : 1)
+    }
+
+    private func transportButton(
+        _ symbol: String,
+        size: CGFloat,
+        width: CGFloat,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: width, height: 58)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel(label)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 12) {
+            VStack(spacing: 4) {
+                Slider(
+                    value: Binding(
+                        get: { min(max(displayedTime.isFinite ? displayedTime : 0, 0), max(duration, 1)) },
+                        set: { onSeekChanged($0) }
+                    ),
+                    in: 0...max(duration.isFinite ? duration : 1, 1),
+                    onEditingChanged: onSeekEditingChanged
+                )
+                .tint(KinetiqPalette.cyan)
+                .accessibilityLabel("Playback position")
+
+                HStack {
+                    Text(elapsedLabel)
+                    Spacer()
+                    Text(durationLabel)
+                }
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.88))
+            }
+
+            panelBar
+        }
+    }
+
+    private var panelBar: some View {
+        HStack(spacing: 1) {
+            ForEach(panels) { panel in
+                Button {
+                    onPanelSelected(panel.id)
+                } label: {
+                    VStack(spacing: 5) {
+                        Image(systemName: panel.symbol)
+                            .font(.system(size: 15, weight: .semibold))
+                        Text(panel.id)
+                            .font(.system(size: 8, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                    .foregroundStyle(
+                        panel.selected
+                            ? KinetiqPalette.cyan
+                            : .white.opacity(0.92)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(panel.id)
+            }
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .background(Capsule().fill(.black.opacity(0.27)))
+        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+    }
+}
+
+// MARK: - Shared options-sheet frame
+
+@MainActor
+struct KinetiqUnifiedPlayerOptionsFrame<Content: View>: View {
+    let title: String
+    let symbol: String
+    let onClose: () -> Void
+    private let content: Content
+
+    init(
+        title: String,
+        symbol: String,
+        onClose: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.symbol = symbol
+        self.onClose = onClose
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .frame(width: 38, height: 4)
+                .padding(.top, 10)
+                .padding(.bottom, 16)
+
+            HStack {
+                HStack(spacing: 10) {
+                    Image(systemName: symbol)
+                        .foregroundStyle(KinetiqPalette.cyan)
+                    Text(title)
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+
+                Spacer()
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                        .background(.white.opacity(0.10), in: Circle())
+                }
+                .accessibilityLabel("Close options")
+            }
+            .padding(.horizontal, 19)
+            .padding(.bottom, 14)
+
+            Rectangle()
+                .fill(.white.opacity(0.10))
+                .frame(height: 1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    content
+                }
+                .padding(18)
+            }
+            .frame(maxHeight: 390)
+        }
+        .background(.ultraThinMaterial)
+        .background(Color(red: 0.035, green: 0.045, blue: 0.065).opacity(0.90))
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
+        .overlay(alignment: .top) {
+            UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24)
+                .stroke(.white.opacity(0.13), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.32), radius: 25, y: -5)
+    }
+}
+
+// MARK: - Shared playback error presentation
+
+@MainActor
+struct KinetiqUnifiedPlayerFailureOverlay: View {
+    let message: String
+    let onRetry: () -> Void
+    let onSkip: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.orange)
+
+            Text("Playback issue")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 10) {
+                Button(action: onRetry) {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .background(KinetiqPalette.cyan, in: Capsule())
+                }
+                Button(action: onSkip) {
+                    Label("Skip", systemImage: "forward.end.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .background(.white.opacity(0.13), in: Capsule())
+                }
+            }
+            .padding(.top, 5)
+        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20)
+            .stroke(.white.opacity(0.12), lineWidth: 1))
+        .padding(30)
+    }
+}
+
