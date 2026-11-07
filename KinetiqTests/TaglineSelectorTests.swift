@@ -1326,3 +1326,86 @@ private actor ModuleQualityLoadGate {
         pending.removeValue(forKey: id)?.resume(returning: variants)
     }
 }
+
+// MARK: - Subtitle Preferences (Batch 03G)
+
+final class KinetiqSubtitlePreferenceTests: XCTestCase {
+    func testExactSourceTagWinsBeforeRegionalFallbackAndNativeWinsTies() {
+        let regional = KinetiqCaptionLanguage(tag: "en-GB", name: "English UK")
+        let exact = KinetiqCaptionLanguage(tag: "en_US", name: "English US")
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "en-us", embedded: [regional], sources: [exact]), .source(0))
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "en-us", embedded: [regional, exact], sources: [exact]), .embedded(1))
+    }
+
+    func testLanguageAliasesAndMissingTrackTags() {
+        let unknown = KinetiqCaptionLanguage(tag: "und", name: "Track 1")
+        let german = KinetiqCaptionLanguage(tag: nil, name: "Deutsch")
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "de-at", embedded: [unknown], sources: [german]), .source(0))
+        XCTAssertEqual(KinetiqCaptionLanguage.normalized("DEU_DE"), "de-de")
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "tr", embedded: [unknown], sources: [german]), .off)
+    }
+
+    func testExplicitlyDifferentScriptsDoNotMatch() {
+        let simplified = KinetiqCaptionLanguage(tag: "zh-Hans-CN", name: "Chinese")
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "zh-Hant", embedded: [simplified]), .off)
+    }
+
+    func testManualOffOrTrackTakesPrecedenceAndCanReturnToAutomatic() {
+        let track = KinetiqCaptionLanguage(tag: "en", name: "English CC")
+        XCTAssertEqual(KinetiqCaptionChoice.off.target(preference: "en", embedded: [track]), .off)
+        XCTAssertEqual(KinetiqCaptionChoice.embedded(track).target(preference: "off", embedded: [track]), .embedded(0))
+        XCTAssertEqual(KinetiqCaptionChoice.source.target(preference: "off", embedded: [track]), .manualSource)
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "automatic", embedded: [], sources: [track]), .automatic)
+        XCTAssertEqual(KinetiqCaptionChoice.settings.target(preference: "off", embedded: [track]), .off)
+    }
+
+    @MainActor
+    func testPreferencesSurviveReopeningAndInvalidInputRetainsLastChoice() throws {
+        let suite = "kinetiq.tests.subtitles.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = KinetiqSubtitleSettings(defaults: defaults)
+        XCTAssertEqual(settings.language, "automatic")
+        XCTAssertTrue(settings.setLanguage(" en_GB "))
+        XCTAssertFalse(settings.setLanguage("https://invalid.example/caption.vtt"))
+        settings.appearance = .init(size: .large, ink: .yellow, background: .solid)
+        let reopened = KinetiqSubtitleSettings(defaults: defaults)
+        XCTAssertEqual(reopened.language, "en-gb")
+        XCTAssertEqual(reopened.appearance, settings.appearance)
+        XCTAssertEqual(reopened.appearance.nativeRules?.count, 1)
+        reopened.appearance = .init()
+        XCTAssertNil(reopened.appearance.nativeRules)
+        XCTAssertEqual(KinetiqSubtitleSettings(defaults: defaults).language, "en-gb")
+    }
+
+    @MainActor
+    func testUnknownStoredValuesFallBackPerField() throws {
+        let suite = "kinetiq.tests.subtitles.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("bad value", forKey: "kinetiq.subtitles.v1.language")
+        defaults.set("Unknown", forKey: "kinetiq.subtitles.v1.size")
+        defaults.set("Cyan", forKey: "kinetiq.subtitles.v1.ink")
+        let settings = KinetiqSubtitleSettings(defaults: defaults)
+        XCTAssertEqual(settings.language, "automatic")
+        XCTAssertEqual(settings.appearance.size, .standard)
+        XCTAssertEqual(settings.appearance.ink, .cyan)
+    }
+
+    @MainActor
+    func testOnlyManualSourceSelectionCarriesToTheNextItem() throws {
+        let controller = ModuleExternalSubtitleController(loader: { _ in ModuleSubtitleTimeline(cues: []) })
+        let one = ModuleRemoteSubtitleTrack(url: try XCTUnwrap(URL(string: "https://source.example.invalid/one.vtt")), label: "English", language: "en", format: .vtt, headers: [:])
+        let two = ModuleRemoteSubtitleTrack(url: try XCTUnwrap(URL(string: "https://source.example.invalid/two.vtt")), label: "English", language: "en", format: .vtt, headers: [:])
+        controller.configure(tracks: [one])
+        controller.select(one, rememberForSession: false)
+        XCTAssertTrue(controller.isRequested)
+        controller.configure(tracks: [two])
+        XCTAssertNil(controller.selectedTrackID)
+        XCTAssertFalse(controller.isRequested)
+        controller.select(two)
+        controller.configure(tracks: [one])
+        XCTAssertEqual(controller.selectedTrackID, one.id)
+        controller.stop()
+    }
+}

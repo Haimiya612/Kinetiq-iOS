@@ -39,6 +39,7 @@ private enum ModulePlayerPanel: String, CaseIterable, Identifiable {
 @MainActor
 struct KinetiqModulePlayerView: View {
     @ObservedObject private var session: ModuleEpisodePlaybackSession
+    @ObservedObject private var subtitleSettings = KinetiqSubtitleSettings.shared
     @StateObject private var playback: ModulePlayerPlaybackController
     @StateObject private var pictureInPicture =
         ModulePictureInPictureController()
@@ -94,15 +95,7 @@ struct KinetiqModulePlayerView: View {
                    !pictureInPicture.isActive {
                     VStack {
                         Spacer()
-                        Text(text)
-                            .font(.system(size: 19, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(8)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, 17)
-                            .padding(.vertical, 10)
-                            .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 9))
+                        KinetiqCaptionText(text: text)
                             .padding(.horizontal, 24)
                             .padding(.bottom, controlsVisible ? 130 : max(geometry.safeAreaInsets.bottom + 12, 24))
                     }
@@ -211,6 +204,15 @@ struct KinetiqModulePlayerView: View {
                 for: UIApplication.willResignActiveNotification
             )) { _ in
                 playback.persistCurrentProgress()
+            }
+            .onChange(of: subtitleSettings.appearance) { _, style in
+                playback.player.currentItem?.textStyleRules = style.nativeRules
+            }
+            .onChange(of: subtitleSettings.language) { _, language in
+                if playback.captionChoice == .settings { playback.refreshCaptions(preference: language) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification).receive(on: DispatchQueue.main)) { event in
+                playback.syncCaptionSelection(for: event.object as? AVPlayerItem)
             }
             .onChange(of: playback.isPlaying) { _, playing in
                 if playing {
@@ -1023,6 +1025,14 @@ private struct ModulePlayerOptionsSheet: View {
             }
 
         case .subtitles:
+            if playback.captionChoice != .settings {
+                Button("Use saved subtitle default") { playback.useSubtitleDefault() }
+                    .buttonStyle(.bordered)
+                    .tint(KinetiqPalette.accent)
+            }
+            if playback.requiresEmbeddedSubtitle {
+                Text("This stream requires an embedded subtitle track.").font(.caption)
+            }
             optionRow(
                 title: "Off",
                 subtitle: "Disable embedded and source subtitles",
@@ -1031,6 +1041,7 @@ private struct ModulePlayerOptionsSheet: View {
             ) {
                 playback.selectSubtitle(nil)
             }
+            .disabled(playback.requiresEmbeddedSubtitle)
 
             if playback.subtitleOptions.isEmpty && playback.externalSubtitles.tracks.isEmpty {
                 unavailableContent(
@@ -1069,6 +1080,7 @@ private struct ModulePlayerOptionsSheet: View {
                     ) {
                         playback.selectExternalSubtitle(track)
                     }
+                    .disabled(!playback.canSelectSourceSubtitle)
                 }
                 Text("Source subtitles display in the app. They are not yet shown in Picture in Picture or on AirPlay video.")
                     .font(.caption)
@@ -1488,7 +1500,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     let externalSubtitles = ModuleExternalSubtitleController()
     private var subtitleChanges: AnyCancellable?
-    private var subtitlesExplicitlyOff = false
+    @Published private(set) var captionChoice: KinetiqCaptionChoice = .settings
+    private weak var subtitleOptionsItem: AVPlayerItem?
+    var requiresEmbeddedSubtitle: Bool { subtitleGroup?.allowsEmptySelection == false }
+    var canSelectSourceSubtitle: Bool {
+        player.currentItem != nil && !requiresEmbeddedSubtitle
+    }
     let videoQuality = ModuleVideoQualityController()
     private var qualityChanges: AnyCancellable?
 
@@ -1762,6 +1779,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         selectedSubtitle = nil
         audioGroup = nil
         subtitleGroup = nil
+        subtitleOptionsItem = nil
         externalSubtitles.configure(tracks: stream.subtitles)
 
         removeCurrentItemObservers()
@@ -1808,6 +1826,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         )
 
         let item = AVPlayerItem(asset: asset)
+        item.textStyleRules = KinetiqSubtitleSettings.shared.appearance.nativeRules
         item.preferredForwardBufferDuration = 8
 
         player.replaceCurrentItem(with: item)
@@ -2069,14 +2088,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         if let audio {
             selectedAudio = item.currentMediaSelection.selectedMediaOption(in: audio)
         }
-        if let subtitles {
-            if subtitlesExplicitlyOff || externalSubtitles.isRequested {
-                item.select(nil, in: subtitles)
-                selectedSubtitle = nil
-            } else {
-                selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitles)
-            }
-        }
+        subtitleOptionsItem = item
+        refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
     }
 
     private func loadResolution(for item: AVPlayerItem) async {
@@ -2112,19 +2125,66 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
-        externalSubtitles.turnOff()
-        subtitlesExplicitlyOff = option == nil
-        if let subtitleGroup { player.currentItem?.select(option, in: subtitleGroup) }
-        selectedSubtitle = option
+        if let option {
+            guard subtitleOptions.contains(option), subtitleOptionsItem === player.currentItem else { return }
+            captionChoice = .embedded(KinetiqCaptionLanguage(option))
+            // Apply the actual option now, even when two tracks have identical metadata.
+            externalSubtitles.turnOff()
+            if let item = player.currentItem, let subtitleGroup {
+                item.select(option, in: subtitleGroup)
+                selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+            }
+        } else {
+            guard !requiresEmbeddedSubtitle else { return }
+            externalSubtitles.turnOff()
+            captionChoice = .off
+            refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
+        }
     }
 
     func selectExternalSubtitle(_ track: ModuleRemoteSubtitleTrack) {
-        guard externalSubtitles.tracks.contains(where: { $0.id == track.id }) else { return }
-        subtitlesExplicitlyOff = false
-        if let subtitleGroup { player.currentItem?.select(nil, in: subtitleGroup) }
-        selectedSubtitle = nil
+        guard canSelectSourceSubtitle, let item = player.currentItem,
+              externalSubtitles.tracks.contains(where: { $0.id == track.id }) else { return }
+        captionChoice = .source
+        selectedSubtitle = KinetiqCaptionTarget.manualSource.apply(to: item, group: subtitleGroup)
         externalSubtitles.updatePlaybackTime(isRestoringPosition ? .nan : player.currentTime().seconds)
         externalSubtitles.select(track)
+    }
+
+    func useSubtitleDefault() {
+        externalSubtitles.turnOff()
+        captionChoice = .settings
+        refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
+    }
+
+    func refreshCaptions(preference: String) {
+        guard !hasStopped, let item = subtitleOptionsItem, item === player.currentItem else { return }
+        let tracks = externalSubtitles.tracks
+        let target = captionChoice.target(
+            preference: preference,
+            embedded: subtitleOptions.map(KinetiqCaptionLanguage.init),
+            sources: requiresEmbeddedSubtitle ? [] : tracks.map { KinetiqCaptionLanguage(tag: $0.language, name: $0.label) }
+        )
+        selectedSubtitle = target.apply(to: item, group: subtitleGroup)
+        switch target {
+        case .source(let index):
+            let track = tracks[index]
+            if externalSubtitles.selectedTrackID != track.id {
+                externalSubtitles.updatePlaybackTime(isRestoringPosition ? .nan : player.currentTime().seconds)
+                externalSubtitles.select(track, rememberForSession: false)
+            }
+        case .manualSource:
+            if requiresEmbeddedSubtitle { externalSubtitles.suspendForRequiredEmbeddedTrack() }
+            else { externalSubtitles.restoreManualSelection() }
+        default:
+            if externalSubtitles.isRequested { externalSubtitles.turnOff() }
+        }
+    }
+
+    func syncCaptionSelection(for item: AVPlayerItem?) {
+        guard !hasStopped, let item, item === subtitleOptionsItem, item === player.currentItem, let subtitleGroup else { return }
+        let actual = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+        if actual != selectedSubtitle { selectedSubtitle = actual }
     }
 
     // MARK: Playback Controls
@@ -2331,6 +2391,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         hasStopped = true
 
         externalSubtitles.stop()
+        subtitleOptionsItem = nil
         subtitleChanges?.cancel()
         subtitleChanges = nil
         qualityChanges?.cancel()

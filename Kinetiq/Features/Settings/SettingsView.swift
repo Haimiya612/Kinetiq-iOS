@@ -302,6 +302,14 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Playback") {
+                    NavigationLink {
+                        KinetiqSubtitleSettingsView()
+                    } label: {
+                        Label("Subtitles", systemImage: "captions.bubble")
+                    }
+                }
+
                 // MARK: Modules & Sources
 
                 Section("Modules & Sources") {
@@ -446,6 +454,78 @@ struct SettingsView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(accent.title) accent colour")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Subtitle Settings
+
+@MainActor
+private struct KinetiqSubtitleSettingsView: View {
+    @ObservedObject private var settings = KinetiqSubtitleSettings.shared
+    @State private var customTag = ""
+    @State private var invalidTag = false
+
+    init() {}
+
+    private var languages: [String] {
+        let choices = ["automatic", "off"] + KinetiqSubtitleSettings.commonLanguages
+        return choices.contains(settings.language) ? choices : choices + [settings.language]
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Default subtitles", selection: Binding(
+                    get: { settings.language },
+                    set: { value in _ = settings.setLanguage(value) }
+                )) {
+                    ForEach(languages, id: \.self) { tag in
+                        Text(KinetiqSubtitleSettings.title(for: tag)).tag(tag)
+                    }
+                }
+                DisclosureGroup("Other language") {
+                    TextField("Language tag, e.g. en-GB", text: $customTag)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: customTag) { _, _ in invalidTag = false }
+                    Button("Use language") {
+                        if let tag = KinetiqCaptionLanguage.normalized(customTag), tag != "off" {
+                            settings.setLanguage(tag)
+                            customTag = ""
+                            invalidTag = false
+                        } else { invalidTag = true }
+                    }
+                    .disabled(customTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if invalidTag { Text("Enter a language tag such as en or en-GB.").font(.caption) }
+                }
+            } header: {
+                Text("Language")
+            } footer: {
+                Text("Automatic uses the system selection. If your chosen language is unavailable, optional captions stay off. You can pick another track in the player.")
+            }
+
+            Section {
+                Picker("Size", selection: $settings.appearance.size) {
+                    ForEach(KinetiqSubtitleAppearance.Size.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Text colour", selection: $settings.appearance.ink) {
+                    ForEach(KinetiqSubtitleAppearance.Ink.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Background", selection: $settings.appearance.background) {
+                    ForEach(KinetiqSubtitleAppearance.Background.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                KinetiqCaptionText(text: "Subtitle preview")
+                    .frame(maxWidth: .infinity, minHeight: 90)
+                    .background(Color(white: 0.22), in: RoundedRectangle(cornerRadius: 10))
+                Button("Reset appearance") { settings.appearance = .init() }
+                    .disabled(settings.appearance == .init())
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Applies to source captions and native WebVTT subtitles. Other embedded formats use their native appearance.")
+            }
+        }
+        .navigationTitle("Subtitles")
     }
 }
 

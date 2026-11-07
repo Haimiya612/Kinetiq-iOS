@@ -670,10 +670,10 @@ and devices.
 
 # Current Development Status
 
-**Current focus:** HLS quality preferences (Phases 2 and 6), with explicit verification gates for every phase.
+**Current focus:** Subtitle appearance and language preferences in Phases 2 and 11.
 
-**Working baseline:** `ecb805cc997c7b5c9989619446ecc5f46608a566` on `main`,
-inspected on 6 November 2026. The implementation has advanced beyond the older
+**Working baseline:** `d065edd9f23347f9f37bbdbb6e9d185909a2ab5c` on `main`,
+inspected on 7 November 2026. The implementation has advanced beyond the older
 phase checklist. An unchecked task remains planned or awaiting its required
 verification; source-code presence alone does not certify completion.
 
@@ -689,7 +689,8 @@ The inspected baseline contains source code for:
 - Batch 03C: anime discovery controls and shared artwork caching.
 - Batch 03D: source-specific episode/language progress, watched state, and continuation controls.
 - Batch 03E: optional module SRT/WebVTT metadata, selection and in-app rendering.
-  Its test-file replacement is absent from this GitHub baseline and is included in Batch 03F.
+- Batch 03F: HLS quality preferences, 20 quality test cases and the restored 18
+  subtitle test cases. All five repository files match the 03F delivery.
 
 These observations describe source code, not a fresh build or device acceptance
 result. Manga reading, downloads, cloud synchronization, metadata providers, and
@@ -720,8 +721,8 @@ existing requirement.
 | 11 — Personalization | Deliver preferences alongside the features they control; retain a later audit of all remaining settings. |
 | 12 — Stabilization/Release | Test throughout development; defer full Actions debugging as requested, then require build/device/compatibility evidence before release. |
 
-Near-term sequence remains 03F quality preferences, 03G subtitle appearance and
-language preferences, and 03H automatic PiP/background refinements, subject to the
+Batch 03F is on `main`. Batch 03G adds subtitle appearance and language preferences.
+Batch 03H is planned for automatic PiP and background playback, subject to the
 latest code audit. External subtitles inside system PiP require a separate
 rendering investigation. Follow with a stabilization checkpoint and an audit of
 remaining Phase 3–6 gaps before committing to a manga batch number. No later
@@ -841,6 +842,27 @@ Discovered follow-up gaps are retained explicitly:
 - [ ] Execute the restored 03E tests and the new 03F quality tests in the existing test target.
 
 See `docs/BATCH_03F.md` for the implementation boundaries and acceptance steps.
+
+## Batch 03G — Subtitle Preferences
+
+Phases 2 and 11 share this batch. The source is prepared for Xcode and device verification.
+Settings → Playback → Subtitles contains the saved language, text size, colour, background
+and a preview. The local and module players use the saved language for available tracks.
+The module player can also match captions supplied by a source. Its Sub/Dub audio stream
+choice remains a separate control.
+
+Automatic uses the system's embedded selection. Off disables optional tracks. An exact
+language tag takes priority over a compatible primary language. Equal matches prefer
+embedded captions. An in-player choice takes priority for the session, and “Use saved
+subtitle default” resumes automatic matching.
+
+Appearance applies to Kinetiq's source captions and native WebVTT text style rules.
+Other native formats use the system renderer. See `docs/BATCH_03G.md` for acceptance steps.
+
+- [ ] Run the preference XCTest cases and verify persistence after a full app relaunch.
+- [ ] Test exact, regional and missing language matches, manual overrides and required native tracks on iPhone.
+- [ ] Check source SRT/WebVTT and embedded WebVTT appearance, system accessibility settings, queue changes and server recovery.
+- [ ] Connect the existing local SRT/WebVTT import and saved file-selection helpers to the local player's Subtitles panel.
 
 ---
 

@@ -1,5 +1,15 @@
 # Kinetiq Changelog
 
+## Unreleased — Batch 03G (7 November 2026)
+
+Prepared against `d065edd9f23347f9f37bbdbb6e9d185909a2ab5c`. Xcode and iPhone verification are pending.
+
+- Add a Subtitles page in Settings with a language default, size, colour, background and preview.
+- Apply the default to available local embedded tracks and module embedded/source tracks.
+- Honour manual Off and track choices during playback, and add a control to return to the saved default.
+- Apply custom appearance to Kinetiq's source captions and native WebVTT.
+- Add seven focused regression cases and record the remaining local subtitle file-picker work in the roadmap.
+
 ## Unreleased -- Batch 03F (6 November 2026)
 
 Prepared from commit `ecb805cc997c7b5c9989619446ecc5f46608a566`; iOS validation pending.

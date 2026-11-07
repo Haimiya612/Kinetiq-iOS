@@ -1,6 +1,219 @@
 import SwiftUI
 import Foundation
 import UniformTypeIdentifiers
+import AVFoundation
+import CoreMedia
+
+// MARK: - Subtitle Preferences
+
+struct KinetiqSubtitleAppearance: Equatable {
+    enum Size: String, CaseIterable { case small = "Small", standard = "Standard", large = "Large" }
+    enum Ink: String, CaseIterable { case standard = "Default", yellow = "Yellow", cyan = "Cyan" }
+    enum Background: String, CaseIterable { case standard = "Default", clear = "Clear", solid = "Solid" }
+
+    var size: Size = .standard
+    var ink: Ink = .standard
+    var background: Background = .standard
+
+    var points: CGFloat {
+        switch size { case .small: 15; case .standard: 19; case .large: 25 }
+    }
+
+    private var rgb: (red: Double, green: Double, blue: Double) {
+        switch ink {
+        case .standard: (1, 1, 1)
+        case .yellow: (1, 0.9, 0.25)
+        case .cyan: (0.4, 0.95, 1)
+        }
+    }
+
+    var textColor: Color { Color(red: rgb.red, green: rgb.green, blue: rgb.blue) }
+    var opacity: Double {
+        switch background { case .standard: 0.78; case .clear: 0; case .solid: 1 }
+    }
+
+    /// AVPlayer applies these rules to native WebVTT. Omit default attributes
+    /// so unmodified fields retain their native presentation.
+    var nativeRules: [AVTextStyleRule]? {
+        var attributes: [String: Any] = [:]
+        if size != .standard {
+            attributes[kCMTextMarkupAttribute_BaseFontSizePercentageRelativeToVideoHeight as String] = size == .small ? 3.5 : 6.5
+        }
+        if ink != .standard {
+            attributes[kCMTextMarkupAttribute_ForegroundColorARGB as String] = [1.0, rgb.red, rgb.green, rgb.blue]
+        }
+        if background != .standard {
+            attributes[kCMTextMarkupAttribute_BackgroundColorARGB as String] = [opacity, 0.0, 0.0, 0.0]
+        }
+        guard !attributes.isEmpty, let rule = AVTextStyleRule(textMarkupAttributes: attributes) else { return nil }
+        return [rule]
+    }
+}
+
+/// Metadata for matching a track; signed URLs, headers and track IDs stay out
+/// of the saved preference. Display names are only used for known names/tags.
+struct KinetiqCaptionLanguage: Equatable {
+    let tag: String?
+    let name: String
+
+    private static let aliases = [
+        "english": "en", "eng": "en", "german": "de", "deutsch": "de", "deu": "de", "ger": "de",
+        "japanese": "ja", "jpn": "ja", "日本語": "ja", "turkish": "tr", "türkçe": "tr", "tur": "tr",
+        "bulgarian": "bg", "bul": "bg", "french": "fr", "français": "fr", "fra": "fr", "fre": "fr",
+        "spanish": "es", "español": "es", "spa": "es", "portuguese": "pt", "por": "pt",
+        "italian": "it", "ita": "it", "korean": "ko", "kor": "ko", "arabic": "ar", "ara": "ar",
+        "chinese": "zh", "zho": "zh", "chi": "zh"
+    ]
+
+    init(tag: String?, name: String) {
+        self.name = name
+        self.tag = Self.normalized(tag) ?? Self.normalized(name)
+    }
+
+    init(_ option: AVMediaSelectionOption) {
+        self.init(tag: Self.normalized(option.extendedLanguageTag) ?? Self.normalized(option.locale?.identifier), name: option.displayName)
+    }
+
+    static func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "_", with: "-")
+        if let alias = aliases[raw] { return alias }
+        guard raw.utf8.count <= 63 else { return nil }
+        var parts = raw.components(separatedBy: "-")
+        guard let first = parts.first, (2...3).contains(first.utf8.count),
+              first.utf8.allSatisfy({ (97...122).contains($0) }), !["und", "mul", "zxx"].contains(first),
+              parts.dropFirst().allSatisfy({ subtag in
+                  (1...8).contains(subtag.utf8.count) && subtag.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) }
+              }) else { return nil }
+        parts[0] = aliases[first] ?? first
+        return parts.joined(separator: "-")
+    }
+
+    static func rank(_ candidate: String?, for desired: String) -> Int? {
+        guard let candidate else { return nil }
+        if candidate == desired { return 0 }
+        let lhs = candidate.split(separator: "-")
+        let rhs = desired.split(separator: "-")
+        guard lhs.first == rhs.first else { return nil }
+        // Avoid substituting an explicitly different writing system.
+        if let a = lhs.dropFirst().first(where: { $0.count == 4 && $0.allSatisfy(\.isLetter) }),
+           let b = rhs.dropFirst().first(where: { $0.count == 4 && $0.allSatisfy(\.isLetter) }), a != b { return nil }
+        return 1
+    }
+}
+
+enum KinetiqCaptionTarget: Equatable {
+    case automatic, off, embedded(Int), source(Int), manualSource
+
+    func apply(to item: AVPlayerItem, group: AVMediaSelectionGroup?) -> AVMediaSelectionOption? {
+        guard let group else { return nil }
+        switch self {
+        case .automatic: item.selectMediaOptionAutomatically(in: group)
+        case .embedded(let index):
+            if group.options.indices.contains(index) { item.select(group.options[index], in: group) }
+        case .off, .source, .manualSource:
+            if group.allowsEmptySelection { item.select(nil, in: group) }
+        }
+        return item.currentMediaSelection.selectedMediaOption(in: group)
+    }
+}
+
+enum KinetiqCaptionChoice: Equatable {
+    case settings, off, embedded(KinetiqCaptionLanguage), source
+
+    func target(preference: String, embedded: [KinetiqCaptionLanguage], sources: [KinetiqCaptionLanguage] = []) -> KinetiqCaptionTarget {
+        let desired: String
+        let includeSources: Bool
+        switch self {
+        case .off: return .off
+        case .source: return .manualSource
+        case .embedded(let track):
+            if let index = embedded.firstIndex(of: track) { return .embedded(index) }
+            guard let tag = track.tag else { return .off }
+            desired = tag
+            includeSources = false
+        case .settings:
+            if preference == "automatic" { return .automatic }
+            guard preference != "off", let tag = KinetiqCaptionLanguage.normalized(preference) else { return .off }
+            desired = tag
+            includeSources = true
+        }
+        // Exact tags win across both groups. Ties prefer native captions.
+        for rank in 0...1 {
+            if let index = embedded.firstIndex(where: { KinetiqCaptionLanguage.rank($0.tag, for: desired) == rank }) { return .embedded(index) }
+            if includeSources, let index = sources.firstIndex(where: { KinetiqCaptionLanguage.rank($0.tag, for: desired) == rank }) { return .source(index) }
+        }
+        return .off
+    }
+}
+
+@MainActor
+final class KinetiqSubtitleSettings: ObservableObject {
+    static let shared = KinetiqSubtitleSettings()
+    static let commonLanguages = ["en", "de", "ja", "tr", "bg", "fr", "es", "pt", "it", "ko", "ar", "zh-hans", "zh-hant"]
+
+    @Published private(set) var language: String
+    @Published var appearance: KinetiqSubtitleAppearance {
+        didSet {
+            defaults.set(appearance.size.rawValue, forKey: Self.key + "size")
+            defaults.set(appearance.ink.rawValue, forKey: Self.key + "ink")
+            defaults.set(appearance.background.rawValue, forKey: Self.key + "background")
+        }
+    }
+    private static let key = "kinetiq.subtitles.v1."
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let saved = defaults.string(forKey: Self.key + "language")
+        language = saved == "off" ? "off" : KinetiqCaptionLanguage.normalized(saved) ?? "automatic"
+        appearance = KinetiqSubtitleAppearance(
+            size: .init(rawValue: defaults.string(forKey: Self.key + "size") ?? "") ?? .standard,
+            ink: .init(rawValue: defaults.string(forKey: Self.key + "ink") ?? "") ?? .standard,
+            background: .init(rawValue: defaults.string(forKey: Self.key + "background") ?? "") ?? .standard
+        )
+    }
+
+    @discardableResult
+    func setLanguage(_ value: String) -> Bool {
+        let tag: String
+        if ["automatic", "off"].contains(value) { tag = value }
+        else if let normalized = KinetiqCaptionLanguage.normalized(value) { tag = normalized }
+        else { return false }
+        language = tag
+        defaults.set(tag, forKey: Self.key + "language")
+        return true
+    }
+
+    static func title(for tag: String) -> String {
+        switch tag {
+        case "automatic": "Automatic"
+        case "off": "Off"
+        default: Locale.current.localizedString(forIdentifier: tag) ?? tag
+        }
+    }
+}
+
+@MainActor
+struct KinetiqCaptionText: View {
+    let text: String
+    @ObservedObject private var settings = KinetiqSubtitleSettings.shared
+
+    init(text: String) { self.text = text }
+
+    var body: some View {
+        let style = settings.appearance
+        Text(verbatim: text)
+            .font(.system(size: style.points, weight: .semibold, design: .rounded))
+            .foregroundStyle(style.textColor)
+            .multilineTextAlignment(.center)
+            .lineLimit(8)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 17)
+            .padding(.vertical, 10)
+            .background(Color.black.opacity(style.opacity), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
 
 // MARK: - Subtitle Cue
 
@@ -1110,7 +1323,7 @@ final class ModuleExternalSubtitleController: ObservableObject {
     private var currentTime: Double = 0
     private var preference: (id: String, language: String?, label: String)?
 
-    var isRequested: Bool { preference != nil }
+    var isRequested: Bool { preference != nil || selectedTrackID != nil }
 
     init(loader: @escaping Loader = { try await ModuleSubtitleLoader.load($0) }) {
         self.loader = loader
@@ -1120,7 +1333,11 @@ final class ModuleExternalSubtitleController: ObservableObject {
         cancelLoad()
         self.tracks = tracks
         currentTime = .nan
-        guard let preference else { return }
+        restoreManualSelection()
+    }
+
+    func restoreManualSelection() {
+        guard selectedTrackID == nil, let preference else { return }
         let matching = tracks.first { $0.id == preference.id } ?? tracks.first { track in
             if let language = preference.language {
                 return track.language == language ||
@@ -1132,10 +1349,10 @@ final class ModuleExternalSubtitleController: ObservableObject {
         else { errorMessage = "Your selected subtitle track is unavailable on this stream. Choose another track or Off." }
     }
 
-    func select(_ track: ModuleRemoteSubtitleTrack) {
+    func select(_ track: ModuleRemoteSubtitleTrack, rememberForSession: Bool = true) {
         guard tracks.contains(where: { $0.id == track.id }) else { return }
         cancelLoad()
-        preference = (track.id, track.language, track.label)
+        preference = rememberForSession ? (track.id, track.language, track.label) : nil
         selectedTrackID = track.id
         let identity = UUID()
         requestID = identity
@@ -1166,7 +1383,12 @@ final class ModuleExternalSubtitleController: ObservableObject {
 
     func retry() {
         guard let track = tracks.first(where: { $0.id == selectedTrackID }) else { return }
-        select(track)
+        select(track, rememberForSession: preference != nil)
+    }
+
+    func suspendForRequiredEmbeddedTrack() {
+        cancelLoad()
+        errorMessage = "This stream requires its embedded subtitle track."
     }
 
     func updatePlaybackTime(_ seconds: Double) {

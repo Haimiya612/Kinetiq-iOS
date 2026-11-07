@@ -627,6 +627,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     @Published var selectedAudio: AVMediaSelectionOption?
     @Published var selectedSubtitle: AVMediaSelectionOption?
+    @Published private(set) var captionChoice: KinetiqCaptionChoice = .settings
 
     @Published var hasAudioSelection = false
     @Published var hasSubtitleSelection = false
@@ -646,6 +647,8 @@ private final class KinetiqPlaybackModel: ObservableObject {
 
     private var audioGroup: AVMediaSelectionGroup?
     private var subtitleGroup: AVMediaSelectionGroup?
+    private weak var subtitleOptionsItem: AVPlayerItem?
+    var requiresEmbeddedSubtitle: Bool { subtitleGroup?.allowsEmptySelection == false }
 
     private var queueEntryObservation: AnyCancellable?
     private var queueActivityObservation: AnyCancellable?
@@ -767,12 +770,14 @@ private final class KinetiqPlaybackModel: ObservableObject {
     private func observeCurrentItem(_ item: AVPlayerItem?) {
         statusObservation?.invalidate()
         statusObservation = nil
+        subtitleOptionsItem = nil
 
         guard let item else {
             isBuffering = false
             return
         }
 
+        item.textStyleRules = KinetiqSubtitleSettings.shared.appearance.nativeRules
         statusObservation = item.observe(
             \.status,
             options: [.initial, .new]
@@ -961,39 +966,20 @@ private final class KinetiqPlaybackModel: ObservableObject {
     private func loadMediaOptions(
         for item: AVPlayerItem
     ) async {
-        do {
-            let audio = try await item.asset.loadMediaSelectionGroup(
-                for: .audible
-            )
-
-            let subtitles = try await item.asset.loadMediaSelectionGroup(
-                for: .legible
-            )
-
-            guard player.currentItem === item else { return }
-
-            audioGroup = audio
-            subtitleGroup = subtitles
-
-            audioOptions = audio?.options ?? []
-            subtitleOptions = subtitles?.options ?? []
-
-            hasAudioSelection = audio != nil
-            hasSubtitleSelection = subtitles?.allowsEmptySelection ?? false
-
-            if let audio {
-                selectedAudio = item.currentMediaSelection
-                    .selectedMediaOption(in: audio)
-            }
-
-            if let subtitles {
-                selectedSubtitle = item.currentMediaSelection
-                    .selectedMediaOption(in: subtitles)
-            }
-        } catch {
-            guard player.currentItem === item else { return }
-            playbackError = error.localizedDescription
+        let audio = try? await item.asset.loadMediaSelectionGroup(for: .audible)
+        let subtitles = try? await item.asset.loadMediaSelectionGroup(for: .legible)
+        guard player.currentItem === item else { return }
+        audioGroup = audio
+        subtitleGroup = subtitles
+        audioOptions = audio?.options ?? []
+        subtitleOptions = subtitles?.options ?? []
+        hasAudioSelection = audio != nil
+        hasSubtitleSelection = subtitles?.allowsEmptySelection ?? false
+        if let audio {
+            selectedAudio = item.currentMediaSelection.selectedMediaOption(in: audio)
         }
+        subtitleOptionsItem = item
+        refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
     }
 
     func selectAudio(_ option: AVMediaSelectionOption?) {
@@ -1004,10 +990,33 @@ private final class KinetiqPlaybackModel: ObservableObject {
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
-        guard let group = subtitleGroup else { return }
+        guard let item = subtitleOptionsItem, item === player.currentItem, let group = subtitleGroup else { return }
+        if let option {
+            guard group.options.contains(option) else { return }
+            captionChoice = .embedded(KinetiqCaptionLanguage(option))
+        } else {
+            guard group.allowsEmptySelection else { return }
+            captionChoice = .off
+        }
+        item.select(option, in: group)
+        selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: group)
+    }
 
-        player.currentItem?.select(option, in: group)
-        selectedSubtitle = option
+    func useSubtitleDefault() {
+        captionChoice = .settings
+        refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
+    }
+
+    func refreshCaptions(preference: String) {
+        guard let item = subtitleOptionsItem, item === player.currentItem else { return }
+        let target = captionChoice.target(preference: preference, embedded: subtitleOptions.map(KinetiqCaptionLanguage.init))
+        selectedSubtitle = target.apply(to: item, group: subtitleGroup)
+    }
+
+    func syncCaptionSelection(for item: AVPlayerItem?) {
+        guard let item, item === subtitleOptionsItem, item === player.currentItem, let subtitleGroup else { return }
+        let actual = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+        if actual != selectedSubtitle { selectedSubtitle = actual }
     }
 
     // MARK: Playback Controls
@@ -1157,6 +1166,7 @@ private final class KinetiqPlaybackModel: ObservableObject {
         queueEntryObservation = nil
         queueActivityObservation = nil
         queueErrorObservation = nil
+        subtitleOptionsItem = nil
 
         queueController.stop()
         isPlaying = false
@@ -1380,6 +1390,7 @@ private struct KinetiqPlayerSurface: UIViewRepresentable {
 // MARK: - Full-Screen Custom Player
 
 private struct LocalVideoPlayerView: View {
+    @ObservedObject private var subtitleSettings = KinetiqSubtitleSettings.shared
     let url: URL
 
     @Environment(\.dismiss) private var dismiss
@@ -1559,6 +1570,15 @@ private struct LocalVideoPlayerView: View {
                 )
             ) { _ in
                 model.saveProgress()
+            }
+            .onChange(of: subtitleSettings.appearance) { _, style in
+                model.player.currentItem?.textStyleRules = style.nativeRules
+            }
+            .onChange(of: subtitleSettings.language) { _, language in
+                if model.captionChoice == .settings { model.refreshCaptions(preference: language) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification).receive(on: DispatchQueue.main)) { event in
+                model.syncCaptionSelection(for: event.object as? AVPlayerItem)
             }
             .onChange(of: model.isPlaying) { _, playing in
                 if playing {
@@ -2394,6 +2414,14 @@ private struct PlayerOptionsSheet: View {
             }
 
         case .subtitles:
+            if model.captionChoice != .settings {
+                Button("Use saved subtitle default") { model.useSubtitleDefault() }
+                    .buttonStyle(.bordered)
+                    .tint(KinetiqPalette.accent)
+            }
+            if model.requiresEmbeddedSubtitle {
+                Text("This file requires an embedded subtitle track.").font(.caption)
+            }
             if !model.hasSubtitleSelection
                 && model.subtitleOptions.isEmpty {
                 unavailableContent(
@@ -2412,6 +2440,7 @@ private struct PlayerOptionsSheet: View {
                 ) {
                     model.selectSubtitle(nil)
                 }
+                .disabled(model.requiresEmbeddedSubtitle)
 
                 ForEach(
                     Array(model.subtitleOptions.enumerated()),
