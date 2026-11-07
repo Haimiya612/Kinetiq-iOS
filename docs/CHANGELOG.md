@@ -1,5 +1,21 @@
 # Kinetiq Changelog
 
+## Unreleased -- Batch 03F (6 November 2026)
+
+Prepared from commit `ecb805cc997c7b5c9989619446ecc5f46608a566`; iOS validation pending.
+
+- Add native HLS variant discovery and Auto/manual quality preferences inside Playback.
+- Show advertised dimensions/peak bitrates and observe the current presentation size.
+- Label choices as preferred upper limits; retain AVPlayer adaptation and its current item.
+- Reset quality to Auto on item changes, reject stale detection results, and add timeout/retry states.
+- Keep unsupported or single-resolution streams free of fake manual quality choices.
+- Restore the missing 18 Batch 03E test cases and add 20 Batch 03F cases; execution pending.
+- Add a phase-dependency/verification plan and record identified quality limitations in the roadmap.
+
+Existing server controls, module/runtime contracts, subtitles, history, player
+appearance, four tabs and project configuration are retained. Exact rendition
+locking and bitrate-only ladders remain future work. Details: `docs/BATCH_03F.md`.
+
 ## Unreleased -- Batch 03E (6 November 2026)
 
 Prepared from commit `0aa310df2341927841facad5f82b22a8992a1a08`; iOS validation pending.

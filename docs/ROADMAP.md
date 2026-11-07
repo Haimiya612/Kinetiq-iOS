@@ -670,9 +670,9 @@ and devices.
 
 # Current Development Status
 
-**Current focus:** Module subtitle tracks and playback-memory verification across Phases 2, 4, and 6.
+**Current focus:** HLS quality preferences (Phases 2 and 6), with explicit verification gates for every phase.
 
-**Working baseline:** `0aa310df2341927841facad5f82b22a8992a1a08` on `main`,
+**Working baseline:** `ecb805cc997c7b5c9989619446ecc5f46608a566` on `main`,
 inspected on 6 November 2026. The implementation has advanced beyond the older
 phase checklist. An unchecked task remains planned or awaiting its required
 verification; source-code presence alone does not certify completion.
@@ -688,10 +688,48 @@ The inspected baseline contains source code for:
 - Batch 03B: global anime Favorites and remote Continue Watching.
 - Batch 03C: anime discovery controls and shared artwork caching.
 - Batch 03D: source-specific episode/language progress, watched state, and continuation controls.
+- Batch 03E: optional module SRT/WebVTT metadata, selection and in-app rendering.
+  Its test-file replacement is absent from this GitHub baseline and is included in Batch 03F.
 
 These observations describe source code, not a fresh build or device acceptance
 result. Manga reading, downloads, cloud synchronization, metadata providers, and
 all other unchecked requirements retain their places in the roadmap.
+
+## Phase progression and verification gates
+
+Batch numbers identify deliveries, not completed roadmap phases. Work follows the
+phase dependencies below; overlapping foundations (such as Phase 6 streaming for
+Phase 2 playback) can be developed together. Before starting each batch, inspect
+the latest code and the earlier phases' unchecked tasks. Distinguish missing code
+from implemented code that still needs verification, so features are not rebuilt
+or silently skipped. Add discovered gaps to their owning phase and retain every
+existing requirement.
+
+| Phase | Next implementation or verification gate |
+| --- | --- |
+| 1 — Foundation | Verify the four-tab/source navigation, shared states and project configuration; track accessibility and architecture cleanup. |
+| 2 — Playback | Finish and verify quality controls, subtitle preferences, automatic PiP, external PiP subtitles, interruptions and gestures. |
+| 3 — Library | Audit existing Favorites/search/sorting first, then address remaining collections, playlists, bulk actions, images and storage tools. |
+| 4 — Discovery | Verify anime discovery before expanding common catalogue models, movies/series, metadata and recommendations. |
+| 5 — Modules | Test actual source contracts and playback; close compatibility, lifecycle, diagnostics, trust and additional-content-type gaps. |
+| 6 — Streaming | Verify real HLS/MP4 playback, quality preferences, headers, subtitles, failover and history; distinguish server choices from quality choices. |
+| 7 — Manga/Reader | Begin after the relevant image-module contract and discovery path are understood; deliver chapters, reader and reading progress incrementally. |
+| 8 — Music | Build on verified audio/background playback and library foundations. |
+| 9 — Servers/TV | Add protocol/authentication and remote-library foundations before device-transfer and tvOS expansion. |
+| 10 — Downloads/Sync | Implement real queues/storage/offline playback before optional synchronization and conflict handling. |
+| 11 — Personalization | Deliver preferences alongside the features they control; retain a later audit of all remaining settings. |
+| 12 — Stabilization/Release | Test throughout development; defer full Actions debugging as requested, then require build/device/compatibility evidence before release. |
+
+Near-term sequence remains 03F quality preferences, 03G subtitle appearance and
+language preferences, and 03H automatic PiP/background refinements, subject to the
+latest code audit. External subtitles inside system PiP require a separate
+rendering investigation. Follow with a stabilization checkpoint and an audit of
+remaining Phase 3–6 gaps before committing to a manga batch number. No later
+phase or previously planned feature is removed by this sequence.
+
+A phase is not complete merely because its replacement files were delivered.
+Applicable exit evidence includes Swift compilation, executed regression tests,
+real source/device acceptance and documented remaining limitations.
 
 ## Batch 03D -- Episode Progress and Continue Watching
 
@@ -771,6 +809,38 @@ ASS/SSA/TTML, and broader format support remain separate future work.
 
 See `docs/BATCH_03E.md` for the optional metadata schema, verification limits, and
 acceptance checklist. All earlier roadmap requirements remain in place.
+
+
+## Batch 03F -- HLS Quality Preferences
+
+**Owning phases:** Phase 2 (Playback) and Phase 6 (Streaming).
+**Implementation status:** Replacement source prepared; Xcode, XCTest and device
+validation pending. This does not close the manual-quality roadmap tasks.
+
+- Discover the active AVURLAsset's native HLS variants asynchronously, without
+  rewriting playlists or introducing a separate source-networking path.
+- Add Auto and advertised resolution preferences to the existing Playback panel.
+  Label manual choices “Up to …”; Apple treats these as preferences, not strict
+  resolution locks. Show current presentation dimensions separately.
+- Group equal resolutions, display known peak bitrates, and omit manual choices
+  for empty/single-resolution ladders. Unknown peaks do not become invented caps.
+- Apply preferences to the current player item without seeking or replacing it.
+  Reset to Auto on episode/server changes; persistent defaults remain Phase 11.
+- Bound metadata processing and detection UI wait time; ignore stale results after
+  handoff/close and offer retry without treating metadata failure as playback failure.
+- Restore the 18 missing 03E subtitle tests and add 20 quality regression cases.
+  None have been executed in the current environment.
+
+Discovered follow-up gaps are retained explicitly:
+
+- [ ] Validate preferred versus observed HLS quality under low bandwidth and buffered playback on iPhone.
+- [ ] Investigate exact variant locking without losing alternate audio, subtitles, live behavior or source credentials.
+- [ ] Support useful quality choices for bitrate-only ladders without resolution metadata.
+- [ ] Assess codec, HDR and frame-rate capability reporting without claiming every advertised variant is playable.
+- [ ] Validate quality discovery cancellation, timeout, retry and stale-result handling with AVFoundation.
+- [ ] Execute the restored 03E tests and the new 03F quality tests in the existing test target.
+
+See `docs/BATCH_03F.md` for the implementation boundaries and acceptance steps.
 
 ---
 

@@ -955,6 +955,13 @@ private struct ModulePlayerOptionsSheet: View {
 
         case .playback:
             VStack(alignment: .leading, spacing: 13) {
+                qualityOptions
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
                 sectionLabel("PLAYBACK SPEED")
 
                 LazyVGrid(
@@ -1181,7 +1188,7 @@ private struct ModulePlayerOptionsSheet: View {
                 )
                 informationRow(
                     "Resolution",
-                    value: playback.resolutionText
+                    value: playback.videoQuality.presentedResolution ?? playback.resolutionText
                 )
                 informationRow(
                     "Duration",
@@ -1318,6 +1325,58 @@ private struct ModulePlayerOptionsSheet: View {
 
     // MARK: Reusable Options
 
+    @ViewBuilder
+    private var qualityOptions: some View {
+        sectionLabel("VIDEO QUALITY")
+
+        if let resolution = playback.videoQuality.presentedResolution {
+            informationRow("Current presentation", value: resolution)
+        }
+
+        switch playback.videoQuality.state {
+        case .idle, .loading:
+            ProgressView("Checking quality options…")
+                .tint(KinetiqPalette.accent)
+                .foregroundStyle(.white)
+
+        case .available:
+            optionRow(
+                title: "Auto",
+                subtitle: "Adapt to your connection and device",
+                symbol: "sparkles",
+                selected: playback.videoQuality.selectedID == nil
+            ) {
+                playback.videoQuality.select(nil)
+            }
+            ForEach(playback.videoQuality.options) { option in
+                optionRow(
+                    title: option.title,
+                    subtitle: option.detail,
+                    symbol: "tv",
+                    selected: playback.videoQuality.selectedID == option.id
+                ) {
+                    playback.videoQuality.select(option.id)
+                }
+            }
+            Text("These are preferred limits. Your device may play a lower quality, and buffered video can delay changes. Each new episode or server starts in Auto.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+
+        case .unavailable:
+            Text("This stream does not expose multiple video resolutions. Playback stays in Auto; other source streams can be selected in Servers.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+
+        case .failed:
+            Text("Quality options could not be read. Playback can continue in Auto.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+            Button("Retry Quality Detection") { playback.videoQuality.retry() }
+                .buttonStyle(.bordered)
+                .tint(KinetiqPalette.accent)
+        }
+    }
+
     private func sectionLabel(_ title: String) -> some View {
         Text(title)
             .font(
@@ -1430,6 +1489,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     let externalSubtitles = ModuleExternalSubtitleController()
     private var subtitleChanges: AnyCancellable?
     private var subtitlesExplicitlyOff = false
+    let videoQuality = ModuleVideoQualityController()
+    private var qualityChanges: AnyCancellable?
 
     @Published private(set) var player = AVPlayer()
     @Published private(set) var isPlaying = false
@@ -1490,6 +1551,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         subtitleChanges = externalSubtitles.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        qualityChanges = videoQuality.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
 
         player.automaticallyWaitsToMinimizeStalling = true
 
@@ -1543,6 +1607,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             "Playback state: \(playbackStatus)",
             "HTTP status: \(lastHTTPStatus.map(String.init) ?? "Unknown")",
             "Player resolution: \(resolutionText)",
+            "Quality preference: \(videoQuality.selectionDescription)",
+            "Current presentation: \(videoQuality.presentedResolution ?? "Not reported")",
             "Events:"
         ]
         return (lines + diagnosticEvents).joined(separator: "\n")
@@ -1745,6 +1811,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         item.preferredForwardBufferDuration = 8
 
         player.replaceCurrentItem(with: item)
+        videoQuality.configure(for: item)
 
         itemStatusObservation = item.observe(
             \.status,
@@ -1869,6 +1936,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     private func removeCurrentItemObservers() {
+        videoQuality.stop()
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
 
@@ -2265,6 +2333,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         externalSubtitles.stop()
         subtitleChanges?.cancel()
         subtitleChanges = nil
+        qualityChanges?.cancel()
+        qualityChanges = nil
         player.pause()
         recoveryTask?.cancel()
         recoveryTask = nil
@@ -2493,4 +2563,225 @@ private struct ModuleAirPlayButton: UIViewRepresentable {
         _ uiView: AVRoutePickerView,
         context: Context
     ) {}
+}
+
+// MARK: - Module Video Quality (Batch 03F)
+
+/// Plain metadata only: never retain or display variant URLs or provider headers.
+struct ModuleVideoQualityVariant: Sendable {
+    let width: Double
+    let height: Double
+    let peakBitRate: Double?
+}
+
+struct ModuleVideoQualityOption: Identifiable, Equatable, Sendable {
+    let width: Int
+    let height: Int
+    let peakBitRate: Double?
+
+    var id: String { "\(width)x\(height)" }
+    var title: String { "Up to \(min(width, height))p" }
+    var resolution: CGSize { CGSize(width: CGFloat(width), height: CGFloat(height)) }
+    var detail: String {
+        let dimensions = "\(width) × \(height)"
+        guard let peakBitRate else { return dimensions + " · Peak bitrate unavailable" }
+        let bitrate = peakBitRate >= 1_000_000
+            ? String(format: "%.1f Mbps", peakBitRate / 1_000_000)
+            : String(format: "%.0f kbps", peakBitRate / 1_000)
+        return dimensions + " · Advertised peak " + bitrate
+    }
+}
+
+enum ModuleVideoQualityCatalog {
+    static let maximumVariants = 256
+    static let maximumOptions = 32
+
+    static func dimensions(width: Double, height: Double) -> (width: Int, height: Int)? {
+        guard width.isFinite, height.isFinite,
+              width >= 1, height >= 1, width <= 32_768, height <= 32_768 else { return nil }
+        return (Int(width.rounded(.up)), Int(height.rounded(.up)))
+    }
+
+    static func options(from variants: [ModuleVideoQualityVariant]) -> [ModuleVideoQualityOption] {
+        var grouped: [String: ModuleVideoQualityOption] = [:]
+        for variant in variants.prefix(maximumVariants) {
+            guard let size = dimensions(width: variant.width, height: variant.height) else { continue }
+            let peak = variant.peakBitRate.flatMap { value -> Double? in
+                value.isFinite && value > 0 && value <= 1_000_000_000_000 ? value : nil
+            }
+            let key = "\(size.width)x\(size.height)"
+            if let existing = grouped[key] {
+                // Different codecs/frame rates can share a resolution. Do not
+                // exclude one with an unknown peak by inventing a bitrate limit.
+                let combined: Double?
+                if let previous = existing.peakBitRate, let peak {
+                    combined = max(previous, peak)
+                } else {
+                    combined = nil
+                }
+                grouped[key] = ModuleVideoQualityOption(width: size.width, height: size.height, peakBitRate: combined)
+            } else {
+                grouped[key] = ModuleVideoQualityOption(width: size.width, height: size.height, peakBitRate: peak)
+            }
+        }
+        let sorted = grouped.values.sorted {
+            let lhs = $0.width * $0.height
+            let rhs = $1.width * $1.height
+            return lhs == rhs ? $0.width < $1.width : lhs < rhs
+        }
+        // A single advertised resolution is not a manual resolution choice.
+        guard sorted.count > 1 else { return [] }
+        return Array(sorted.prefix(maximumOptions))
+    }
+
+    static func preferredPeakBitRate(for option: ModuleVideoQualityOption, in options: [ModuleVideoQualityOption]) -> Double {
+        let eligible = options.filter { $0.width <= option.width && $0.height <= option.height }
+        // Account for higher-bitrate codecs/frame rates at LOWER resolutions.
+        // If any eligible peak is unknown, apply only the resolution preference.
+        guard !eligible.isEmpty, eligible.allSatisfy({ $0.peakBitRate != nil }) else { return 0 }
+        return eligible.compactMap(\.peakBitRate).max() ?? 0
+    }
+}
+
+/// Updates preferences on the existing item. It never swaps media playlists,
+/// starts playback, seeks, or changes audio/subtitle selections.
+@MainActor
+final class ModuleVideoQualityController: ObservableObject {
+    enum State: Equatable {
+        case idle, loading, available, unavailable, failed
+    }
+
+    typealias Loader = @MainActor (AVURLAsset) async throws -> [ModuleVideoQualityVariant]
+
+    @Published private(set) var options: [ModuleVideoQualityOption] = []
+    @Published private(set) var selectedID: String?
+    @Published private(set) var state: State = .idle
+    @Published private(set) var presentedResolution: String?
+
+    private weak var item: AVPlayerItem?
+    private let loader: Loader
+    private let timeout: Duration
+    private var requestID: UUID?
+    private var discoveryTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+    private var presentationObservation: NSKeyValueObservation?
+
+    var selectionDescription: String {
+        options.first(where: { $0.id == selectedID })?.title ?? "Auto"
+    }
+
+    init(loader: Loader? = nil, timeout: Duration = .seconds(12)) {
+        self.loader = loader ?? { asset in
+            let variants = try await asset.load(.variants)
+            try Task.checkCancellation()
+            return variants.prefix(ModuleVideoQualityCatalog.maximumVariants).compactMap { variant in
+                guard let video = variant.videoAttributes else { return nil }
+                return ModuleVideoQualityVariant(
+                    width: Double(video.presentationSize.width),
+                    height: Double(video.presentationSize.height),
+                    peakBitRate: variant.peakBitRate
+                )
+            }
+        }
+        self.timeout = timeout
+    }
+
+    func configure(for item: AVPlayerItem) {
+        stop()
+        self.item = item
+        // Every new episode/server starts in Auto. Do not silently reuse a cap
+        // from a different source's resolution ladder.
+        item.preferredMaximumResolution = .zero
+        item.preferredPeakBitRate = 0
+        presentationObservation = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] observed, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.item === observed else { return }
+                self.updatePresentationSize(observed.presentationSize)
+            }
+        }
+        guard let asset = item.asset as? AVURLAsset, !asset.url.isFileURL else {
+            state = .unavailable
+            return
+        }
+        state = .loading
+        let identity = UUID()
+        requestID = identity
+        let loader = self.loader
+        discoveryTask = Task { [weak self] in
+            do {
+                let variants = try await loader(asset)
+                guard !Task.isCancelled, let self,
+                      self.requestID == identity, self.item === item else { return }
+                self.finishDiscovery()
+                self.options = ModuleVideoQualityCatalog.options(from: variants)
+                self.state = self.options.isEmpty ? .unavailable : .available
+            } catch {
+                guard !Task.isCancelled, let self,
+                      self.requestID == identity, self.item === item else { return }
+                self.finishDiscovery()
+                self.state = .failed
+            }
+        }
+        let timeout = self.timeout
+        timeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: timeout)
+                guard !Task.isCancelled, let self,
+                      self.requestID == identity, self.item === item else { return }
+                // Do not call asset.cancelLoading(): playback shares this asset.
+                self.discoveryTask?.cancel()
+                self.finishDiscovery()
+                self.state = .failed
+            } catch {
+                // Completed, replaced, retried, or closed.
+            }
+        }
+    }
+
+    func select(_ id: String?) {
+        guard let item else { return }
+        if let id {
+            guard state == .available,
+                  let option = options.first(where: { $0.id == id }) else { return }
+            item.preferredMaximumResolution = option.resolution
+            item.preferredPeakBitRate = ModuleVideoQualityCatalog.preferredPeakBitRate(for: option, in: options)
+            selectedID = id
+        } else {
+            item.preferredMaximumResolution = .zero
+            item.preferredPeakBitRate = 0
+            selectedID = nil
+        }
+    }
+
+    func retry() {
+        guard state == .failed, let item else { return }
+        configure(for: item)
+    }
+
+    func stop() {
+        discoveryTask?.cancel()
+        finishDiscovery()
+        presentationObservation?.invalidate()
+        presentationObservation = nil
+        item?.preferredMaximumResolution = .zero
+        item?.preferredPeakBitRate = 0
+        item = nil
+        options = []
+        selectedID = nil
+        presentedResolution = nil
+        state = .idle
+    }
+
+    private func finishDiscovery() {
+        requestID = nil
+        discoveryTask = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+    }
+
+    private func updatePresentationSize(_ size: CGSize) {
+        let dimensions = ModuleVideoQualityCatalog.dimensions(width: Double(size.width), height: Double(size.height))
+        let text = dimensions.map { "\($0.width) × \($0.height)" }
+        if presentedResolution != text { presentedResolution = text }
+    }
 }
