@@ -380,6 +380,9 @@ private struct RuntimeManifestConfiguration: Decodable {
     let baseUrl: String
     let runtime: RuntimeManifestRuntime
     let caps: RuntimeManifestCaps
+    // Contract v4 (Synthetiq One): defaults for requests to source-provided
+    // media endpoints. Individual stream headers take precedence.
+    let streamHeaders: [String: String]?
 }
 
 private struct RuntimeManifestRuntime: Decodable {
@@ -428,6 +431,28 @@ private actor ModuleRequestGate {
     }
 }
 
+// MARK: - Module Fetch Compatibility
+
+/// Synthetiq modules can request raw 3xx responses so their own resolver
+/// follows provider redirects and tracks the final media host. Normal requests
+/// still use URLSession's standard HTTPS redirect behavior.
+private final class ModuleManualRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+private struct ModuleFetchOptions: Decodable {
+    let followRedirects: Bool?
+    let maxBytesHint: Int?
+}
+
 // MARK: - Module Networking
 
 /// Immutable cookie values can safely cross the URLSession actor boundary.
@@ -447,6 +472,7 @@ private actor SynthetiqModuleNetworkClient {
 
     private let gate: ModuleRequestGate
     private let session: URLSession
+    private let manualRedirectSession: URLSession
 
     // Batch 05F: bounded, non-identifying evidence for Error 01. No URLs,
     // hostnames, cookies, headers, request bodies, or module response bodies.
@@ -459,10 +485,12 @@ private actor SynthetiqModuleNetworkClient {
     private var otherResponses = 0
     private var transportFailures = 0
     private var binaryResponses = 0
+    private var manualRedirectRequests = 0
+    private var redirectResponses = 0
     private var lastNetworkFailure = "none"
 
     func diagnosticSummary() -> String {
-        "requests=\(totalRequests), 2xx=\(okResponses), 401/403=\(unauthorizedResponses), 404=\(notFoundResponses), 429=\(rateLimitedResponses), 5xx=\(serverErrorResponses), other HTTP=\(otherResponses), transport failures=\(transportFailures), binary bodies=\(binaryResponses), last transport class=\(lastNetworkFailure)"
+        "requests=\(totalRequests), 2xx=\(okResponses), 3xx=\(redirectResponses), manual redirect requests=\(manualRedirectRequests), 401/403=\(unauthorizedResponses), 404=\(notFoundResponses), 429=\(rateLimitedResponses), 5xx=\(serverErrorResponses), other HTTP=\(otherResponses), transport failures=\(transportFailures), binary bodies=\(binaryResponses), last transport class=\(lastNetworkFailure)"
     }
 
     init(
@@ -491,6 +519,13 @@ private actor SynthetiqModuleNetworkClient {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 
         session = URLSession(configuration: configuration)
+        // Both sessions use the same ephemeral cookie jar. Using a separate
+        // delegate avoids changing redirect policy for unrelated modules.
+        manualRedirectSession = URLSession(
+            configuration: configuration,
+            delegate: ModuleManualRedirectDelegate(),
+            delegateQueue: nil
+        )
     }
 
     func cookies(for streamURL: URL) -> [ModuleStreamCookie] {
@@ -515,7 +550,8 @@ private actor SynthetiqModuleNetworkClient {
         rawURL: String,
         headersJSON: String,
         method: String,
-        body: String
+        body: String,
+        optionsJSON: String
     ) async throws -> [String: Any] {
         await gate.acquire()
         totalRequests += 1
@@ -571,6 +607,18 @@ private actor SynthetiqModuleNetworkClient {
             throw ModuleRuntimeError.invalidHeaders
         }
 
+        // Fetchv2's fifth argument was previously discarded. AniWorld's
+        // hoster/media checks explicitly require followRedirects=false.
+        let bridgeOptions = optionsJSON.data(using: .utf8).flatMap {
+            try? JSONDecoder().decode(ModuleFetchOptions.self, from: $0)
+        }
+        let followRedirects = bridgeOptions?.followRedirects ?? true
+        if !followRedirects { manualRedirectRequests += 1 }
+        // An optional hint may tighten but never increase the verified
+        // module response cap. Do not use it to fabricate or truncate data.
+        let requestedLimit = bridgeOptions?.maxBytesHint ?? maximumResponseBytes
+        let responseLimit = min(max(requestedLimit, 1_024), maximumResponseBytes)
+
         var request = URLRequest(url: resolvedURL)
 
         request.httpMethod = normalizedMethod
@@ -605,9 +653,9 @@ private actor SynthetiqModuleNetworkClient {
         let response: URLResponse
 
         do {
-            (responseData, response) = try await session.data(
-                for: request
-            )
+            (responseData, response) = try await (
+                followRedirects ? session : manualRedirectSession
+            ).data(for: request)
         } catch {
             transportFailures += 1
             if let urlError = error as? URLError {
@@ -638,12 +686,15 @@ private actor SynthetiqModuleNetworkClient {
             throw ModuleRuntimeError.insecureRequest
         }
 
-        guard responseData.count <= maximumResponseBytes else {
+        guard responseData.count <= responseLimit else {
             throw ModuleRuntimeError.responseTooLarge
         }
 
         switch httpResponse.statusCode {
         case 200...299: okResponses += 1
+        case 300...399:
+            redirectResponses += 1
+            otherResponses += 1
         case 401, 403: unauthorizedResponses += 1
         case 404: notFoundResponses += 1
         case 429: rateLimitedResponses += 1
@@ -710,6 +761,7 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
     let timeoutMilliseconds: Int
     let maximumHomeResults: Int
     let moduleName: String
+    let defaultStreamHeaders: [String: String]
 
     private let jsQueue = DispatchQueue(
         label: "com.kinetiq.modules.javascript",
@@ -816,6 +868,23 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         timeoutMilliseconds = timeout
         maximumHomeResults = homeLimit
         moduleName = record.name
+        // Only inherit non-secret presentation / media request metadata.
+        // Credential headers MUST come from the actual extracted stream to
+        // avoid forwarding unrelated provider secrets to an arbitrary CDN.
+        let safeDefaultNames: Set<String> = [
+            "user-agent", "accept", "accept-language", "referer", "origin"
+        ]
+        defaultStreamHeaders = Dictionary(
+            uniqueKeysWithValues: (manifest.config.streamHeaders ?? [:])
+                .filter { name, value in
+                    let lowercaseName = name.lowercased()
+                    return safeDefaultNames.contains(lowercaseName)
+                        && name.count <= 80 && value.count <= 2_048
+                        && !name.contains("\r") && !name.contains("\n")
+                        && !value.contains("\r") && !value.contains("\n")
+                }
+                .map { ($0.key, $0.value) }
+        )
 
         networkClient = SynthetiqModuleNetworkClient(
             baseURL: parsedBaseURL,
@@ -844,8 +913,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
 
             let fetchBridge:
                 @convention(block)
-                (String, String, String, String, String) -> Void = {
-                    [weak self] url, headers, method, body, requestID in
+                (String, String, String, String, String, String) -> Void = {
+                    [weak self] url, headers, method, body, optionsJSON, requestID in
 
                     guard let self else {
                         return
@@ -857,7 +926,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                                 rawURL: url,
                                 headersJSON: headers,
                                 method: method,
-                                body: body
+                                body: body,
+                                optionsJSON: optionsJSON
                             )
 
                             let data = try JSONSerialization.data(
@@ -1097,7 +1167,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
             url,
             headers,
             method,
-            body
+            body,
+            options
         ) {
             return new Promise((resolve, reject) => {
                 const requestID = String(++nextRequestID);
@@ -1108,12 +1179,23 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                 };
 
                 let serializedHeaders = "{}";
+                let serializedOptions = "{}";
 
                 try {
                     serializedHeaders = JSON.stringify(headers || {});
+                    // Only known transport controls; ignore arbitrary module
+                    // options instead of evaluating or stringifying raw data.
+                    const opts = options && typeof options === 'object' ? options : {};
+                    serializedOptions = JSON.stringify({
+                        followRedirects: opts.followRedirects !== false,
+                        maxBytesHint: typeof opts.maxBytesHint === 'number' &&
+                            Number.isFinite(opts.maxBytesHint)
+                            ? Math.max(1024, Math.min(8000000, Math.floor(opts.maxBytesHint)))
+                            : undefined
+                    });
                 } catch (error) {
                     delete pending[requestID];
-                    reject(new Error("Invalid request headers"));
+                    reject(new Error("Invalid fetchv2 options or headers"));
                     return;
                 }
 
@@ -1123,6 +1205,7 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                         serializedHeaders,
                         String(method || "GET"),
                         body == null ? "" : String(body),
+                        serializedOptions,
                         requestID
                     );
                 } catch (error) {
@@ -1251,7 +1334,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                     normalizeFetchHeaders(requestHeaders),
                     String(options.method || (input && input.method) || 'GET'),
                     options.body === undefined || options.body === null
-                        ? '' : String(options.body)
+                        ? '' : String(options.body),
+                    { followRedirects: options.redirect !== 'manual' }
                 );
             };
         }
@@ -2126,7 +2210,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         decoded = try ModuleRuntimeDecoder.streams(
                             from: response,
                             title: episodeTitle,
-                            baseURL: runtime.baseURL
+                            baseURL: runtime.baseURL,
+                            defaultHeaders: runtime.defaultStreamHeaders
                         )
                     } catch {
                         resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
@@ -2153,7 +2238,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         do {
                             decoded = try ModuleRuntimeDecoder.streams(
                                 from: fresh, title: episodeTitle,
-                                baseURL: runtime.baseURL
+                                baseURL: runtime.baseURL,
+                                defaultHeaders: runtime.defaultStreamHeaders
                             )
                             trace("Refresh found \(decoded.count) playable candidate(s)")
                         } catch {
@@ -2164,6 +2250,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     var choices = decoded
                     diagnosticCandidateCount = choices.count
                     trace("Decoder accepted \(choices.count) stream(s); native=\(choices.filter { !$0.isWebEmbed }.count), web=\(choices.filter(\.isWebEmbed).count)")
+                    let knownHeaderNames = Set(choices.flatMap { $0.headers.keys.map { $0.lowercased() } })
+                    trace("Playback request context: module default headers=\(runtime.defaultStreamHeaders.count), effective header names=\(knownHeaderNames.count), user-agent=\(knownHeaderNames.contains("user-agent")), referer=\(knownHeaderNames.contains("referer")), origin=\(knownHeaderNames.contains("origin"))")
 
                     guard activeRequestID == requestID else {
                         return false
@@ -2635,7 +2723,8 @@ enum ModuleRuntimeDecoder {
     static func streams(
         from value: Any,
         title: String,
-        baseURL: URL
+        baseURL: URL,
+        defaultHeaders: [String: String] = [:]
     ) throws -> [ModuleResolvedStream] {
         // Some modules serialize a valid streams/servers JSON object into a
         // string. Decode only bounded JSON containers; never evaluate code,
@@ -2651,7 +2740,10 @@ enum ModuleRuntimeDecoder {
         }
         if let text = value as? String,
            let nested = jsonContainer(text) {
-            return try streams(from: nested, title: title, baseURL: baseURL)
+            return try streams(
+                from: nested, title: title, baseURL: baseURL,
+                defaultHeaders: defaultHeaders
+            )
         }
         let root = value as? [String: Any] ?? [:]
         let maximumChoices = 24
@@ -2778,7 +2870,8 @@ enum ModuleRuntimeDecoder {
         }
 
         let initialHeaders = mergeHeaders(
-            asHeaders(root["requestHeaders"]), asHeaders(root["headers"])
+            defaultHeaders,
+            mergeHeaders(asHeaders(root["requestHeaders"]), asHeaders(root["headers"]))
         )
         let initialType = string(root, keys: ["streamType", "type"]) ?? "auto"
 
@@ -2805,12 +2898,22 @@ enum ModuleRuntimeDecoder {
             }
 
             if let list = entry as? [Any] {
-                if list.count == 2,
-                   let name = list[0] as? String,
-                   let url = list[1] as? String,
-                   labelLooksLikeName(name) {
-                    append(urlString: url, label: name, headers: headers,
-                           streamType: type, subtitleContainer: nil)
+                // Synthetiq contract: alternating quality and stream URL.
+                // Treat the array as pairs, not unlabeled independent URLs.
+                let pairs = list.count >= 2 && list.count % 2 == 0 &&
+                    stride(from: 0, to: list.count, by: 2).allSatisfy { i in
+                        guard let name = list[i] as? String,
+                              let address = list[i + 1] as? String else { return false }
+                        return labelLooksLikeName(name) &&
+                            (address.hasPrefix("https://") || address.hasPrefix("/"))
+                    }
+                if pairs {
+                    for i in stride(from: 0, to: min(list.count, maximumChoices * 2), by: 2) {
+                        append(urlString: list[i + 1] as? String,
+                               label: list[i] as? String,
+                               headers: headers, streamType: type,
+                               subtitleContainer: nil)
+                    }
                 } else {
                     for item in list.prefix(maximumChoices) {
                         walk(item, label: label, headers: headers,
