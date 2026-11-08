@@ -1333,6 +1333,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var recoveryTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
+    private var manifestProbeTasks: [Task<Void, Never>] = []
+    private var manifestProbedHosts = Set<String>()
 
     // A ready AVPlayerItem is not evidence that frames are actually playing.
     // Some providers remain in "waiting" forever without sending a stall
@@ -1411,13 +1413,14 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     /// authentication headers, cookies, and any module JavaScript.
     var diagnosticSummary: String {
         let lines: [String] = [
-            "Kinetiq module playback diagnostics",
+            "Kinetiq module playback diagnostics · Batch 05H",
             "Source: \(ModulePlaybackDiagnostics.redact(session.sourceName, limit: 80))",
             "Episode: \(ModulePlaybackDiagnostics.redact(session.currentEpisode?.number ?? "Unknown", limit: 30))",
             "Language: \(session.selectedLanguage)",
             "Server label: \(ModulePlaybackDiagnostics.redact(session.currentStream?.label ?? "None", limit: 80))",
             "Server health: \(session.currentStream.map { serverHealthStatus(for: $0) } ?? "Not tested")",
             "Source-provided servers: \(session.availableStreams.count)",
+            "Distinct server hosts: \(Set(session.availableStreams.map { $0.hostName.lowercased() }).count)",
             "Tried servers: \(attemptedStreamIDs.count)",
             "Refreshed links: \(refreshedEpisodeKey == loadedEpisodeKey && loadedEpisodeKey != nil ? "Yes" : "No")",
             "Host: \(session.currentStream?.hostName ?? "None")",
@@ -1449,8 +1452,13 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     private func note(_ event: String) {
         diagnosticEvents.append(ModulePlaybackDiagnostics.redact(event))
-        if diagnosticEvents.count > 14 {
-            diagnosticEvents.removeFirst(diagnosticEvents.count - 14)
+        if diagnosticEvents.count > 38 {
+            diagnosticEvents.removeFirst(diagnosticEvents.count - 38)
+        }
+        // Keep the outside-player copy button current when an asynchronous
+        // HLS probe finishes after the failure alert first appeared.
+        if let failure = errorMessage, !failure.isEmpty {
+            session.recordPlayerFailure(diagnostics: diagnosticSummary, reason: failure)
         }
     }
 
@@ -1609,6 +1617,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         if loadedEpisodeKey != episodeKey {
             loadedEpisodeKey = episodeKey
             refreshedEpisodeKey = nil
+            manifestProbedHosts.removeAll()
+            manifestProbeTasks.forEach { $0.cancel() }
+            manifestProbeTasks.removeAll()
         }
 
         let choices = Set(session.availableStreams.map(\.id))
@@ -1638,6 +1649,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         playbackStatus = "Opening \(stream.label)"
         note("Opening \(stream.label) on \(stream.hostName)")
         note("Server health: \(serverHealthStatus(for: stream))")
+        let headerNames = Set(stream.headers.keys.map { $0.lowercased() })
+        note("Request context: custom headers=\(stream.headers.count), cookies=\(stream.cookies.count), referer=\(headerNames.contains("referer")), user-agent=\(headerNames.contains("user-agent")), origin=\(headerNames.contains("origin"))")
         errorMessage = nil
         isBuffering = true
         isPlaying = false
@@ -1938,10 +1951,30 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         // Read only a numeric status: never expose token-bearing URLs or
         // raw response headers from AVFoundation logs.
-        let status = item.errorLog()?.events.last?.errorStatusCode
-        if let status, (100...599).contains(status) {
+        let errorEvents = item.errorLog()?.events ?? []
+        if let status = errorEvents.last?.errorStatusCode,
+           (100...599).contains(status) {
             lastHTTPStatus = status
         }
+
+        // AVFoundation can fail before it has an HTTP error-log event. Capture
+        // safe numeric NSError codes/domains instead of a generic 'unknown'.
+        if let itemError = item.error as NSError? {
+            note("AVPlayerItem error: \(ModuleHLSPreflight.safeDomain(itemError.domain)) / \(itemError.code)")
+            if let underlying = itemError.userInfo[NSUnderlyingErrorKey] as? NSError {
+                note("Underlying error: \(ModuleHLSPreflight.safeDomain(underlying.domain)) / \(underlying.code)")
+            }
+        }
+        if let playerError = player.error as NSError? {
+            note("AVPlayer error: \(ModuleHLSPreflight.safeDomain(playerError.domain)) / \(playerError.code)")
+        }
+        for event in errorEvents.suffix(3) {
+            note("AVFoundation event: \(ModuleHLSPreflight.safeDomain(event.errorDomain)) / \(event.errorStatusCode)")
+        }
+        if errorEvents.isEmpty {
+            note("AVFoundation provided no HTTP error-log event")
+        }
+        scheduleManifestProbeIfNeeded(for: stream)
 
         let reason = lastHTTPStatus.map { "HTTP \($0)" }
             ?? "AVPlayer failure"
@@ -1988,7 +2021,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         ModuleServerHealthStore.shared.recordFailure(
             stream, sourceID: session.sourceID, sourceName: session.sourceName
         )
-        note("Server health: failed after retry; try independent host next")
+        note("Server health: failed after retry; seeking another candidate")
 
         if let alternate = ModuleServerHealthStore.shared.nextUntried(
             from: session.availableStreams,
@@ -2037,6 +2070,25 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             ? "Last server returned HTTP \(lastHTTPStatus ?? 403)."
             : message
         errorMessage = "Tried all \(count) available server(s). \(suffix) Check Diagnostics or choose another source."
+    }
+
+    /// Bounded background probe after AVPlayer fails (never during healthy
+    /// playback). Runs once per host/episode, without printing stream URLs.
+    private func scheduleManifestProbeIfNeeded(for stream: ModuleResolvedStream) {
+        guard stream.streamType.lowercased() == "hls" ||
+                stream.url.pathExtension.lowercased() == "m3u8" else { return }
+        let host = stream.hostName.lowercased()
+        guard manifestProbedHosts.insert(host).inserted else { return }
+        let episodeKey = loadedEpisodeKey
+        note("HLS manifest probe scheduled on failed host")
+        let job = Task { @MainActor [weak self] in
+            let observations = await ModuleHLSPreflight.inspect(stream)
+            guard !Task.isCancelled,
+                  let self, !self.hasStopped,
+                  self.loadedEpisodeKey == episodeKey else { return }
+            for observation in observations { self.note(observation) }
+        }
+        manifestProbeTasks.append(job)
     }
 
     // MARK: Stream Tracks and Metadata
@@ -2387,6 +2439,8 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         stallTask = nil
         startupTask?.cancel()
         startupTask = nil
+        manifestProbeTasks.forEach { $0.cancel() }
+        manifestProbeTasks.removeAll()
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = nil
@@ -3281,7 +3335,11 @@ private struct ModuleWebFallbackPlayer: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ModuleEphemeralWebView(url: stream.url, failure: $failure)
+                ModuleEphemeralWebView(
+                    url: stream.url,
+                    directMedia: !stream.isWebEmbed,
+                    failure: $failure
+                )
                     .background(.black)
             }
 
@@ -3304,10 +3362,11 @@ private struct ModuleWebFallbackPlayer: View {
 @MainActor
 private struct ModuleEphemeralWebView: UIViewRepresentable {
     let url: URL
+    let directMedia: Bool
     @Binding var failure: String?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(failure: $failure)
+        Coordinator(failure: $failure, allowLocalDocument: directMedia)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -3321,9 +3380,30 @@ private struct ModuleEphemeralWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .black
         webView.navigationDelegate = context.coordinator
         if ModuleWebFallbackPolicy.allows(url) {
-            var request = URLRequest(url: url)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            webView.load(request)
+            if directMedia {
+                // A WKWebView navigation to a raw .m3u8 playlist is NOT a
+                // browser video player. Use an actual HTML5 video element so
+                // WebKit can attempt native HLS playback as an alternative to
+                // our AVPlayerLayer. This is an explicit user-initiated action.
+                let escaped = url.absoluteString
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "\"", with: "&quot;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+                let page = """
+                <!doctype html><html><head>
+                <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+                <style>html,body{margin:0;width:100%;height:100%;background:#000}
+                video{width:100%;height:100%;object-fit:contain;background:#000}</style>
+                </head><body><video controls playsinline autoplay preload="metadata"
+                src="\(escaped)"></video></body></html>
+                """
+                webView.loadHTMLString(page, baseURL: nil)
+            } else {
+                var request = URLRequest(url: url)
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                webView.load(request)
+            }
         } else {
             failure = "This server does not provide a permitted HTTPS web address."
         }
@@ -3341,9 +3421,11 @@ private struct ModuleEphemeralWebView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
         @Binding var failure: String?
+        private let allowLocalDocument: Bool
 
-        init(failure: Binding<String?>) {
+        init(failure: Binding<String?>, allowLocalDocument: Bool) {
             _failure = failure
+            self.allowLocalDocument = allowLocalDocument
         }
 
         func webView(
@@ -3358,8 +3440,15 @@ private struct ModuleEphemeralWebView: UIViewRepresentable {
                 return
             }
             if navigationAction.targetFrame?.isMainFrame == true {
-                guard let url = navigationAction.request.url,
-                      ModuleWebFallbackPolicy.allows(url) else {
+                guard let url = navigationAction.request.url else {
+                    decisionHandler(.cancel)
+                    return
+                }
+                if allowLocalDocument && url.absoluteString == "about:blank" {
+                    decisionHandler(.allow)
+                    return
+                }
+                guard ModuleWebFallbackPolicy.allows(url) else {
                     failure = "This web player tried to navigate to an unsupported address."
                     decisionHandler(.cancel)
                     return
@@ -3375,5 +3464,162 @@ private struct ModuleEphemeralWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             failure = "The provider's web page could not be opened."
         }
+    }
+}
+
+
+// MARK: - HLS Transport Preflight (Batch 05H)
+
+/// Probe only the original module-supplied HTTPS playlist on a failed host.
+/// No URLs, paths, query strings, authentication material, or response bodies
+/// are copied into diagnostics. The probe does not bypass provider access.
+private enum ModuleHLSPreflight {
+    private static let maximumManifestBytes = 131_072
+
+    static func safeDomain(_ text: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        return String(String.UnicodeScalarView(text.unicodeScalars.filter {
+            allowed.contains($0)
+        }).prefix(80))
+    }
+
+    static func inspect(_ stream: ModuleResolvedStream) async -> [String] {
+        guard stream.url.scheme?.lowercased() == "https",
+              let originalHost = stream.url.host?.lowercased(),
+              !originalHost.isEmpty else {
+            return ["HLS preflight: skipped; invalid HTTPS playlist address"]
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpShouldSetCookies = true
+        configuration.timeoutIntervalForRequest = 9
+        configuration.timeoutIntervalForResource = 11
+
+        // Inject cookies into this isolated, transient storage. URLSession
+        // performs normal domain/path/secure checks for each cookie.
+        for stored in stream.cookies.prefix(40) {
+            let properties: [HTTPCookiePropertyKey: Any] = [
+                .name: stored.name,
+                .value: stored.value,
+                .domain: stored.domain,
+                .path: stored.path,
+                .secure: stored.isSecure ? "TRUE" : "FALSE"
+            ]
+            if let cookie = HTTPCookie(properties: properties) {
+                configuration.httpCookieStorage?.setCookie(cookie)
+            }
+        }
+
+        let guardDelegate = ModuleHLSProbeRedirectGuard(host: originalHost)
+        let client = URLSession(configuration: configuration,
+                                delegate: guardDelegate, delegateQueue: nil)
+        defer { client.invalidateAndCancel() }
+
+        var request = URLRequest(url: stream.url)
+        request.timeoutInterval = 9
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("bytes=0-131071", forHTTPHeaderField: "Range")
+        request.setValue("application/vnd.apple.mpegurl,application/x-mpegURL,*/*",
+                         forHTTPHeaderField: "Accept")
+        for (name, value) in stream.headers {
+            guard !name.isEmpty, !name.contains("\r"), !name.contains("\n"),
+                  !value.contains("\r"), !value.contains("\n") else { continue }
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+
+        do {
+            // Stream bytes incrementally: a mislabeled media file must never
+            // be downloaded in full merely to inspect an HLS manifest.
+            let (bytes, response) = try await client.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return ["HLS preflight: response was not HTTP"]
+            }
+            let status = http.statusCode
+            var results = ["HLS preflight HTTP status: \(status)"]
+            if !(200...299).contains(status) {
+                results.append("HLS preflight: playlist request not successful")
+                return results
+            }
+            let mime = (http.value(forHTTPHeaderField: "Content-Type") ?? "")
+                .lowercased()
+            var data = Data()
+            for try await byte in bytes {
+                if Task.isCancelled { return ["HLS preflight: cancelled"] }
+                if data.count >= maximumManifestBytes { break }
+                data.append(byte)
+            }
+            results.append(contentsOf: manifestSummary(data, mime: mime))
+            return results
+        } catch {
+            let nsError = error as NSError
+            return ["HLS preflight transport: \(safeDomain(nsError.domain)) / \(nsError.code)"]
+        }
+    }
+
+    static func manifestSummary(_ data: Data, mime: String) -> [String] {
+        let mimeKind: String = mime.contains("mpegurl") || mime.contains("m3u8")
+            ? "HLS" : mime.contains("text/html") ? "HTML"
+            : mime.contains("application/json") ? "JSON"
+            : mime.isEmpty ? "unspecified" : "other"
+        var results = ["HLS response MIME category: \(mimeKind)"]
+        guard let body = String(data: data, encoding: .utf8) else {
+            results.append("HLS preflight: response is not UTF-8 playlist text")
+            return results
+        }
+        let hasBOM = body.hasPrefix("\u{FEFF}")
+        let withoutBOM = hasBOM ? String(body.dropFirst()) : body
+        let trimmed = withoutBOM.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hasBOM { results.append("HLS compatibility warning: UTF-8 BOM") }
+        guard trimmed.hasPrefix("#EXTM3U") else {
+            results.append(body.lowercased().contains("<html") ||
+                           body.lowercased().contains("<!doctype")
+                           ? "HLS preflight: server returned HTML instead of a playlist"
+                           : "HLS preflight: response is not a valid HLS manifest")
+            return results
+        }
+        let lines = trimmed.split(whereSeparator: \.isNewline).map(String.init)
+        let variants = lines.filter { $0.hasPrefix("#EXT-X-STREAM-INF:") }.count
+        let segmentDurations = lines.filter { $0.hasPrefix("#EXTINF:") }.count
+        let keyTags = lines.filter { $0.hasPrefix("#EXT-X-KEY:") }
+        let encrypted = keyTags.contains { !$0.contains("METHOD=NONE") }
+        let uris = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        let unusual = uris.filter { line in
+            let path = line.components(separatedBy: "?").first ?? line
+            let lower = path.lowercased()
+            return [".html", ".htm", ".jpg", ".jpeg", ".png", ".php"]
+                .contains { lower.hasSuffix($0) }
+        }.count
+        results.append("HLS manifest: valid; variants=\(variants), media segments=\(segmentDurations), encryption=\(encrypted)")
+        if unusual > 0 {
+            results.append("HLS compatibility warning: \(unusual) nonstandard media/playlist suffixes")
+        }
+        if variants == 0 && segmentDurations == 0 {
+            results.append("HLS compatibility warning: no variants or media segments in sampled data")
+        }
+        results.append("HLS preflight checks playlist only, not media segments")
+        return results
+    }
+}
+
+/// Never forward authorization/cookies from the module's host to a different
+/// host through a diagnostic redirect. This does not affect AVPlayer itself.
+private final class ModuleHLSProbeRedirectGuard: NSObject,
+    URLSessionTaskDelegate, @unchecked Sendable {
+    private let host: String
+    init(host: String) { self.host = host }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard request.url?.scheme?.lowercased() == "https",
+              request.url?.host?.lowercased() == host else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
