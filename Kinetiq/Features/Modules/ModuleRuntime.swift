@@ -3500,9 +3500,9 @@ struct ModuleBrowserView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // The documented Synthetiq video contract has no trending/home handler.
-    // Explore therefore uses actual saved catalogue entries and explicitly
-    // labeled search shortcuts, never manufactured trending/rating data.
+    // Compatible modules can provide genuine, source-owned Home shelves.
+    // Older modules retain saved entries and explicitly labeled search
+    // shortcuts; Kinetiq never invents trending or rating data.
     private var exploreContent: some View {
         VStack(alignment: .leading, spacing: 21) {
             VStack(alignment: .leading, spacing: 8) {
@@ -3518,6 +3518,14 @@ struct ModuleBrowserView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let runtime {
+                KinetiqSourceDiscoveryView(
+                    runtime: runtime,
+                    sourceID: source.id,
+                    sourceName: source.title
+                )
             }
 
             VStack(alignment: .leading, spacing: 12) {
