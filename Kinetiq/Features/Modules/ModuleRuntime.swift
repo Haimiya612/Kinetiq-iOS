@@ -323,6 +323,40 @@ enum ModulePlaybackDiagnostics {
         return "type=\(kind), groups=\(groups), objects=\(objects), arrays=\(arrays), empty arrays=\(emptyArrays), error fields=\(errorFields), success=false=\(reportedFailure), url fields=\(fields), HTTPS=\(https), HTTP=\(http), relative=\(relative), opaque=\(opaque)"
     }
 
+    /// Failure classification is intentionally vocabulary-only: provider error
+    /// values may contain signed URLs, tokens, or private request details.
+    /// Return fixed labels instead of copying provider-controlled text.
+    static func sourceResponseStatus(_ response: Any) -> String {
+        guard let object = response as? [String: Any] else {
+            return "response is not an object"
+        }
+        let streams = object["streams"] as? [Any]
+        let sources = object["sources"] as? [Any]
+        let empty = (streams?.isEmpty == true || sources?.isEmpty == true)
+        let value = ["error", "reason", "message", "status"]
+            .compactMap { object[$0] as? String }
+            .first?.lowercased() ?? ""
+        let category: String
+        if value.contains("timeout") || value.contains("timed out") || value.contains("deadline") {
+            category = "SOURCE_TIMEOUT"
+        } else if value.contains("cloudflare") || value.contains("captcha") || value.contains("challenge") {
+            category = "SOURCE_CHALLENGE"
+        } else if value.contains("403") || value.contains("forbidden") || value.contains("unauthoriz") {
+            category = "SOURCE_ACCESS_DENIED"
+        } else if value.contains("rate limit") || value.contains("429") {
+            category = "SOURCE_RATE_LIMITED"
+        } else if value.contains("unavailable") || value.contains("no playable") || value.contains("no verified") || value.contains("no stream") {
+            category = "SOURCE_NO_MEDIA"
+        } else if value.contains("not found") || value.contains("404") {
+            category = "SOURCE_NOT_FOUND"
+        } else if value.isEmpty {
+            category = "NO_SOURCE_ERROR_TEXT"
+        } else {
+            category = "SOURCE_ERROR_OTHER"
+        }
+        return "module returned \(empty ? "empty source list" : "source response"); provider class=\(category)"
+    }
+
     static func simpleReport(source: String, phase: String, error: Error) -> String {
         [
             "Kinetiq module diagnostics · Batch 05F",
@@ -2085,6 +2119,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     guard activeRequestID == requestID else { return false }
                     trace("Handler completed in \(String(format: "%.1f", Date().timeIntervalSince(attemptStart))) seconds")
                     trace("Handler returned: \(ModulePlaybackDiagnostics.responseShape(response))")
+                    trace("Provider state: \(ModulePlaybackDiagnostics.sourceResponseStatus(response))")
                     trace("Source network: \(await runtime.networkDiagnosticSummary())")
                     let decoded: [ModuleResolvedStream]
                     do {
@@ -2113,6 +2148,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         )
                         guard activeRequestID == requestID else { return false }
                         trace("Refresh returned: \(ModulePlaybackDiagnostics.responseShape(fresh))")
+                        trace("Refresh provider state: \(ModulePlaybackDiagnostics.sourceResponseStatus(fresh))")
                         trace("Source network after refresh: \(await runtime.networkDiagnosticSummary())")
                         do {
                             decoded = try ModuleRuntimeDecoder.streams(

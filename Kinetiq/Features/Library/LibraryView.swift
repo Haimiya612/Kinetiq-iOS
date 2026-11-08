@@ -1210,6 +1210,8 @@ private final class KinetiqPictureInPictureController:
 
     @Published private(set) var isPossible = false
     @Published private(set) var isActive = false
+    @Published private(set) var lastFailure: String?
+    let isSupported = AVPictureInPictureController.isPictureInPictureSupported()
 
     private weak var attachedLayer: AVPlayerLayer?
     private var controller: AVPictureInPictureController?
@@ -1227,6 +1229,7 @@ private final class KinetiqPictureInPictureController:
         attachedLayer = layer
         isPossible = false
         isActive = false
+        lastFailure = nil
 
         // This is a type method, not a Boolean property.
         guard AVPictureInPictureController.isPictureInPictureSupported() else {
@@ -1259,14 +1262,34 @@ private final class KinetiqPictureInPictureController:
     }
 
     func start() {
-        guard let controller,
-              controller.isPictureInPicturePossible,
-              !controller.isPictureInPictureActive else {
+        guard isSupported, let controller else {
+            lastFailure = "Picture in Picture is unavailable on this device or this video surface."
             return
         }
-
+        guard (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("audio") == true else {
+            lastFailure = "Background media playback is not enabled in this build. Install the updated project.pbxproj and rebuild Kinetiq."
+            return
+        }
+        guard controller.isPictureInPicturePossible else {
+            lastFailure = "PiP is not ready. Start playing a video, then retry. Also check iPhone Settings → General → Picture in Picture."
+            return
+        }
+        guard !controller.isPictureInPictureActive else { return }
+        lastFailure = nil
         controller.startPictureInPicture()
     }
+
+    /// System automatic PiP is preferred. This foreground-transition nudge
+    /// handles custom AVPlayerLayer presenters where system auto-start may
+    /// not engage; never retry from the background or for paused media.
+    func startIfLeavingAppWhilePlaying(_ playing: Bool) {
+        guard playing, isSupported, let controller,
+              controller.isPictureInPicturePossible,
+              !controller.isPictureInPictureActive else { return }
+        controller.startPictureInPicture()
+    }
+
+    func clearFailure() { lastFailure = nil }
 
     func stop() {
         guard let controller,
@@ -1303,8 +1326,10 @@ extension KinetiqPictureInPictureController:
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
+        let description = error.localizedDescription
         Task { @MainActor [weak self] in
             self?.isActive = false
+            self?.lastFailure = "iOS rejected Picture in Picture: " + description
         }
     }
 
@@ -1572,7 +1597,7 @@ private struct LocalVideoPlayerView: View {
                 feedbackTask?.cancel()
                 feedbackTask = nil
 
-                model.stop()
+                if !pictureInPicture.isActive { model.stop() }
             }
             .onReceive(
                 NotificationCenter.default.publisher(
@@ -1580,8 +1605,9 @@ private struct LocalVideoPlayerView: View {
                 )
             ) { _ in
                 model.saveProgress()
-                // AVKit, not an app-lifecycle callback, owns automatic PiP.
-                // The playerLayer controller has automatic inline PiP enabled.
+                // AVKit can start PiP automatically. Also request once before
+                // deactivation for custom layer players when video is playing.
+                pictureInPicture.startIfLeavingAppWhilePlaying(model.isPlaying)
             }
             .onChange(of: subtitleSettings.appearance) { _, style in
                 model.player.currentItem?.textStyleRules = style.nativeRules
@@ -1631,6 +1657,14 @@ private struct LocalVideoPlayerView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .background(.black)
+        .alert("Picture in Picture", isPresented: Binding(
+            get: { pictureInPicture.lastFailure != nil },
+            set: { if !$0 { pictureInPicture.clearFailure() } }
+        )) {
+            Button("OK", role: .cancel) { pictureInPicture.clearFailure() }
+        } message: {
+            Text(pictureInPicture.lastFailure ?? "PiP isn't available for this video.")
+        }
     }
 
     // MARK: Seek Feedback
@@ -1668,7 +1702,7 @@ private struct LocalVideoPlayerView: View {
             playing: model.isPlaying,
             busy: false,
             aspectFill: model.aspectFill,
-            pictureInPictureAvailable: pictureInPicture.isPossible,
+            pictureInPictureAvailable: pictureInPicture.isSupported,
             displayedTime: displayedTime,
             duration: model.duration,
             elapsedLabel: KinetiqPlaybackModel.formatTime(displayedTime),
