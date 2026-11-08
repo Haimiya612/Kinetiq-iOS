@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UIKit
 
 // MARK: - Repository Models
 
@@ -720,6 +721,22 @@ final class ModuleSourceStore: ObservableObject {
 struct ModuleSourcesView: View {
 
     @StateObject private var store = ModuleSourceStore.shared
+    @StateObject private var packageStore = ModulePackageStore.shared
+
+    // One repository at a time. Each module uses the existing package installer:
+    // HTTPS ZIP, exact SHA-256, manifest and JavaScript handler validation.
+    @State private var pendingBatchRepositoryID: String?
+    @State private var showingBatchConfirmation = false
+    @State private var activeBatchRepositoryID: String?
+    @State private var batchTask: Task<Void, Never>?
+    @State private var batchInstalled = 0
+    @State private var batchProcessed = 0
+    @State private var batchTotal = 0
+    @State private var batchSkipped = 0
+    @State private var batchFailures: [String] = []
+    @State private var batchCurrentModule = ""
+    @State private var batchReport: String?
+    @State private var showingBatchReport = false
 
     @State private var repositoryURL =
         ModuleSourceStore.synthetiqRepositoryURL
@@ -812,6 +829,10 @@ struct ModuleSourcesView: View {
                 } else {
                     ForEach(store.repositories) { repository in
                         DisclosureGroup {
+                            if !repository.modules.isEmpty {
+                                batchControls(for: repository)
+                            }
+
                             if repository.modules.isEmpty {
                                 Text(
                                     repository.refreshError
@@ -917,6 +938,29 @@ struct ModuleSourcesView: View {
                 )
             }
         }
+        .confirmationDialog(
+            "Install all supported modules?",
+            isPresented: $showingBatchConfirmation,
+            titleVisibility: .visible
+        ) {
+            if let pendingBatchRepositoryID,
+               let repository = store.repositories.first(where: { $0.id == pendingBatchRepositoryID }) {
+                Button("Install \(pendingCount(for: repository)) Modules") {
+                    beginInstallAll(in: repository)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingBatchRepositoryID = nil }
+        } message: {
+            Text("Kinetiq installs missing or outdated VIDEO modules one at a time. Every ZIP must match the repository SHA-256 and pass manifest/handler checks. Publisher signatures are NOT independently authenticated without a trusted publisher key and signing specification. Non-video modules are skipped. Keep Kinetiq open during installation.")
+        }
+        .alert("Repository Installation Report", isPresented: $showingBatchReport) {
+            Button("Copy Report") {
+                UIPasteboard.general.string = batchReport ?? ""
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(batchReport ?? "No installation report was recorded.")
+        }
         .navigationTitle("Module Sources")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -940,6 +984,132 @@ struct ModuleSourcesView: View {
         }
         .refreshable {
             await store.refreshAll()
+        }
+    }
+
+    // MARK: - Install All (supported modules only)
+
+    private func installableSources(in repository: ModuleRepositoryRecord) -> [ModuleSourceOption] {
+        store.sources(in: repository).filter { source in
+            guard source.module.contentType?.lowercased() == "video",
+                  source.packageURL != nil,
+                  let hash = source.module.sha256 else { return false }
+            return hash.count == 64 && hash.allSatisfy(\.isHexDigit)
+        }
+    }
+
+    private func pendingCount(for repository: ModuleRepositoryRecord) -> Int {
+        installableSources(in: repository).filter { !packageStore.isInstalled($0) }.count
+    }
+
+    @ViewBuilder
+    private func batchControls(for repository: ModuleRepositoryRecord) -> some View {
+        let total = installableSources(in: repository).count
+        let pending = pendingCount(for: repository)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Repository Installer")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(pending) to install or update · \(total) supported video modules")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if activeBatchRepositoryID == repository.id {
+                    Button("Stop") {
+                        // Cancellation is checked between packages. An in-flight
+                        // URLSession download may finish before it takes effect.
+                        batchTask?.cancel()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                } else {
+                    Button {
+                        pendingBatchRepositoryID = repository.id
+                        showingBatchConfirmation = true
+                    } label: {
+                        Label("Install All", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(KinetiqPalette.accent)
+                    .disabled(pending == 0 || activeBatchRepositoryID != nil || store.isRefreshing)
+                }
+            }
+            if activeBatchRepositoryID == repository.id {
+                ProgressView(value: Double(batchProcessed), total: Double(max(1, batchTotal)))
+                Text("\(batchProcessed)/\(batchTotal) · \(batchCurrentModule)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Label(
+                "SHA-256 package integrity is checked. Publisher authenticity is not independently verified.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            if total < repository.modules.count {
+                Text("Unsupported, incomplete or non-video catalogue entries are not bulk-installed.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    @MainActor
+    private func beginInstallAll(in repository: ModuleRepositoryRecord) {
+        guard activeBatchRepositoryID == nil else { return }
+        let eligible = installableSources(in: repository)
+        let pending = eligible.filter { !packageStore.isInstalled($0) }
+        guard !pending.isEmpty else { return }
+
+        batchInstalled = 0
+        batchProcessed = 0
+        batchSkipped = eligible.count - pending.count
+        batchTotal = pending.count
+        batchFailures = []
+        batchCurrentModule = "Starting…"
+        activeBatchRepositoryID = repository.id
+        pendingBatchRepositoryID = nil
+
+        batchTask = Task { @MainActor in
+            for source in pending {
+                if Task.isCancelled { break }
+                batchCurrentModule = source.module.displayName
+                // A user can install the same entry separately while bulk
+                // installation is running; skip it rather than reinstall.
+                if packageStore.isInstalled(source) {
+                    batchSkipped += 1
+                } else {
+                    do {
+                        try await packageStore.install(source)
+                        batchInstalled += 1
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        let label = String(source.module.displayName.prefix(65))
+                        let reason = String(error.localizedDescription.prefix(180))
+                        batchFailures.append("\(label): \(reason)")
+                    }
+                }
+                batchProcessed += 1
+            }
+            let interrupted = Task.isCancelled
+            let summary = [
+                "Repository: \(repository.name)",
+                "Installed/updated: \(batchInstalled)",
+                "Already installed/skipped: \(batchSkipped)",
+                "Failed: \(batchFailures.count)",
+                "Cancelled: \(interrupted ? "Yes" : "No")",
+                "Security: HTTPS downloads, ZIP SHA-256 and manifest validation. Publisher signature unverified."
+            ]
+            batchReport = (summary + batchFailures.prefix(12)).joined(separator: "\n")
+            batchTask = nil
+            activeBatchRepositoryID = nil
+            batchCurrentModule = ""
+            showingBatchReport = true
         }
     }
 

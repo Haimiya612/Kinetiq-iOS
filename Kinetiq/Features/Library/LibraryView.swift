@@ -1396,6 +1396,7 @@ private struct LocalVideoPlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @State private var hasOrientationLease = false
     @StateObject private var model: KinetiqPlaybackModel
     @StateObject private var pictureInPicture =
         KinetiqPictureInPictureController()
@@ -1552,10 +1553,19 @@ private struct LocalVideoPlayerView: View {
                 value: activePanel
             )
             .onAppear {
+                if !hasOrientationLease {
+                    KinetiqPlaybackPresentation.enterPlayer()
+                    hasOrientationLease = true
+                }
+                KinetiqPlaybackPresentation.preparePlayer(model.player)
                 model.play()
                 revealControls()
             }
             .onDisappear {
+                if hasOrientationLease {
+                    KinetiqPlaybackPresentation.leavePlayer()
+                    hasOrientationLease = false
+                }
                 autoHideTask?.cancel()
                 autoHideTask = nil
 
@@ -1570,6 +1580,8 @@ private struct LocalVideoPlayerView: View {
                 )
             ) { _ in
                 model.saveProgress()
+                // AVKit, not an app-lifecycle callback, owns automatic PiP.
+                // The playerLayer controller has automatic inline PiP enabled.
             }
             .onChange(of: subtitleSettings.appearance) { _, style in
                 model.player.currentItem?.textStyleRules = style.nativeRules

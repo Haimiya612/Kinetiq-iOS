@@ -48,6 +48,7 @@ struct KinetiqModulePlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @State private var hasOrientationLease = false
     @State private var controlsVisible = true
     @State private var activePanel: ModulePlayerPanel?
     @State private var webPlayerStream: ModuleResolvedStream?
@@ -234,6 +235,11 @@ struct KinetiqModulePlayerView: View {
                 value: activePanel
             )
             .onAppear {
+                if !hasOrientationLease {
+                    KinetiqPlaybackPresentation.enterPlayer()
+                    hasOrientationLease = true
+                }
+                KinetiqPlaybackPresentation.preparePlayer(playback.player)
                 revealControls()
                 displayEmbeddedPlayerIfNeeded()
             }
@@ -241,6 +247,10 @@ struct KinetiqModulePlayerView: View {
                 displayEmbeddedPlayerIfNeeded()
             }
             .onDisappear {
+                if hasOrientationLease {
+                    KinetiqPlaybackPresentation.leavePlayer()
+                    hasOrientationLease = false
+                }
                 autoHideTask?.cancel()
                 feedbackTask?.cancel()
                 if let reason = playback.errorMessage {
@@ -263,6 +273,8 @@ struct KinetiqModulePlayerView: View {
                 for: UIApplication.willResignActiveNotification
             )) { _ in
                 playback.persistCurrentProgress()
+                // AVKit handles automatic PiP using the playerLayer delegate
+                // when the app backgrounds. Manual PiP remains user-initiated.
             }
             .onChange(of: subtitleSettings.appearance) { _, style in
                 playback.player.currentItem?.textStyleRules = style.nativeRules
