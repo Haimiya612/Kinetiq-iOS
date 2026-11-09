@@ -2048,7 +2048,7 @@ struct KinetiqModuleUpdateCenterView: View {
                     do {
                         try KinetiqModuleRollbackVault.requestRestore(restoreTarget)
                         updates.statusMessage = "Recovery scheduled for \(restoreTarget.record.name). Close Kinetiq fully and reopen it to restore the previous version."
-                    } catch { error = error.localizedDescription }
+                    } catch { self.error = error.localizedDescription }
                     self.restoreTarget = nil
                 }
             }
@@ -2188,7 +2188,7 @@ struct KinetiqModuleUpdateCenterView: View {
 
     @MainActor private func install(_ offer: KinetiqModuleUpdateOffer) async {
         do { try await updates.update(offer) }
-        catch { error = error.localizedDescription }
+        catch { self.error = error.localizedDescription }
     }
 }
 
