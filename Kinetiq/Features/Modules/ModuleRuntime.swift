@@ -127,6 +127,8 @@ enum ModuleRuntimeError: LocalizedError {
     case invalidHTTPResponse
     case invalidResult
     case invalidStream
+    case sourceNoMedia
+    case sourceReportedFailure
 
     var errorDescription: String? {
         switch self {
@@ -179,7 +181,13 @@ enum ModuleRuntimeError: LocalizedError {
             return "The module returned data Kinetiq could not understand."
 
         case .invalidStream:
-            return "The module did not return a valid playable stream."
+            return "The source returned no recognizable playable media URL."
+
+        case .sourceNoMedia:
+            return "This source has no playable stream for the selected episode or language. Try a different episode or the source's other available language."
+
+        case .sourceReportedFailure:
+            return "The source reported a problem while resolving this episode. Copy diagnostics for the source status and network response classes."
         }
     }
 }
@@ -211,6 +219,8 @@ enum ModulePlaybackDiagnostics {
         if let module = error as? ModuleRuntimeError {
             switch module {
             case .invalidStream: return "E01_NO_ACCEPTED_STREAM"
+            case .sourceNoMedia: return "SOURCE_NO_MEDIA_FOR_EPISODE"
+            case .sourceReportedFailure: return "SOURCE_REPORTED_RESOLVE_FAILURE"
             case .handlerTimedOut: return "RUNTIME_HANDLER_TIMEOUT"
             case .missingHandler: return "RUNTIME_MISSING_HANDLER"
             case .handlerFailed: return "RUNTIME_HANDLER_FAILED"
@@ -326,6 +336,23 @@ enum ModulePlaybackDiagnostics {
     /// Failure classification is intentionally vocabulary-only: provider error
     /// values may contain signed URLs, tokens, or private request details.
     /// Return fixed labels instead of copying provider-controlled text.
+    static func providerErrorCategory(_ message: String) -> String {
+        let lower = message.lowercased()
+        if lower.contains("429") || lower.contains("rate limit") ||
+            lower.contains("too many requests") { return "SOURCE_RATE_LIMITED" }
+        if lower.contains("403") || lower.contains("forbidden") ||
+            lower.contains("access denied") { return "SOURCE_ACCESS_DENIED" }
+        if lower.contains("cloudflare") || lower.contains("captcha") ||
+            lower.contains("challenge") { return "SOURCE_CHALLENGE" }
+        if lower.contains("timeout") || lower.contains("timed out") {
+            return "SOURCE_TIMEOUT"
+        }
+        if lower.contains("404") || lower.contains("not found") {
+            return "SOURCE_NOT_FOUND"
+        }
+        return "SOURCE_HANDLER_ERROR_OTHER"
+    }
+
     static func sourceResponseStatus(_ response: Any) -> String {
         guard let object = response as? [String: Any] else {
             return "response is not an object"
@@ -333,9 +360,15 @@ enum ModulePlaybackDiagnostics {
         let streams = object["streams"] as? [Any]
         let sources = object["sources"] as? [Any]
         let empty = (streams?.isEmpty == true || sources?.isEmpty == true)
-        let value = ["error", "reason", "message", "status"]
+        let flat = ["error", "reason", "message", "status"]
             .compactMap { object[$0] as? String }
-            .first?.lowercased() ?? ""
+        let nested = ["error", "errors", "reason"]
+            .compactMap { object[$0] as? [String: Any] }
+            .flatMap { dictionary in
+                ["message", "reason", "code", "status"]
+                    .compactMap { dictionary[$0] as? String }
+            }
+        let value = (flat + nested).joined(separator: " ").lowercased()
         let category: String
         if value.contains("timeout") || value.contains("timed out") || value.contains("deadline") {
             category = "SOURCE_TIMEOUT"
@@ -350,7 +383,9 @@ enum ModulePlaybackDiagnostics {
         } else if value.contains("not found") || value.contains("404") {
             category = "SOURCE_NOT_FOUND"
         } else if value.isEmpty {
-            category = "NO_SOURCE_ERROR_TEXT"
+            category = object["error"] != nil || object["errors"] != nil
+                ? "SOURCE_REPORTED_ERROR_WITHOUT_TEXT"
+                : "NO_SOURCE_ERROR_TEXT"
         } else {
             category = "SOURCE_ERROR_OTHER"
         }
@@ -373,6 +408,9 @@ enum ModulePlaybackDiagnostics {
 
 private struct RuntimeManifest: Decodable {
     let contentType: String?
+    let moduleVersion: String?
+    let version: String?
+    let moduleIdentity: String?
     let config: RuntimeManifestConfiguration
 }
 
@@ -451,6 +489,7 @@ private final class ModuleManualRedirectDelegate: NSObject, URLSessionTaskDelega
 private struct ModuleFetchOptions: Decodable {
     let followRedirects: Bool?
     let maxBytesHint: Int?
+    let timeoutMs: Int?
 }
 
 // MARK: - Module Networking
@@ -622,8 +661,13 @@ private actor SynthetiqModuleNetworkClient {
         var request = URLRequest(url: resolvedURL)
 
         request.httpMethod = normalizedMethod
-        request.timeoutInterval =
-            Double(timeoutMilliseconds) / 1_000
+        // A module can ask for a *shorter* provider timeout (e.g. hoster
+        // failover), but never increase the manifest's native request limit.
+        let perRequestTimeout = min(
+            timeoutMilliseconds,
+            max(500, bridgeOptions?.timeoutMs ?? timeoutMilliseconds)
+        )
+        request.timeoutInterval = Double(perRequestTimeout) / 1_000
 
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = true
@@ -761,6 +805,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
     let timeoutMilliseconds: Int
     let maximumHomeResults: Int
     let moduleName: String
+    let moduleVersion: String
+    let packageSHA256Prefix: String
     let defaultStreamHeaders: [String: String]
 
     private let jsQueue = DispatchQueue(
@@ -868,6 +914,8 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         timeoutMilliseconds = timeout
         maximumHomeResults = homeLimit
         moduleName = record.name
+        moduleVersion = String((manifest.moduleVersion ?? manifest.version ?? "unknown").prefix(48))
+        packageSHA256Prefix = String(record.packageSHA256.prefix(12))
         // Only inherit non-secret presentation / media request metadata.
         // Credential headers MUST come from the actual extracted stream to
         // avoid forwarding unrelated provider secrets to an arbitrary CDN.
@@ -1191,6 +1239,10 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
                         maxBytesHint: typeof opts.maxBytesHint === 'number' &&
                             Number.isFinite(opts.maxBytesHint)
                             ? Math.max(1024, Math.min(8000000, Math.floor(opts.maxBytesHint)))
+                            : undefined,
+                        timeoutMs: typeof opts.timeoutMs === 'number' &&
+                            Number.isFinite(opts.timeoutMs)
+                            ? Math.max(500, Math.min(30000, Math.floor(opts.timeoutMs)))
                             : undefined
                     });
                 } catch (error) {
@@ -2037,8 +2089,10 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
     /// Available before the AVPlayer screen exists (Error 01 and handler failures).
     var diagnosticSummary: String {
         let header = [
-            "Kinetiq module diagnostics · Batch 05F",
+            "Kinetiq module diagnostics · Batch 05K playback triage",
             "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
+            "Module version: \(ModulePlaybackDiagnostics.redact(runtime.moduleVersion, limit: 48))",
+            "Package SHA-256 prefix: \(runtime.packageSHA256Prefix)",
             "Episode number: \(ModulePlaybackDiagnostics.redact(diagnosticEpisodeNumber ?? currentEpisode?.number ?? "Unknown", limit: 30))",
             "Language: \(diagnosticLanguage)",
             "Failure code: \(resolutionFailureCode ?? "none")",
@@ -2220,9 +2274,19 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                         // source has not supplied anything AVPlayer can open.
                         // One explicit refresh may bypass stale provider cache
                         // and lets the module retry cold-start servers.
+                        let isEmptyOrUnrecognized: Bool
+                        if let moduleError = error as? ModuleRuntimeError {
+                            switch moduleError {
+                            case .invalidStream, .sourceNoMedia:
+                                isEmptyOrUnrecognized = true
+                            default:
+                                isEmptyOrUnrecognized = false
+                            }
+                        } else {
+                            isEmptyOrUnrecognized = false
+                        }
                         guard !forceRefresh, !didRetryEmptyResult,
-                              let moduleError = error as? ModuleRuntimeError,
-                              case .invalidStream = moduleError else {
+                              isEmptyOrUnrecognized else {
                             throw error
                         }
                         didRetryEmptyResult = true
@@ -2300,13 +2364,27 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
                     playbackError = nil
                     resolutionFailureCode = nil
                     trace("Selected \(preferredStream.isWebEmbed ? "web embed" : "native stream") using server-health ranking")
+                    KinetiqModuleHealthStore.shared.record(
+                        sourceID: sourceID, version: runtime.moduleVersion,
+                        packagePrefix: runtime.packageSHA256Prefix,
+                        succeeded: true
+                    )
                     return true
                 } catch {
                     resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
                     trace("\(reference == episode.href ? "href" : "id") attempt failed after \(String(format: "%.1f", Date().timeIntervalSince(attemptStart)))s: \(resolutionFailureCode ?? "unknown")")
-                    if let moduleError = error as? ModuleRuntimeError,
-                       case .handlerTimedOut = moduleError {
-                        throw moduleError
+                    if let moduleError = error as? ModuleRuntimeError {
+                        if case .handlerTimedOut = moduleError { throw moduleError }
+                        if case .handlerFailed(let providerText) = moduleError {
+                            let category = ModulePlaybackDiagnostics.providerErrorCategory(providerText)
+                            trace("Handler failure class: \(category)")
+                            // Retrying another identifier after explicit 429,
+                            // 403 or a challenge can multiply denied requests.
+                            if ["SOURCE_RATE_LIMITED", "SOURCE_ACCESS_DENIED",
+                                "SOURCE_CHALLENGE"].contains(category) {
+                                throw moduleError
+                            }
+                        }
                     }
                     trace("Source network at failure: \(await runtime.networkDiagnosticSummary())")
                     lastError = error
@@ -2322,6 +2400,11 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
             resolutionFailureCode = ModulePlaybackDiagnostics.code(for: error)
             playbackError = error.localizedDescription
             trace("Resolution stopped: \(resolutionFailureCode ?? "unknown")")
+            KinetiqModuleHealthStore.shared.record(
+                sourceID: sourceID, version: runtime.moduleVersion,
+                packagePrefix: runtime.packageSHA256Prefix,
+                succeeded: false, failureCode: resolutionFailureCode
+            )
             return false
         }
     }
@@ -3037,7 +3120,32 @@ enum ModuleRuntimeDecoder {
             }
         }
 
-        guard !choices.isEmpty else { throw ModuleRuntimeError.invalidStream }
+        guard !choices.isEmpty else {
+            // Some source APIs distinguish a genuinely unavailable episode
+            // from a malformed response with an explicit empty array.
+            // Return no fabricated media URL, and retain this distinction in
+            // the on-device failure report.
+            let containsExplicitEmpty = ["streams", "sources", "servers"]
+                .contains { key in
+                    if let entries = root[key] as? [Any] { return entries.isEmpty }
+                    return false
+                }
+            if root["error"] != nil || root["errors"] != nil ||
+               root["success"] as? Bool == false {
+                // Error and empty-stream fields may coexist. Preserve
+                // access-denied/rate-limit/host-failure diagnostics instead
+                // of flattening every provider error to "no media".
+                let providerClass = ModulePlaybackDiagnostics.sourceResponseStatus(root)
+                if containsExplicitEmpty && providerClass.contains("SOURCE_NO_MEDIA") {
+                    throw ModuleRuntimeError.sourceNoMedia
+                }
+                throw ModuleRuntimeError.sourceReportedFailure
+            }
+            if containsExplicitEmpty {
+                throw ModuleRuntimeError.sourceNoMedia
+            }
+            throw ModuleRuntimeError.invalidStream
+        }
         return choices
     }
 
@@ -3059,46 +3167,24 @@ enum ModuleRuntimeDecoder {
 
 // MARK: - Module Trust Store
 
+// 05L: Trust follows the *repository* and its pinned catalogue identity, not
+// each package hash. Native ZIP SHA-256 verification remains mandatory and
+// publisher signatures are NEVER inferred from the repository's own claims.
+@MainActor
 enum ModuleRuntimeTrustStore {
-
-    private static let storageKey =
-        "kinetiq.modules.trustedPackageHashes"
-
-    static func isTrusted(
-        _ record: InstalledModuleRecord
-    ) -> Bool {
-        let trusted = UserDefaults.standard.stringArray(
-            forKey: storageKey
-        ) ?? []
-
-        return trusted.contains(
-            trustIdentifier(for: record)
-        )
+    static func isTrusted(_ record: InstalledModuleRecord) -> Bool {
+        guard let repository = ModuleSourceStore.shared.repositories.first(where: {
+            $0.url.absoluteString == record.repositoryURL
+        }) else { return false }
+        let trust = KinetiqRepositoryTrustStore.shared
+        return trust.allowsRuntime(for: repository, installedModuleID: record.moduleID)
     }
 
-    static func trust(
-        _ record: InstalledModuleRecord
-    ) {
-        var trusted = UserDefaults.standard.stringArray(
-            forKey: storageKey
-        ) ?? []
-
-        let identifier = trustIdentifier(for: record)
-
-        if !trusted.contains(identifier) {
-            trusted.append(identifier)
-        }
-
-        UserDefaults.standard.set(
-            trusted,
-            forKey: storageKey
-        )
-    }
-
-    private static func trustIdentifier(
-        for record: InstalledModuleRecord
-    ) -> String {
-        "\(record.sourceID)|\(record.packageSHA256)"
+    static func trust(_ record: InstalledModuleRecord) {
+        guard let repository = ModuleSourceStore.shared.repositories.first(where: {
+            $0.url.absoluteString == record.repositoryURL
+        }) else { return }
+        KinetiqRepositoryTrustStore.shared.approve(repository)
     }
 }
 
@@ -3149,6 +3235,9 @@ struct ModuleBrowserView: View {
 
     @StateObject private var packageStore =
         ModulePackageStore.shared
+    @StateObject private var repositoryTrustStore =
+        KinetiqRepositoryTrustStore.shared
+    @StateObject private var sourceStore = ModuleSourceStore.shared
 
     @State private var runtime: SynthetiqModuleRuntime?
 
@@ -3182,15 +3271,25 @@ struct ModuleBrowserView: View {
             return "not-installed"
         }
 
-        return "\(record.sourceID)|\(record.packageSHA256)"
+        return "\(record.sourceID)|\(record.packageSHA256)|\(isTrusted)"
     }
 
     private var isTrusted: Bool {
-        guard let record = installedRecord else {
-            return false
-        }
+        guard let record = installedRecord,
+              let repository = sourceStore.repositories.first(where: {
+                  $0.url.absoluteString == record.repositoryURL
+              }) else { return false }
+        return repositoryTrustStore.allowsRuntime(
+            for: repository, installedModuleID: record.moduleID
+        )
+    }
 
-        return ModuleRuntimeTrustStore.isTrusted(record)
+    // 05N: A repository may advertise a newer package while the last-known-
+    // good version remains installed. Keep that version playable until the
+    // user updates it; do not force new downloads or erase playback history.
+    private func hasInstalledFiles(_ record: InstalledModuleRecord) -> Bool {
+        FileManager.default.fileExists(atPath: record.entryScriptPath)
+            && FileManager.default.fileExists(atPath: record.manifestPath)
     }
 
     var body: some View {
@@ -3198,7 +3297,7 @@ struct ModuleBrowserView: View {
             if source.module.contentType?.lowercased() != "video" {
                 unsupportedContent
             } else if let record = installedRecord,
-                      !packageStore.isInstalled(source) {
+                      !hasInstalledFiles(record) {
                 notInstalled
             } else if installedRecord == nil {
                 notInstalled
@@ -3254,17 +3353,17 @@ struct ModuleBrowserView: View {
             }
         }
         .alert(
-            "Trust \(source.title)?",
+            "Trust this repository?",
             isPresented: $showingTrustConfirmation
         ) {
-            Button("Trust and Load", role: .destructive) {
+            Button("Trust Repository and Load") {
                 trustAndLoad()
             }
 
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "This installs third-party JavaScript into Kinetiq's module runtime. The module can make network requests to its source and other servers it uses. Only trust a module from a repository you trust. Kinetiq does not yet independently verify the publisher signature."
+                "Approving the repository lets its installed modules run without asking again for every version or source. ZIP SHA-256 integrity is still checked; community approval does not cryptographically authenticate the publisher."
             )
         }
     }
@@ -3312,19 +3411,19 @@ struct ModuleBrowserView: View {
     private var trustRequired: some View {
         ContentUnavailableView {
             Label(
-                "Module Trust Required",
+                "Repository Trust Required",
                 systemImage: "hand.raised.fill"
             )
         } description: {
             Text(
-                "Review the trust warning before allowing this module's JavaScript to run."
+                "Approve this community repository once before running its installed modules. Publisher identity changes will require review."
             )
         } actions: {
             Button {
                 showingTrustConfirmation = true
             } label: {
                 Label(
-                    "Review and Trust",
+                    "Trust Repository",
                     systemImage: "checkmark.shield"
                 )
             }
@@ -3358,7 +3457,7 @@ struct ModuleBrowserView: View {
         lastSearchDiagnostics = nil
 
         guard let record = installedRecord,
-              packageStore.isInstalled(source),
+              hasInstalledFiles(record),
               ModuleRuntimeTrustStore.isTrusted(record) else {
             return
         }
@@ -3374,7 +3473,7 @@ struct ModuleBrowserView: View {
             let loadedRuntime = try SynthetiqModuleRuntime(record: record)
             guard !Task.isCancelled,
                   activePreparationID == requestID,
-                  runtimeIdentity == "\(record.sourceID)|\(record.packageSHA256)" else { return }
+                  runtimeIdentity == "\(record.sourceID)|\(record.packageSHA256)|\(isTrusted)" else { return }
             runtime = loadedRuntime
         } catch {
             guard !Task.isCancelled,

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 @testable import Kinetiq
 
@@ -96,5 +97,223 @@ final class ModuleDiscoveryContractTests: XCTestCase {
         )
         XCTAssertEqual(result.count, 12)
         XCTAssertTrue(result.allSatisfy { $0.cards.count == 40 })
+    }
+
+
+    // MARK: - Batch 05K Source Playback Triage
+
+    func testSourceAdvertisedNoStreamIsNotDecoderError() {
+        // Synthetiq One deliberately returns this shape when a DUB
+        // stream is not currently cached; inventing an MP4 URL is forbidden.
+        let result: [String: Any] = ["streams": []]
+        XCTAssertThrowsError(try ModuleRuntimeDecoder.streams(
+            from: result, title: "Unavailable episode", baseURL: baseURL
+        )) { error in
+            XCTAssertEqual(ModulePlaybackDiagnostics.code(for: error),
+                           "SOURCE_NO_MEDIA_FOR_EPISODE")
+        }
+    }
+
+    func testFlatStreamPairsPreserveSourceOrderAndHeaders() throws {
+        // The V3/V4 documented flat [label, URL, ...] format is shared
+        // by source modules and self-authored modules like ReAnime.
+        let result: [String: Any] = [
+            "streams": ["HD 1080p", "https://media.example.org/1080.m3u8",
+                        "SD 480p", "https://media.example.org/480.m3u8"],
+            "streamType": "hls",
+            "headers": ["Referer": "https://source.example.org/"]
+        ]
+        let streams = try ModuleRuntimeDecoder.streams(
+            from: result, title: "Example", baseURL: baseURL
+        )
+        XCTAssertEqual(streams.count, 2)
+        XCTAssertEqual(streams.map(\.label), ["HD 1080p", "SD 480p"])
+        XCTAssertEqual(streams.first?.headers["Referer"],
+                       "https://source.example.org/")
+        XCTAssertFalse(streams[0].isWebEmbed)
+    }
+
+    func testMegaKinoTxtHLSIsNativeAndDoesNotFabricateExtension() throws {
+        // GXPlayer can supply an HLS master whose URL ends with .txt.
+        // Its explicit streamType, not its suffix, is the deciding hint.
+        let result: [String: Any] = [
+            "streams": ["Deutsch Dub", "https://cdn.example.org/m3u8/123/master.txt?s=1"],
+            "streamType": "hls"
+        ]
+        let streams = try ModuleRuntimeDecoder.streams(
+            from: result, title: "Film", baseURL: baseURL
+        )
+        XCTAssertEqual(streams.first?.url.pathExtension, "txt")
+        XCTAssertEqual(streams.first?.streamType, "hls")
+        XCTAssertEqual(streams.first?.isWebEmbed, false)
+    }
+
+    func testProviderErrorClassificationDoesNotExposeDetails() {
+        let result: [String: Any] = [
+            "streams": [],
+            "error": ["message": "HTTP 403 forbidden https://example.org/?token=secret"]
+        ]
+        let summary = ModulePlaybackDiagnostics.sourceResponseStatus(result)
+        XCTAssertTrue(summary.contains("SOURCE_ACCESS_DENIED"))
+        XCTAssertFalse(summary.contains("token="))
+        XCTAssertFalse(summary.contains("secret"))
+    }
+
+    func testExplicitProviderFailureIsNotFlattenedToEmptyMedia() {
+        let result: [String: Any] = [
+            "streams": [], "error": ["message": "HTTP 403 forbidden"]
+        ]
+        XCTAssertThrowsError(try ModuleRuntimeDecoder.streams(
+            from: result, title: "Blocked episode", baseURL: baseURL
+        )) { error in
+            XCTAssertEqual(ModulePlaybackDiagnostics.code(for: error),
+                           "SOURCE_REPORTED_RESOLVE_FAILURE")
+        }
+    }
+
+    func testAccessDenialDoesNotGetLabelledAsNoMedia() {
+        XCTAssertEqual(ModulePlaybackDiagnostics.providerErrorCategory(
+            "HTTP 429 - too many requests"), "SOURCE_RATE_LIMITED")
+        XCTAssertEqual(ModulePlaybackDiagnostics.providerErrorCategory(
+            "Cloudflare challenge"), "SOURCE_CHALLENGE")
+    }
+}
+
+// MARK: - 05L-05O repository security regression tests
+// These run WITHOUT contacting real source websites. They do not certify any
+// particular publisher, CDN, playback stream, or physical iPhone result.
+
+final class KinetiqRepositoryPolicyTests: XCTestCase {
+    private func sourceModule(_ id: String = "demo-v1", identity: String = "DEMO-VID-1") throws -> ModuleRepositoryModule {
+        let object: [String: Any] = [
+            "moduleId": id, "moduleFamilyId": "demo", "moduleIdentity": identity,
+            "moduleIdentityNumber": 1, "contentType": "video", "version": "1.0.0",
+            "sha256": String(repeating: "a", count: 64),
+            "packageUrl": "https://example.org/demo.zip"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(ModuleRepositoryModule.self, from: data)
+    }
+
+    func testUnsafeRepositoryURLsAreRejected() {
+        let rejected = [
+            "http://example.org/repository.json",
+            "https://localhost/repository.json",
+            "https://127.0.0.1/repository.json",
+            "https://10.1.2.3/repository.json",
+            "https://172.16.3.4/repository.json",
+            "https://192.168.1.50/repository.json",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://100.64.0.1/repository.json",
+            "https://user:password@example.org/repository.json",
+            "https://example.local/repository.json",
+            "https://[::1]/repository.json",
+            "file:///tmp/repository.json"
+        ]
+        for raw in rejected {
+            guard let url = URL(string: raw) else { continue }
+            XCTAssertFalse(KinetiqRepositorySecurity.isPublicHTTPS(url), "Allowed unsafe URL: \(raw)")
+        }
+    }
+
+    func testPublicRepositoryAndPackageURLsRemainAvailable() {
+        for raw in [
+            "https://raw.githubusercontent.com/kas021/Synthetiq-Modules/main/repository.json",
+            "https://github.com/Haimiya612/Kinetiq-Modules/releases/download/v1/module.zip",
+            "https://cdn.example.org/media/module.zip"
+        ] {
+            XCTAssertTrue(KinetiqRepositorySecurity.isPublicHTTPS(URL(string: raw)!))
+        }
+    }
+
+    func testRepositoryRedirectCannotChangePublisherOwner() {
+        let initial = URL(string: "https://raw.githubusercontent.com/owner-a/my-modules/main/repository.json")!
+        let safe = URL(string: "https://raw.githubusercontent.com/owner-a/my-modules/main/catalogue.json")!
+        let stolen = URL(string: "https://raw.githubusercontent.com/owner-b/my-modules/main/repository.json")!
+        XCTAssertTrue(KinetiqRepositorySecurity.isSamePublisherScope(initial: initial, redirected: safe))
+        XCTAssertFalse(KinetiqRepositorySecurity.isSamePublisherScope(initial: initial, redirected: stolen))
+        XCTAssertFalse(KinetiqRepositorySecurity.isSamePublisherScope(
+            initial: initial,
+            redirected: URL(string: "https://example.net/repository.json")!))
+    }
+
+    func testPackageHashAndSameVersionMutationDetection() {
+        XCTAssertTrue(KinetiqRepositorySecurity.isValidSHA(String(repeating: "a", count: 64)))
+        XCTAssertFalse(KinetiqRepositorySecurity.isValidSHA("not-a-hash"))
+        XCTAssertTrue(KinetiqRepositorySecurity.sameVersionMutation(
+            installedVersion: "1.0.0", installedSHA: String(repeating: "a", count: 64),
+            listedVersion: "1.0.0", listedSHA: String(repeating: "b", count: 64)))
+        XCTAssertFalse(KinetiqRepositorySecurity.sameVersionMutation(
+            installedVersion: "1.0.0", installedSHA: String(repeating: "a", count: 64),
+            listedVersion: "1.0.1", listedSHA: String(repeating: "b", count: 64)))
+    }
+
+    func testUpdatePolicyRejectsReusedVersionAndDowngrade() {
+        let a = String(repeating: "a", count: 64)
+        let b = String(repeating: "b", count: 64)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.0.1", listedSHA: a, installedVersion: nil, installedSHA: nil), .notInstalled)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.0.1", listedSHA: a, installedVersion: "1.0.1", installedSHA: a), .current)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.0.1", listedSHA: b, installedVersion: "1.0.1", installedSHA: a), .sameVersionMutation)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.9.0", listedSHA: b, installedVersion: "1.10.0", installedSHA: a), .downgrade)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.10.0", listedSHA: b, installedVersion: "1.9.0", installedSHA: a), .updateAvailable)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "2", listedSHA: "incorrect", installedVersion: nil, installedSHA: nil), .incomplete)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.compareVersions("1.0.5-beta.9", "1.0.5-beta.10"),
+                       .orderedAscending)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.compareVersions("1.0.5-beta.4", "1.0.5-beta.3"),
+                       .orderedDescending)
+    }
+
+    func testExistingModuleIdentityChangeIsDetected() throws {
+        let original = try sourceModule("same-id", identity: "ACME-VID-01")
+        let replaced = try sourceModule("same-id", identity: "MALICIOUS-VID-01")
+        XCTAssertFalse(KinetiqRepositorySecurity.expectedIdentityIsStable(
+            original.stablePublisherIdentity, replaced.stablePublisherIdentity))
+        XCTAssertEqual(original.stablePublisherIdentity, original.stablePublisherIdentity)
+    }
+
+    func testSignedCanonicalMessageAndTamperRejection() throws {
+        let original = try sourceModule()
+        let originalMessage = KinetiqPublisherSignature.canonicalMessage(
+            repositoryID: "approved-publisher", issuedAtMs: 1_800_000_000_000, modules: [original])
+        let privateKey = P256.Signing.PrivateKey()
+        let signature = try privateKey.signature(for: originalMessage)
+        let base64 = signature.rawRepresentation.base64EncodedString()
+        XCTAssertTrue(KinetiqPublisherSignature.verify(
+            signatureBase64: base64, message: originalMessage,
+            publicKey: privateKey.publicKey.rawRepresentation))
+        let modified = KinetiqPublisherSignature.canonicalMessage(
+            repositoryID: "different-publisher", issuedAtMs: 1_800_000_000_000, modules: [original])
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: base64, message: modified,
+            publicKey: privateKey.publicKey.rawRepresentation))
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: "not-base64", message: originalMessage,
+            publicKey: privateKey.publicKey.rawRepresentation))
+    }
+
+    @MainActor
+    func testCommunityApprovalCoversModulesButReapprovalForIdentityChange() throws {
+        let module = try sourceModule()
+        let url = URL(string: "https://example.org/\(UUID().uuidString)/repository.json")!
+        var repository = ModuleRepositoryRecord(
+            url: url, repositoryId: "publisher-A", name: "Example",
+            modules: [module], lastRefreshed: Date(), refreshError: nil)
+        let trust = KinetiqRepositoryTrustStore.shared
+        defer { trust.revoke(repository) }
+        XCTAssertEqual(trust.trust(for: repository), .approvalNeeded)
+        trust.approve(repository)
+        XCTAssertEqual(trust.trust(for: repository), .communityApproved)
+        // Adding another module under the SAME owner should not prompt again.
+        repository.modules.append(try sourceModule("extra-v1", identity: "EXTRA-VID-2"))
+        XCTAssertEqual(trust.trust(for: repository), .communityApproved)
+        // Reusing an existing ID with a different publisher identity is blocked.
+        repository.modules[0] = try sourceModule("demo-v1", identity: "NEW-VID-IDENTITY")
+        XCTAssertEqual(trust.trust(for: repository), .changedPublisher)
     }
 }
