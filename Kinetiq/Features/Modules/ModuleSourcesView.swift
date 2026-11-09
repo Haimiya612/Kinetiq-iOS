@@ -933,7 +933,7 @@ struct ModuleSourcesView: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                         ForEach(store.sources(in: repo)) { source in
-                            ModuleSourceListRow(source: source, isSelected: store.isSelected(source.id)) {
+                            KinetiqApprovedModuleSourceRow(source: source, isSelected: store.isSelected(source.id)) {
                                 store.selectSource(source.id)
                             }
                         }
@@ -1201,7 +1201,7 @@ struct ModuleSourcesView: View {
 
 // MARK: - Source row (no per-module trust prompt)
 
-struct ModuleSourceListRow: View {
+struct KinetiqApprovedModuleSourceRow: View {
     let source: ModuleSourceOption
     let isSelected: Bool
     let onSelect: () -> Void
