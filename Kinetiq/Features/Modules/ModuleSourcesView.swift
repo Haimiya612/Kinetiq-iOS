@@ -887,6 +887,8 @@ struct ModuleSourcesView: View {
     @StateObject private var packageStore = ModulePackageStore.shared
     @StateObject private var trustStore = KinetiqRepositoryTrustStore.shared
     @StateObject private var healthStore = KinetiqModuleHealthStore.shared
+    @StateObject private var updateCenter = KinetiqModuleUpdateCenterStore.shared
+    @State private var showingUpdateCenter = false
 
     @State private var repositoryURL = ModuleSourceStore.synthetiqRepositoryURL
     @State private var adding = false
@@ -915,12 +917,21 @@ struct ModuleSourcesView: View {
 
     var body: some View {
         reportPresentation
-            .task { await store.loadSavedRepositoriesIfNeeded() }
-            .refreshable { await store.refreshAll() }
+            .task {
+                await store.loadSavedRepositoriesIfNeeded()
+                updateCenter.scan()
+            }
+            .refreshable {
+                await store.refreshAll()
+                updateCenter.scan()
+            }
     }
 
     private var reportPresentation: some View {
         batchConfirmationPresentation
+            .fullScreenCover(isPresented: $showingUpdateCenter) {
+                KinetiqModuleUpdateCenterView()
+            }
             .alert("Module Report", isPresented: $showReport) {
                 Button("Copy Report") { UIPasteboard.general.string = report ?? "" }
                 Button("OK", role: .cancel) {}
@@ -974,6 +985,7 @@ struct ModuleSourcesView: View {
     private var navigationPresentation: some View {
         Form {
             addRepositorySection
+            moduleUpdatesSection
             connectedRepositoriesSection
             sourceSelectionSection
         }
@@ -1025,6 +1037,37 @@ struct ModuleSourcesView: View {
     private var cannotAddRepository: Bool {
         adding || store.isRefreshing ||
             repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var moduleUpdatesSection: some View {
+        Section {
+            Button {
+                updateCenter.scan()
+                showingUpdateCenter = true
+            } label: {
+                HStack {
+                    Label("Module Update Center", systemImage: "arrow.down.circle")
+                    Spacer()
+                    if !updateCenter.updates.isEmpty {
+                        Text("\(updateCenter.updates.count)")
+                            .font(.caption.weight(.bold))
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !updateCenter.blocked.isEmpty {
+                Label("\(updateCenter.blocked.count) release(s) need review",
+                      systemImage: "exclamationmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Available Updates")
+        } footer: {
+            Text("Open the full-screen update center for publisher release notes, safe updates, and previous-version recovery.")
+        }
     }
 
     private var connectedRepositoriesSection: some View {
@@ -1307,6 +1350,9 @@ struct ModuleSourcesView: View {
                 batchCurrent = source.module.displayName
                 if releaseState(source).permitsAutomaticInstall {
                     do {
+                        if let installed = packageStore.installedModule(for: source) {
+                            try KinetiqModuleRollbackVault.capture(installed)
+                        }
                         try await packageStore.install(source)
                         batchInstalled += 1
                     } catch is CancellationError { break }
@@ -1537,7 +1583,684 @@ struct KinetiqApprovedModuleSourceRow: View {
             errorMessage = "Trust this repository first, or review the blocked release."
             return
         }
-        do { try await packageStore.install(source) }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            if release == .updateAvailable,
+               let original = packageStore.installedModule(for: source) {
+                try KinetiqModuleRollbackVault.capture(original)
+            }
+            try await packageStore.install(source)
+            KinetiqModuleUpdateCenterStore.shared.scan()
+        } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+// MARK: - Batch 05P-B: Real repository module update center
+// Kept in ModuleSourcesView.swift so this batch does not require an
+// unverified Xcode project.pbxproj change.
+
+struct KinetiqModuleUpdateOffer: Identifiable {
+    let source: ModuleSourceOption
+    let repository: ModuleRepositoryRecord
+    let installed: InstalledModuleRecord
+
+    var id: String { source.id }
+    var revisionToken: String {
+        // Release-specific notification key; changed versions notify again.
+        let version = source.module.version ?? ""
+        let digest = source.module.sha256?.lowercased() ?? ""
+        return SHA256.hash(data: Data((id + "\n" + version + "\n" + digest).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+    var releaseNotes: [String] {
+        (source.module.changelog ?? []).prefix(24).compactMap { raw -> String? in
+            let note = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return note.isEmpty ? nil : String(note.prefix(800))
+        }
+    }
+    var newVersion: String { source.module.version ?? "Unknown" }
+    @MainActor var publisherStatus: KinetiqRepositoryTrust {
+        KinetiqRepositoryTrustStore.shared.trust(for: repository)
+    }
+}
+
+struct KinetiqModuleBlockedRelease: Identifiable {
+    let id: String
+    let name: String
+    let installedVersion: String
+    let listedVersion: String
+    let reason: String
+}
+
+@MainActor
+final class KinetiqModuleUpdateCenterStore: ObservableObject {
+    static let shared = KinetiqModuleUpdateCenterStore()
+
+    @Published private(set) var updates: [KinetiqModuleUpdateOffer] = []
+    @Published private(set) var blocked: [KinetiqModuleBlockedRelease] = []
+    @Published private(set) var dismissedRevisions: Set<String> = []
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var activeModuleID: String?
+    @Published private(set) var installedThisSession = 0
+    @Published private(set) var processed = 0
+    @Published private(set) var total = 0
+    @Published var statusMessage: String?
+
+    private static let dismissKey = "kinetiq.modules.updateDismissals.05PB.v1"
+    private let sources = ModuleSourceStore.shared
+    private let packages = ModulePackageStore.shared
+    private let trust = KinetiqRepositoryTrustStore.shared
+
+    private init() {
+        dismissedRevisions = Set(UserDefaults.standard.stringArray(forKey: Self.dismissKey) ?? [])
+    }
+
+    var newUndismissedUpdates: [KinetiqModuleUpdateOffer] {
+        updates.filter { !dismissedRevisions.contains($0.revisionToken) }
+    }
+    var canUpdateAny: Bool {
+        activeModuleID == nil && updates.contains { trust.trust(for: $0.repository).allowsInstall }
+    }
+
+    /// No update is announced merely because a new module is in the catalog.
+    /// Only an installed source with a strictly newer, hash-pinned version
+    /// qualifies. Same-version mutations and downgrades are warning-only.
+    func scan() {
+        var next: [KinetiqModuleUpdateOffer] = []
+        var rejected: [KinetiqModuleBlockedRelease] = []
+        for repo in sources.repositories {
+            for source in sources.sources(in: repo) {
+                guard let installed = packages.installedModule(for: source) else { continue }
+                let state = KinetiqModuleReleasePolicy.status(
+                    listedVersion: source.module.version,
+                    listedSHA: source.module.sha256,
+                    installedVersion: installed.version,
+                    installedSHA: installed.packageSHA256
+                )
+                let trustState = trust.trust(for: repo)
+                if state == .updateAvailable && repo.refreshError == nil &&
+                    source.module.contentType?.lowercased() == "video" && source.packageURL != nil {
+                    if trustState.allowsInstall {
+                        next.append(KinetiqModuleUpdateOffer(source: source,
+                                                             repository: repo, installed: installed))
+                    } else {
+                        rejected.append(.init(id: source.id, name: installed.name,
+                                              installedVersion: installed.version,
+                                              listedVersion: source.module.version ?? "?",
+                                              reason: "Repository approval or publisher review required: \(trustState.rawValue)."))
+                    }
+                } else if state == .updateAvailable && repo.refreshError != nil {
+                    rejected.append(.init(id: source.id, name: installed.name,
+                                          installedVersion: installed.version,
+                                          listedVersion: source.module.version ?? "?",
+                                          reason: "Repository could not be refreshed. Cached update is not eligible for installation."))
+                } else if state == .sameVersionMutation || state == .downgrade {
+                    let reason = state == .sameVersionMutation
+                        ? "Same version number, different ZIP checksum. Update blocked."
+                        : "Repository advertises an older version. Automatic downgrade blocked."
+                    rejected.append(.init(id: source.id, name: installed.name,
+                                          installedVersion: installed.version,
+                                          listedVersion: source.module.version ?? "?", reason: reason))
+                }
+            }
+        }
+        let currentIDs = Set(sources.availableSources.map(\.id))
+        for record in packages.installedModules.values where !currentIDs.contains(record.sourceID) {
+            rejected.append(.init(id: record.sourceID, name: record.name,
+                                  installedVersion: record.version, listedVersion: "Not listed",
+                                  reason: "Installed version is preserved; the original source is no longer listed in a connected repository."))
+        }
+        updates = next.sorted { $0.source.module.displayName.localizedCaseInsensitiveCompare(
+            $1.source.module.displayName) == .orderedAscending }
+        blocked = rejected.sorted { $0.name < $1.name }
+    }
+
+    /// App launch calls this once after the saved repository catalogues load.
+    func checkForUpdatesOnLaunch() async -> Bool {
+        await sources.loadSavedRepositoriesIfNeeded()
+        // Home and the update center may initiate their first repository fetch
+        // concurrently. Avoid prompting with stale cache while a refresh runs.
+        for _ in 0..<120 {
+            if !sources.isRefreshing || Task.isCancelled { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        guard !Task.isCancelled else { return false }
+        scan()
+        return !newUndismissedUpdates.isEmpty
+    }
+
+    func checkNow() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        await sources.refreshAll()
+        guard !Task.isCancelled else { return }
+        scan()
+        if updates.isEmpty { statusMessage = "No newer installed module releases were found." }
+    }
+
+    func remindMeLater() {
+        dismissedRevisions.formUnion(updates.map(\.revisionToken))
+        // Persist a bounded amount of notification history.
+        if dismissedRevisions.count > 600 {
+            dismissedRevisions = Set(updates.map(\.revisionToken))
+        }
+        UserDefaults.standard.set(Array(dismissedRevisions), forKey: Self.dismissKey)
+    }
+
+    func update(_ offer: KinetiqModuleUpdateOffer) async throws {
+        guard activeModuleID == nil else {
+            throw KinetiqModuleUpdateError.installationInProgress
+        }
+        guard let liveRepo = sources.repositories.first(where: { $0.id == offer.repository.id }),
+              liveRepo.refreshError == nil,
+              trust.trust(for: liveRepo).allowsInstall,
+              let live = sources.sources(in: liveRepo).first(where: { $0.id == offer.id }),
+              live.module.version == offer.source.module.version,
+              live.module.sha256?.lowercased() == offer.source.module.sha256?.lowercased(),
+              live.packageURL != nil,
+              let original = packages.installedModule(for: live),
+              original.packageSHA256.caseInsensitiveCompare(offer.installed.packageSHA256) == .orderedSame,
+              original.version == offer.installed.version,
+              KinetiqModuleReleasePolicy.status(
+                listedVersion: live.module.version, listedSHA: live.module.sha256,
+                installedVersion: original.version, installedSHA: original.packageSHA256
+              ) == .updateAvailable else {
+            throw KinetiqModuleUpdateError.releaseChanged
+        }
+        activeModuleID = live.id
+        defer { activeModuleID = nil; scan() }
+        try Task.checkCancellation()
+        // The vault only holds verified installed manifest + script files,
+        // and remains available after the new installer removes its temporary backup.
+        try KinetiqModuleRollbackVault.capture(original)
+        try await packages.install(live)
+        guard let installed = packages.installedModule(for: live),
+              installed.version == live.module.version,
+              installed.packageSHA256.caseInsensitiveCompare(live.module.sha256 ?? "") == .orderedSame else {
+            throw KinetiqModuleUpdateError.installationVerificationFailed
+        }
+        installedThisSession += 1
+        statusMessage = "Updated \(installed.name) to v\(installed.version). A previous version is available under Recovery."
+    }
+
+    func updateAll() async {
+        guard activeModuleID == nil else { return }
+        let batch = updates
+        total = batch.count
+        processed = 0
+        installedThisSession = 0
+        var failures: [String] = []
+        for offer in batch {
+            if Task.isCancelled { break }
+            do { try await update(offer) }
+            catch is CancellationError { break }
+            catch { failures.append("\(offer.source.module.displayName): \(error.localizedDescription)") }
+            processed += 1
+        }
+        let summary = "Installed \(installedThisSession)/\(total) updates."
+        let stopped = Task.isCancelled ? " Stopped by user." : ""
+        statusMessage = summary + stopped + (failures.isEmpty ? "" :
+            " \(failures.count) failed: " + failures.prefix(3).joined(separator: "; "))
+        scan()
+    }
+}
+
+enum KinetiqModuleUpdateError: LocalizedError {
+    case installationInProgress
+    case releaseChanged
+    case installationVerificationFailed
+    var errorDescription: String? {
+        switch self {
+        case .installationInProgress: return "Another module is currently updating."
+        case .releaseChanged: return "The release, repository trust, or installed version changed. Refresh before updating."
+        case .installationVerificationFailed: return "The installed package did not match the expected release. Use Recovery or report this failure."
+        }
+    }
+}
+
+// MARK: - Persistent last-known-good module snapshot and cold-launch recovery
+// This service backs up only module runtime files, never favorites/history,
+// playback credentials, media downloads or source browsing data.
+
+enum KinetiqModuleRollbackVault {
+    struct Snapshot: Codable, Identifiable {
+        let record: InstalledModuleRecord
+        let folder: String
+        let savedAt: Date
+        let manifestDigest: String
+        let scriptDigest: String
+        var id: String { record.sourceID }
+    }
+
+    private static let pendingKey = "kinetiq.modules.rollbackPending.05PB.v1"
+    private static let resultKey = "kinetiq.modules.lastRollbackResult.05PB.v1"
+
+    static func root() throws -> URL {
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first else { throw KinetiqModuleRollbackError.storageUnavailable }
+        return appSupport.appendingPathComponent("Kinetiq", isDirectory: true)
+            .appendingPathComponent("Modules", isDirectory: true)
+    }
+
+    private static func vault() throws -> URL {
+        try root().appendingPathComponent("PreviousReleases", isDirectory: true)
+    }
+
+    private static func index() throws -> URL {
+        try vault().appendingPathComponent("snapshots.json")
+    }
+    private static func installedIndex() throws -> URL {
+        try root().appendingPathComponent("installed-modules.json")
+    }
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func snapshots() -> [Snapshot] {
+        guard let data = try? Data(contentsOf: index()),
+              let list = try? JSONDecoder().decode([Snapshot].self, from: data) else { return [] }
+        return list
+    }
+
+    static func isSafeFolder(_ folder: String) -> Bool {
+        !folder.isEmpty && folder != "." && folder != ".." && !folder.contains("/") &&
+        !folder.contains("\\") && !folder.hasPrefix(".") && folder.count <= 128
+    }
+
+    private static func validatedLocation(_ record: InstalledModuleRecord) throws -> URL {
+        let dir = URL(fileURLWithPath: record.directoryPath, isDirectory: true).standardizedFileURL
+        let parent = dir.deletingLastPathComponent().standardizedFileURL
+        guard parent == (try root()).standardizedFileURL,
+              dir.lastPathComponent.count == 64,
+              dir.lastPathComponent.allSatisfy(\.isHexDigit),
+              record.manifestPath == dir.appendingPathComponent("manifest.json").path,
+              record.entryScriptPath == dir.appendingPathComponent("index.js").path else {
+            throw KinetiqModuleRollbackError.unsafeSnapshot
+        }
+        return dir
+    }
+
+    private static func validSnapshot(_ snapshot: Snapshot) -> Bool {
+        guard isSafeFolder(snapshot.folder),
+              let base = try? vault() else { return false }
+        let dir = base.appendingPathComponent(snapshot.folder, isDirectory: true)
+        guard let manifest = try? Data(contentsOf: dir.appendingPathComponent("manifest.json")),
+              let script = try? Data(contentsOf: dir.appendingPathComponent("index.js")) else { return false }
+        return digest(manifest) == snapshot.manifestDigest &&
+               digest(script) == snapshot.scriptDigest
+    }
+
+    static func usableSnapshots() -> [Snapshot] {
+        snapshots().filter(validSnapshot).sorted(by: { $0.savedAt > $1.savedAt })
+    }
+
+    static func capture(_ record: InstalledModuleRecord) throws {
+        let fm = FileManager.default
+        let active = try validatedLocation(record)
+        guard fm.fileExists(atPath: active.path),
+              let manifest = try? Data(contentsOf: active.appendingPathComponent("manifest.json")),
+              let script = try? Data(contentsOf: active.appendingPathComponent("index.js")) else {
+            throw KinetiqModuleRollbackError.invalidInstalledModule
+        }
+        let base = try vault()
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        let name = UUID().uuidString
+        let snapshotURL = base.appendingPathComponent(name, isDirectory: true)
+        try fm.copyItem(at: active, to: snapshotURL)
+        var updated = snapshots()
+        let old = updated.filter { $0.id == record.sourceID }
+        updated.removeAll { $0.id == record.sourceID }
+        let new = Snapshot(record: record, folder: name, savedAt: Date(),
+                           manifestDigest: digest(manifest), scriptDigest: digest(script))
+        // Do not replace a known-good snapshot if this newly copied backup
+        // differs from the installed manifest/script at capture time.
+        guard validSnapshot(new) else {
+            try? fm.removeItem(at: snapshotURL)
+            throw KinetiqModuleRollbackError.unsafeSnapshot
+        }
+        updated.append(new)
+        do {
+            let encoded = try JSONEncoder().encode(updated)
+            try encoded.write(to: index(), options: .atomic)
+            for expired in old where isSafeFolder(expired.folder) {
+                try? fm.removeItem(at: base.appendingPathComponent(expired.folder, isDirectory: true))
+            }
+        } catch {
+            try? fm.removeItem(at: snapshotURL)
+            throw error
+        }
+    }
+
+    static func requestRestore(_ snapshot: Snapshot) throws {
+        guard usableSnapshots().contains(where: { $0.id == snapshot.id && $0.folder == snapshot.folder }) else {
+            throw KinetiqModuleRollbackError.unsafeSnapshot
+        }
+        UserDefaults.standard.set(snapshot.id, forKey: pendingKey)
+    }
+
+    /// App.init invokes this BEFORE ModulePackageStore.shared loads its cached
+    /// installed module index. This is essential because that store's index
+    /// is private and is read only once at initialization.
+    static func restorePendingOnLaunch() {
+        let defaults = UserDefaults.standard
+        guard let id = defaults.string(forKey: pendingKey) else { return }
+        guard let snapshot = usableSnapshots().first(where: { $0.id == id }) else {
+            defaults.set("Recovery was cancelled: previous files are missing or altered.", forKey: resultKey)
+            defaults.removeObject(forKey: pendingKey)
+            return
+        }
+        do {
+            try restore(snapshot)
+            defaults.set("Restored \(snapshot.record.name) v\(snapshot.record.version).", forKey: resultKey)
+            defaults.removeObject(forKey: pendingKey)
+        } catch {
+            defaults.set("Recovery failed: \(error.localizedDescription)", forKey: resultKey)
+            // Leave pending operation for retry, but never delete user data.
+        }
+    }
+
+    static func takeLastResult() -> String? {
+        let result = UserDefaults.standard.string(forKey: resultKey)
+        UserDefaults.standard.removeObject(forKey: resultKey)
+        return result
+    }
+
+    private static func restore(_ snapshot: Snapshot) throws {
+        guard validSnapshot(snapshot) else { throw KinetiqModuleRollbackError.unsafeSnapshot }
+        let fm = FileManager.default
+        let live = try validatedLocation(snapshot.record)
+        let snapshotFolder = try vault().appendingPathComponent(snapshot.folder, isDirectory: true)
+        let indexURL = try installedIndex()
+        let previousData = try Data(contentsOf: indexURL)
+        var installed = try JSONDecoder().decode([InstalledModuleRecord].self, from: previousData)
+        guard installed.contains(where: { $0.sourceID == snapshot.id }) else {
+            throw KinetiqModuleRollbackError.invalidInstalledModule
+        }
+        installed.removeAll { $0.sourceID == snapshot.id }
+        installed.append(snapshot.record)
+        let oldDestination = try root().appendingPathComponent(".rollback-temp-\(UUID().uuidString)")
+        var movedOld = false
+        do {
+            if fm.fileExists(atPath: live.path) {
+                try fm.moveItem(at: live, to: oldDestination)
+                movedOld = true
+            }
+            try fm.copyItem(at: snapshotFolder, to: live)
+            try JSONEncoder().encode(installed).write(to: indexURL, options: .atomic)
+            if movedOld { try? fm.removeItem(at: oldDestination) }
+        } catch {
+            try? fm.removeItem(at: live)
+            if movedOld { try? fm.moveItem(at: oldDestination, to: live) }
+            try? previousData.write(to: indexURL, options: .atomic)
+            throw error
+        }
+    }
+}
+
+enum KinetiqModuleRollbackError: LocalizedError {
+    case storageUnavailable
+    case invalidInstalledModule
+    case unsafeSnapshot
+    var errorDescription: String? {
+        switch self {
+        case .storageUnavailable: return "Application Support storage is unavailable."
+        case .invalidInstalledModule: return "The previous module installation could not be verified."
+        case .unsafeSnapshot: return "A previous-version backup failed integrity or path checks."
+        }
+    }
+}
+
+// MARK: - Small SwiftUI views keep Xcode's constraint solver responsive
+
+struct KinetiqModuleUpdateCenterView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var updates = KinetiqModuleUpdateCenterStore.shared
+    @State private var batchTask: Task<Void, Never>?
+    @State private var error: String?
+    @State private var restoreTarget: KinetiqModuleRollbackVault.Snapshot?
+
+    var body: some View {
+        NavigationStack {
+            updateList
+                .navigationTitle("Module Updates")
+                .navigationBarTitleDisplayMode(.large)
+                .toolbar { toolbarContent }
+                .safeAreaInset(edge: .bottom) { actionBar }
+        }
+        .task {
+            updates.scan()
+            if let message = KinetiqModuleRollbackVault.takeLastResult() {
+                updates.statusMessage = message
+            }
+        }
+        .alert("Module Update", isPresented: Binding(
+            get: { error != nil }, set: { if !$0 { error = nil } }
+        )) { Button("OK", role: .cancel) {} }
+        message: { Text(error ?? "Unknown error") }
+        .confirmationDialog("Restore previous module version?",
+            isPresented: Binding(get: { restoreTarget != nil },
+                                 set: { if !$0 { restoreTarget = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let restoreTarget {
+                Button("Restore v\(restoreTarget.record.version) on Next Launch") {
+                    do {
+                        try KinetiqModuleRollbackVault.requestRestore(restoreTarget)
+                        updates.statusMessage = "Recovery scheduled for \(restoreTarget.record.name). Close Kinetiq fully and reopen it to restore the previous version."
+                    } catch { error = error.localizedDescription }
+                    self.restoreTarget = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { restoreTarget = nil }
+        } message: {
+            Text("The previous verified module files will be restored the next time you fully relaunch Kinetiq. Favorites, history and downloads are not changed.")
+        }
+    }
+
+    private var updateList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                header
+                if let status = updates.statusMessage {
+                    Label(status, systemImage: "info.circle")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                if updates.updates.isEmpty {
+                    ContentUnavailableView("You're Up to Date", systemImage: "checkmark.shield",
+                        description: Text("No newer versions were advertised for currently installed video modules."))
+                } else {
+                    ForEach(updates.updates) { offer in
+                        KinetiqModuleUpdateOfferCard(offer: offer,
+                            isInstalling: updates.activeModuleID == offer.id,
+                            canInstall: updates.activeModuleID == nil,
+                            onInstall: { Task { await install(offer) } })
+                    }
+                }
+                if !updates.blocked.isEmpty { blockedSection }
+                if !KinetiqModuleRollbackVault.usableSnapshots().isEmpty { recoverySection }
+                Text("Publisher changelogs come from the repository, not Kinetiq. A community-approved repository is not a cryptographically verified publisher. Downloads still require exact ZIP SHA-256 and manifest validation.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(20)
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("KINETIQ UPDATES", systemImage: "arrow.down.circle")
+                .font(.caption.weight(.bold)).foregroundStyle(KinetiqPalette.accent)
+            Text("Keep your sources current")
+                .font(.title2.weight(.bold))
+            Text("\(updates.updates.count) installed module update(s) available")
+                .font(.subheadline).foregroundStyle(.secondary)
+            if updates.total > 0 {
+                ProgressView(value: Double(updates.processed),
+                             total: Double(max(1, updates.total)))
+                Text("\(updates.processed) of \(updates.total) processed")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var blockedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Needs Review", systemImage: "exclamationmark.shield")
+                .font(.headline)
+            ForEach(updates.blocked) { item in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.name).font(.subheadline.weight(.semibold))
+                    Text("v\(item.installedVersion) → v\(item.listedVersion)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(item.reason).font(.caption).foregroundStyle(.orange)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private var recoverySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Previous Versions · Recovery", systemImage: "arrow.uturn.backward.circle")
+                .font(.headline)
+            ForEach(KinetiqModuleRollbackVault.usableSnapshots()) { snapshot in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(snapshot.record.name).font(.subheadline.weight(.semibold))
+                        Text("Restore v\(snapshot.record.version)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Restore") { restoreTarget = snapshot }
+                        .buttonStyle(.bordered)
+                }
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    private var actionBar: some View {
+        VStack(spacing: 8) {
+            if updates.canUpdateAny {
+                Button {
+                    batchTask = Task { await updates.updateAll(); batchTask = nil }
+                } label: {
+                    Label("Update All (\(updates.updates.count))", systemImage: "arrow.down.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(batchTask != nil)
+            }
+            HStack {
+                Button("Remind Me Later") {
+                    updates.remindMeLater()
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                if batchTask != nil {
+                    Button("Stop After Current") { batchTask?.cancel() }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(14)
+        .background(.regularMaterial)
+    }
+
+    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                Task { await updates.checkNow() }
+            } label: { Image(systemName: "arrow.clockwise") }
+                .disabled(updates.isRefreshing || updates.activeModuleID != nil)
+                .accessibilityLabel("Check for module updates")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Done") { dismiss() }.fontWeight(.semibold)
+        }
+    }
+
+    @MainActor private func install(_ offer: KinetiqModuleUpdateOffer) async {
+        do { try await updates.update(offer) }
+        catch { error = error.localizedDescription }
+    }
+}
+
+private struct KinetiqModuleUpdateOfferCard: View {
+    let offer: KinetiqModuleUpdateOffer
+    let isInstalling: Bool
+    let canInstall: Bool
+    let onInstall: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                artwork
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(offer.source.module.displayName)
+                        .font(.headline)
+                    Text(offer.repository.name)
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("v\(offer.installed.version) → v\(offer.newVersion)")
+                        .font(.subheadline.weight(.medium))
+                }
+                Spacer(minLength: 0)
+            }
+            if let published = offer.source.module.publishedDate {
+                Text("Published \(published.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("WHAT'S NEW")
+                .font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+            if offer.releaseNotes.isEmpty {
+                Text("The publisher did not provide release notes for this version.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(offer.releaseNotes.enumerated()), id: \.offset) { item in
+                    Label(item.element, systemImage: "circle.fill")
+                        .font(.subheadline).labelStyle(.titleAndIcon)
+                }
+            }
+            Label(offer.publisherStatus == .verifiedPublisher
+                  ? "Independently verified publisher"
+                  : "Community-approved repository · package SHA-256 checked on install",
+                  systemImage: "checkmark.shield")
+                .font(.caption).foregroundStyle(.secondary)
+            Button(action: onInstall) {
+                HStack {
+                    if isInstalling { ProgressView().controlSize(.small) }
+                    Text(isInstalling ? "Installing…" : "Update Module")
+                    Spacer()
+                    Image(systemName: "arrow.down.circle")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canInstall)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var artwork: some View {
+        Group {
+            if let icon = offer.source.iconURL {
+                AsyncImage(url: icon) { image in
+                    image.resizable().scaledToFit()
+                } placeholder: {
+                    Image(systemName: offer.source.symbol)
+                }
+            } else {
+                Image(systemName: offer.source.symbol)
+            }
+        }
+        .frame(width: 52, height: 52)
+        .background(KinetiqPalette.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
     }
 }

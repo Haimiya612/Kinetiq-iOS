@@ -77,21 +77,28 @@ final class KinetiqPlaybackAppDelegate: UIResponder, UIApplicationDelegate {
 }
 
 @main
+@MainActor
 struct KinetiqApp: App {
     @UIApplicationDelegateAdaptor(KinetiqPlaybackAppDelegate.self)
     private var playbackAppDelegate
 
     @StateObject private var taglineStore: LaunchTaglineStore
     @StateObject private var whatsNewStore = WhatsNewStore()
+    @StateObject private var moduleUpdates: KinetiqModuleUpdateCenterStore
 
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
     @State private var showingWhatsNew = false
+    @State private var showingModuleUpdates = false
     @State private var checkedForUpdates = false
 
     init() {
+        // Must run before ModulePackageStore.shared reads its installed index.
+        // Recovery never modifies favorites, downloads or history.
+        KinetiqModuleRollbackVault.restorePendingOnLaunch()
         _taglineStore = StateObject(wrappedValue: LaunchTaglineStore())
+        _moduleUpdates = StateObject(wrappedValue: KinetiqModuleUpdateCenterStore.shared)
     }
 
     var body: some Scene {
@@ -103,31 +110,36 @@ struct KinetiqApp: App {
                 .task {
                     guard !checkedForUpdates else { return }
                     checkedForUpdates = true
-
                     await whatsNewStore.load()
-
-                    guard
-                        !Task.isCancelled,
-                        whatsNewStore.hasUnseenReleases
-                    else {
-                        return
-                    }
-
-                    try? await Task.sleep(for: .milliseconds(450))
-
                     guard !Task.isCancelled else { return }
-                    showingWhatsNew = true
+                    if whatsNewStore.hasUnseenReleases {
+                        try? await Task.sleep(for: .milliseconds(450))
+                        guard !Task.isCancelled else { return }
+                        showingWhatsNew = true
+                    } else {
+                        await checkModuleUpdates()
+                    }
                 }
                 .sheet(
                     isPresented: $showingWhatsNew,
                     onDismiss: {
                         whatsNewStore.markLatestAsSeen()
+                        Task { await checkModuleUpdates() }
                     }
                 ) {
-                    WhatsNewView(
-                        releases: whatsNewStore.unseenReleases
-                    )
+                    WhatsNewView(releases: whatsNewStore.unseenReleases)
+                }
+                .fullScreenCover(isPresented: $showingModuleUpdates) {
+                    KinetiqModuleUpdateCenterView()
                 }
         }
+    }
+
+    @MainActor
+    private func checkModuleUpdates() async {
+        guard !showingWhatsNew, !showingModuleUpdates else { return }
+        let shouldPresent = await moduleUpdates.checkForUpdatesOnLaunch()
+        guard !Task.isCancelled, shouldPresent else { return }
+        showingModuleUpdates = true
     }
 }
