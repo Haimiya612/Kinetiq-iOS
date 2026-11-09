@@ -316,4 +316,56 @@ final class KinetiqRepositoryPolicyTests: XCTestCase {
         repository.modules[0] = try sourceModule("demo-v1", identity: "NEW-VID-IDENTITY")
         XCTAssertEqual(trust.trust(for: repository), .changedPublisher)
     }
+
+    @MainActor
+    func testTrustAllSourcesCoversSelectionsAndNewModules() throws {
+        let first = try sourceModule("series-a", identity: "PUBLISHER-A")
+        let second = try sourceModule("series-b", identity: "PUBLISHER-B")
+        let url = URL(string: "https://example.org/\(UUID().uuidString)/repository.json")!
+        var repository = ModuleRepositoryRecord(
+            url: url, repositoryId: "community-repository", name: "Community",
+            modules: [first, second], lastRefreshed: Date(), refreshError: nil)
+        let store = KinetiqRepositoryTrustStore.shared
+        defer { store.revoke(repository) }
+        XCTAssertEqual(store.trust(for: repository), .approvalNeeded)
+        XCTAssertTrue(store.approveAllSources(in: repository))
+        XCTAssertEqual(store.trust(for: repository), .communityApproved)
+        XCTAssertTrue(store.allowsRuntime(for: repository, installedModuleID: "series-a"))
+        XCTAssertTrue(store.allowsRuntime(for: repository, installedModuleID: "series-b"))
+
+        // A third legitimate module from the same catalogue owner inherits
+        // the approval without an additional module-specific prompt.
+        repository.modules.append(try sourceModule("series-c", identity: "PUBLISHER-C"))
+        XCTAssertEqual(store.trust(for: repository), .communityApproved)
+        XCTAssertTrue(store.allowsRuntime(for: repository, installedModuleID: "series-c"))
+
+        // Changing the owner or an existing identity never inherits trust.
+        repository.repositoryId = "different-owner"
+        XCTAssertEqual(store.trust(for: repository), .changedPublisher)
+        XCTAssertFalse(store.allowsRuntime(for: repository, installedModuleID: "series-a"))
+        repository.repositoryId = "community-repository"
+        store.revoke(repository)
+        XCTAssertEqual(store.trust(for: repository), .approvalNeeded)
+        XCTAssertFalse(store.allowsRuntime(for: repository, installedModuleID: "series-a"))
+    }
+
+    @MainActor
+    func testTrustAllSourcesRefusesDuplicateModuleIDsAndOfflineApproval() throws {
+        let first = try sourceModule("same-id", identity: "ORIGINAL")
+        let duplicate = try sourceModule("same-id", identity: "OTHER")
+        let url = URL(string: "https://example.org/\(UUID().uuidString)/repository.json")!
+        var repository = ModuleRepositoryRecord(
+            url: url, repositoryId: "community", name: "Example",
+            modules: [first, duplicate], lastRefreshed: Date(), refreshError: nil)
+        let store = KinetiqRepositoryTrustStore.shared
+        defer { store.revoke(repository) }
+        XCTAssertFalse(store.approveAllSources(in: repository))
+        XCTAssertEqual(store.trust(for: repository), .approvalNeeded)
+        repository.modules = [first]
+        repository.refreshError = "Offline"
+        XCTAssertFalse(store.approveAllSources(in: repository))
+        repository.refreshError = nil
+        XCTAssertTrue(store.approveAllSources(in: repository))
+        XCTAssertTrue(store.allowsRuntime(for: repository, installedModuleID: "same-id"))
+    }
 }

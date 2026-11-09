@@ -433,13 +433,20 @@ final class KinetiqRepositoryTrustStore: ObservableObject {
         return pinnedIdentity == current.stablePublisherIdentity
     }
 
-    func approve(_ repository: ModuleRepositoryRecord) {
+    // One user approval authorizes all video sources belonging to this exact
+    // repository, including later additions while its publisher identity stays
+    // stable. It does NOT skip SHA-256, manifest checks or signature validation.
+    // Existing approvals are persisted and shared with ModuleBrowserView.
+    @discardableResult
+    func approveAllSources(in repository: ModuleRepositoryRecord) -> Bool {
         guard repository.refreshError == nil,
               KinetiqPublisherSignature.recognizedSignatureIsWellFormed(repository),
-              KinetiqPublisherSignature.signedState(for: repository) != false else { return }
+              KinetiqPublisherSignature.signedState(for: repository) != false else {
+            return false
+        }
         var identities: [String: String] = [:]
         for module in repository.modules {
-            guard identities[module.moduleId] == nil else { return }
+            guard identities[module.moduleId] == nil else { return false }
             identities[module.moduleId] = module.stablePublisherIdentity
         }
         approvals[repository.url.absoluteString] = KinetiqRepositoryApproval(
@@ -450,6 +457,12 @@ final class KinetiqRepositoryTrustStore: ObservableObject {
             acceptedPublisherKeyID: repository.publisherKeyId
         )
         persist()
+        return true
+    }
+
+    // Compatibility with existing browser approval call sites.
+    func approve(_ repository: ModuleRepositoryRecord) {
+        _ = approveAllSources(in: repository)
     }
 
     func revoke(_ repository: ModuleRepositoryRecord) {
@@ -944,11 +957,17 @@ struct ModuleSourcesView: View {
             ) {
                 if let trustTarget,
                    let repo = store.repositories.first(where: { $0.id == trustTarget }) {
-                    Button("Trust \(repo.name) Once") { trustStore.approve(repo) }
+                    Button("Trust All \(repo.modules.count) Sources") {
+                        if !trustStore.approveAllSources(in: repo) {
+                            report = "This repository could not be approved. Refresh it and review its publisher identity or signature before trying again."
+                            showReport = true
+                        }
+                        self.trustTarget = nil
+                    }
                 }
                 Button("Cancel", role: .cancel) { trustTarget = nil }
             } message: {
-                Text("This approves the repository as a COMMUNITY source, not a cryptographically verified publisher. Modules can run JavaScript with constrained network access. New modules inherit this approval; changed existing publisher identities or invalid verified signatures are blocked.")
+                Text("This trusts all sources from the selected repository, including new modules added later. It is a COMMUNITY approval, not proof of publisher authenticity. Modules execute JavaScript with network access. If the repository or an existing module changes publisher identity, you must review and approve again. Invalid known signatures cannot be approved. ZIP integrity checks remain mandatory.")
             }
     }
 
@@ -999,7 +1018,7 @@ struct ModuleSourcesView: View {
         } header: {
             Text("Add a Source")
         } footer: {
-            Text("Approve each repository once. Subsequent verified ZIP downloads from the same unchanged repository do not ask you to trust every module.")
+            Text("Use Trust All Sources under a repository to approve its modules once. SHA-256 checks and publisher identity protection remain active.")
         }
     }
 
@@ -1019,7 +1038,57 @@ struct ModuleSourcesView: View {
             }
             ForEach(store.repositories) { repository in
                 repositoryDisclosure(repository)
+                repositoryQuickTrustAction(repository)
             }
+        }
+    }
+
+    // Always visible, even when a repository's disclosure group is collapsed.
+    // A successful approval covers EVERY source in that repository, not just
+    // the currently selected or installed module.
+    @ViewBuilder
+    private func repositoryQuickTrustAction(_ repo: ModuleRepositoryRecord) -> some View {
+        let state = trustStore.trust(for: repo)
+        switch state {
+        case .approvalNeeded, .changedPublisher:
+            Button {
+                trustTarget = repo.id
+                showingTrustConfirmation = true
+            } label: {
+                Label(
+                    state == .changedPublisher
+                        ? "Review Publisher Change and Trust All Sources"
+                        : "Trust All \(repo.modules.count) Sources in This Repository",
+                    systemImage: "checkmark.shield"
+                )
+                .font(.subheadline.weight(.medium))
+            }
+            .disabled(store.isRefreshing || repo.refreshError != nil)
+            .accessibilityHint("Approve this community repository once for all of its listed and future modules, subject to publisher identity checks.")
+
+        case .communityApproved:
+            Label("All \(repo.modules.count) Sources Trusted — Community Repository",
+                  systemImage: "checkmark.shield.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .verifiedPublisher:
+            Label("Verified Publisher — All Sources Allowed",
+                  systemImage: "checkmark.seal.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .offline:
+            Label("Repository Offline — Existing Trusted Modules Only",
+                  systemImage: "wifi.slash")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        default:
+            Label("Repository Trust Blocked — Review Publisher Signature",
+                  systemImage: "exclamationmark.shield")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 
@@ -1132,7 +1201,7 @@ struct ModuleSourcesView: View {
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 if status == .approvalNeeded || status == .changedPublisher {
-                    Button(status == .changedPublisher ? "Review New Publisher" : "Trust Repository") {
+                    Button(status == .changedPublisher ? "Review Publisher Change" : "Trust All Sources") {
                         trustTarget = repo.id
                         showingTrustConfirmation = true
                     }.buttonStyle(.borderedProminent)
