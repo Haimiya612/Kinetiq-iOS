@@ -369,3 +369,76 @@ final class KinetiqRepositoryPolicyTests: XCTestCase {
         XCTAssertTrue(store.allowsRuntime(for: repository, installedModuleID: "same-id"))
     }
 }
+
+
+// MARK: - Batch 05P-B update center deterministic contract tests
+final class KinetiqModuleUpdateCenterContractTests: XCTestCase {
+    private func module(_ version: String, hash: String,
+                        changelog: [String]? = nil) throws -> ModuleRepositoryModule {
+        var object: [String: Any] = [
+            "moduleId": "example-module", "moduleFamilyId": "example",
+            "moduleIdentity": "EXAMPLE-VID-01", "moduleIdentityNumber": 1,
+            "contentType": "video", "version": version,
+            "sha256": hash, "packageUrl": "https://example.org/mod.zip"
+        ]
+        if let changelog { object["changelog"] = changelog }
+        return try JSONDecoder().decode(ModuleRepositoryModule.self,
+            from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testReleaseNotesAreTakenFromPublisherOnly() throws {
+        let hash = String(repeating: "b", count: 64)
+        let m = try module("1.1.0", hash: hash,
+                           changelog: ["Fix subtitle sync", "", "  Faster search  "])
+        let repository = ModuleRepositoryRecord(
+            url: URL(string: "https://example.org/repository.json")!,
+            repositoryId: "publisher", name: "Community", modules: [m],
+            lastRefreshed: Date(), refreshError: nil
+        )
+        let source = ModuleSourceOption(repositoryURL: repository.url,
+                                        repositoryName: repository.name, module: m)
+        let installed = InstalledModuleRecord(
+            sourceID: source.id, repositoryURL: repository.url.absoluteString,
+            repositoryName: repository.name, moduleID: m.moduleId, name: "Example",
+            version: "1.0.0", contentType: "video",
+            packageSHA256: String(repeating: "a", count: 64), installedAt: Date(),
+            directoryPath: "/old/module", manifestPath: "/old/module/manifest.json",
+            entryScriptPath: "/old/module/index.js"
+        )
+        let offer = KinetiqModuleUpdateOffer(source: source, repository: repository,
+                                             installed: installed)
+        XCTAssertEqual(offer.releaseNotes, ["Fix subtitle sync", "Faster search"])
+        XCTAssertEqual(offer.newVersion, "1.1.0")
+        XCTAssertFalse(offer.revisionToken.isEmpty)
+        let newModule = try module("1.2.0", hash: String(repeating: "c", count: 64))
+        let later = KinetiqModuleUpdateOffer(
+            source: ModuleSourceOption(repositoryURL: repository.url,
+                                       repositoryName: repository.name, module: newModule),
+            repository: repository, installed: installed)
+        XCTAssertNotEqual(offer.revisionToken, later.revisionToken)
+        XCTAssertTrue(later.releaseNotes.isEmpty)
+    }
+
+    func testRollbackFolderNamesCannotEscapeVault() {
+        for name in ["../escape", "sub/folder", "\\", "..", ".hidden", ""] {
+            XCTAssertFalse(KinetiqModuleRollbackVault.isSafeFolder(name))
+        }
+        XCTAssertTrue(KinetiqModuleRollbackVault.isSafeFolder(UUID().uuidString))
+    }
+
+    func testUpdatesNeverAutomaticallyInstallReusedVersionOrDowngrade() {
+        let old = String(repeating: "a", count: 64)
+        let new = String(repeating: "b", count: 64)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "2.0.0", listedSHA: new,
+            installedVersion: "2.0.0", installedSHA: old), .sameVersionMutation)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "1.8.0", listedSHA: new,
+            installedVersion: "2.0.0", installedSHA: old), .downgrade)
+        XCTAssertEqual(KinetiqModuleReleasePolicy.status(
+            listedVersion: "2.0.1", listedSHA: new,
+            installedVersion: "2.0.0", installedSHA: old), .updateAvailable)
+        XCTAssertFalse(KinetiqModuleReleaseState.sameVersionMutation.permitsAutomaticInstall)
+        XCTAssertFalse(KinetiqModuleReleaseState.downgrade.permitsAutomaticInstall)
+    }
+}
