@@ -892,99 +892,71 @@ struct ModuleSourcesView: View {
     @State private var report: String?
     @State private var showReport = false
 
+    // MARK: - Composable screen
+    //
+    // Batch 05L–05O originally placed the entire Form, several repository
+    // builders, two confirmation dialogs and an alert into one SwiftUI body.
+    // On Xcode 26.3 that exceeded the Swift constraint solver's budget.
+    // Opaque `some View` boundaries below keep each expression independently
+    // type-checkable. They do not change repository trust or installation state.
+
     var body: some View {
+        reportPresentation
+            .task { await store.loadSavedRepositoriesIfNeeded() }
+            .refreshable { await store.refreshAll() }
+    }
+
+    private var reportPresentation: some View {
+        batchConfirmationPresentation
+            .alert("Module Report", isPresented: $showReport) {
+                Button("Copy Report") { UIPasteboard.general.string = report ?? "" }
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(report ?? "No report was generated.")
+            }
+    }
+
+    private var batchConfirmationPresentation: some View {
+        trustConfirmationPresentation
+            .confirmationDialog(
+                "Install available video modules?",
+                isPresented: $showingBatchConfirmation,
+                titleVisibility: .visible
+            ) {
+                if let batchTarget,
+                   let repo = store.repositories.first(where: { $0.id == batchTarget }) {
+                    Button("Install \(pendingSources(repo).count) Modules") {
+                        beginBatch(repo)
+                    }
+                }
+                Button("Cancel", role: .cancel) { batchTarget = nil }
+            } message: {
+                Text("Each ZIP must match its SHA-256. Previously trusted repositories require no additional trust prompt. Existing installations and working playback are left untouched when updates are unsafe.")
+            }
+    }
+
+    private var trustConfirmationPresentation: some View {
+        navigationPresentation
+            .confirmationDialog(
+                "Trust all modules from this repository?",
+                isPresented: $showingTrustConfirmation,
+                titleVisibility: .visible
+            ) {
+                if let trustTarget,
+                   let repo = store.repositories.first(where: { $0.id == trustTarget }) {
+                    Button("Trust \(repo.name) Once") { trustStore.approve(repo) }
+                }
+                Button("Cancel", role: .cancel) { trustTarget = nil }
+            } message: {
+                Text("This approves the repository as a COMMUNITY source, not a cryptographically verified publisher. Modules can run JavaScript with constrained network access. New modules inherit this approval; changed existing publisher identities or invalid verified signatures are blocked.")
+            }
+    }
+
+    private var navigationPresentation: some View {
         Form {
-            Section {
-                TextField("Paste repository.json URL", text: $repositoryURL, axis: .vertical)
-                    .lineLimit(2...4)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button {
-                    Task { await addRepository() }
-                } label: {
-                    HStack {
-                        if adding { ProgressView() } else { Image(systemName: "plus.circle.fill") }
-                        Text("Add Repository").fontWeight(.semibold)
-                        Spacer()
-                    }
-                }
-                .disabled(adding || store.isRefreshing || repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if let errorMessage {
-                    Label(errorMessage, systemImage: "exclamationmark.circle.fill")
-                        .font(.caption).foregroundStyle(.red)
-                }
-            } header: {
-                Text("Add a Source")
-            } footer: {
-                Text("Approve each repository once. Subsequent verified ZIP downloads from the same unchanged repository do not ask you to trust every module.")
-            }
-
-            Section("Connected Repositories") {
-                if store.repositories.isEmpty {
-                    ContentUnavailableView("No Repositories", systemImage: "square.stack.3d.up",
-                        description: Text("Add a repository.json URL above to discover modules."))
-                }
-                ForEach(store.repositories) { repo in
-                    DisclosureGroup {
-                        repositoryTrustControls(repo)
-                        if !repo.modules.isEmpty { batchControls(repo) }
-                        if repo.modules.isEmpty {
-                            Text(repo.refreshError ?? "This repository contains no modules.")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                        ForEach(store.sources(in: repo)) { source in
-                            KinetiqApprovedModuleSourceRow(source: source, isSelected: store.isSelected(source.id)) {
-                                store.selectSource(source.id)
-                            }
-                        }
-                        if let refreshError = repo.refreshError {
-                            Label(refreshError, systemImage: "exclamationmark.triangle")
-                                .font(.caption).foregroundStyle(.red)
-                            Button("Retry Repository Refresh") { Task { await store.refreshAll() } }
-                                .disabled(store.isRefreshing)
-                        }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(repo.name).font(.subheadline.weight(.semibold))
-                                Text("\(repo.modules.count) modules").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if store.isRefreshing { ProgressView() }
-                            else {
-                                Image(systemName: trustStore.trust(for: repo).symbol)
-                                    .foregroundStyle(trustStore.trust(for: repo).allowsInstall ? .green : .orange)
-                            }
-                        }
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) { store.removeRepository(repo) } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
-                    }
-                }
-            }
-
-            Section("Source Selection") {
-                HStack {
-                    Image(systemName: store.activeSourceSymbol)
-                        .foregroundStyle(KinetiqPalette.accent)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Active Source").font(.subheadline.weight(.semibold))
-                        Text(store.activeSourceTitle).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if store.isLocalLibrarySelected {
-                        Text("LOCAL").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                    } else {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(KinetiqPalette.accent)
-                    }
-                }
-                Text("\(store.availableSources.count) available modules across connected repositories.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } footer: {
-                Text("Installed video modules use Kinetiq's native player. Manga and music modules remain listed but are not yet supported by the current runtime.")
-            }
+            addRepositorySection
+            connectedRepositoriesSection
+            sourceSelectionSection
         }
         .navigationTitle("Module Sources")
         .navigationBarTitleDisplayMode(.inline)
@@ -997,32 +969,151 @@ struct ModuleSourcesView: View {
                 .accessibilityLabel("Refresh repositories")
             }
         }
-        .confirmationDialog("Trust all modules from this repository?",
-            isPresented: $showingTrustConfirmation, titleVisibility: .visible) {
-            if let trustTarget, let repo = store.repositories.first(where: { $0.id == trustTarget }) {
-                Button("Trust \(repo.name) Once") { trustStore.approve(repo) }
+    }
+
+    private var addRepositorySection: some View {
+        Section {
+            TextField("Paste repository.json URL", text: $repositoryURL, axis: .vertical)
+                .lineLimit(2...4)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            Button { Task { await addRepository() } } label: {
+                HStack {
+                    if adding {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                    Text("Add Repository").fontWeight(.semibold)
+                    Spacer()
+                }
             }
-            Button("Cancel", role: .cancel) { trustTarget = nil }
-        } message: {
-            Text("This approves the repository as a COMMUNITY source, not a cryptographically verified publisher. Modules can run JavaScript with constrained network access. New modules inherit this approval; changed existing publisher identities or invalid verified signatures are blocked.")
-        }
-        .confirmationDialog("Install available video modules?", isPresented: $showingBatchConfirmation,
-                            titleVisibility: .visible) {
-            if let batchTarget, let repo = store.repositories.first(where: { $0.id == batchTarget }) {
-                Button("Install \(pendingSources(repo).count) Modules") { beginBatch(repo) }
+            .disabled(cannotAddRepository)
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
-            Button("Cancel", role: .cancel) { batchTarget = nil }
-        } message: {
-            Text("Each ZIP must match its SHA-256. Previously trusted repositories require no additional trust prompt. Existing installations and working playback are left untouched when updates are unsafe.")
+        } header: {
+            Text("Add a Source")
+        } footer: {
+            Text("Approve each repository once. Subsequent verified ZIP downloads from the same unchanged repository do not ask you to trust every module.")
         }
-        .alert("Module Report", isPresented: $showReport) {
-            Button("Copy Report") { UIPasteboard.general.string = report ?? "" }
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(report ?? "No report was generated.")
+    }
+
+    private var cannotAddRepository: Bool {
+        adding || store.isRefreshing ||
+            repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var connectedRepositoriesSection: some View {
+        Section("Connected Repositories") {
+            if store.repositories.isEmpty {
+                ContentUnavailableView(
+                    "No Repositories",
+                    systemImage: "square.stack.3d.up",
+                    description: Text("Add a repository.json URL above to discover modules.")
+                )
+            }
+            ForEach(store.repositories) { repository in
+                repositoryDisclosure(repository)
+            }
         }
-        .task { await store.loadSavedRepositoriesIfNeeded() }
-        .refreshable { await store.refreshAll() }
+    }
+
+    private func repositoryDisclosure(_ repo: ModuleRepositoryRecord) -> some View {
+        DisclosureGroup {
+            repositoryContents(repo)
+        } label: {
+            repositoryHeader(repo)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { store.removeRepository(repo) } label: {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func repositoryContents(_ repo: ModuleRepositoryRecord) -> some View {
+        repositoryTrustControls(repo)
+        if !repo.modules.isEmpty {
+            batchControls(repo)
+        }
+        if repo.modules.isEmpty {
+            Text(repo.refreshError ?? "This repository contains no modules.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        ForEach(store.sources(in: repo)) { source in
+            KinetiqApprovedModuleSourceRow(
+                source: source,
+                isSelected: store.isSelected(source.id)
+            ) {
+                store.selectSource(source.id)
+            }
+        }
+        if let refreshError = repo.refreshError {
+            Label(refreshError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+            Button("Retry Repository Refresh") {
+                Task { await store.refreshAll() }
+            }
+            .disabled(store.isRefreshing)
+        }
+    }
+
+    private func repositoryHeader(_ repo: ModuleRepositoryRecord) -> some View {
+        let status = trustStore.trust(for: repo)
+        return HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(repo.name)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(repo.modules.count) modules")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.isRefreshing {
+                ProgressView()
+            } else {
+                Image(systemName: status.symbol)
+                    .foregroundStyle(status.allowsInstall ? Color.green : Color.orange)
+            }
+        }
+    }
+
+    private var sourceSelectionSection: some View {
+        Section("Source Selection") {
+            HStack {
+                Image(systemName: store.activeSourceSymbol)
+                    .foregroundStyle(KinetiqPalette.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Active Source")
+                        .font(.subheadline.weight(.semibold))
+                    Text(store.activeSourceTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if store.isLocalLibrarySelected {
+                    Text("LOCAL")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(KinetiqPalette.accent)
+                }
+            }
+            Text("\(store.availableSources.count) available modules across connected repositories.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } footer: {
+            Text("Installed video modules use Kinetiq's native player. Manga and music modules remain listed but are not yet supported by the current runtime.")
+        }
     }
 
     @ViewBuilder private func repositoryTrustControls(_ repo: ModuleRepositoryRecord) -> some View {
@@ -1233,78 +1324,134 @@ struct KinetiqApprovedModuleSourceRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: onSelect) {
-                HStack(spacing: 12) {
-                    Group {
-                        if let iconURL = source.iconURL {
-                            AsyncImage(url: iconURL) { phase in
-                                if let image = phase.image {
-                                    image.resizable().scaledToFit()
-                                } else { sourceSymbol }
-                            }
-                        } else { sourceSymbol }
-                    }
-                    .frame(width: 34, height: 34)
-                    .padding(5)
-                    .background(KinetiqPalette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(source.title).font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary).lineLimit(1)
-                        Text(source.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        if let purpose = source.module.displayPurpose {
-                            Text(purpose).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
-                        }
-                        if source.module.presentation?.recommended == true {
-                            Text("RECOMMENDED").font(.system(size: 8, weight: .bold, design: .rounded))
-                                .tracking(0.8).foregroundStyle(KinetiqPalette.accent)
-                        }
-                        if release == .sameVersionMutation || release == .downgrade {
-                            Text(release.rawValue).font(.caption2).foregroundStyle(.orange)
-                        }
-                        let health = healthStore.status(
-                            for: source, installed: packageStore.installedModule(for: source))
-                        if health != "Unverified on this build" {
-                            Text(health).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 4)
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(KinetiqPalette.accent)
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isVideo {
-                Button {
-                    Task { await installPackage() }
-                } label: {
-                    if packageStore.isInstalling(source) {
-                        ProgressView().controlSize(.small)
-                    } else if release == .current {
-                        Label("Re-verify", systemImage: "checkmark.circle.fill")
-                    } else if release == .updateAvailable {
-                        Label("Update", systemImage: "arrow.up.circle")
-                    } else {
-                        Label(trust.allowsInstall ? "Install" : "Trust first",
-                              systemImage: trust.allowsInstall ? "arrow.down.circle" : "lock.shield")
-                    }
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-                .tint(KinetiqPalette.accent)
-                .disabled(!canInstall || packageStore.isInstalling(source))
-            } else {
-                Text("Later").font(.caption2).foregroundStyle(.tertiary)
-            }
+            selectionControl
+            installationControl
         }
         .padding(.vertical, 4)
-        .alert("Module Installation", isPresented: Binding(
-            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
-        )) {
+        .alert("Module Installation", isPresented: installationErrorBinding) {
             Button("OK", role: .cancel) { errorMessage = nil }
-        } message: { Text(errorMessage ?? "The module could not be installed.") }
+        } message: {
+            Text(errorMessage ?? "The module could not be installed.")
+        }
+    }
+
+    private var installationErrorBinding: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
+    }
+
+    private var selectionControl: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                sourceArtwork
+                sourceInformation
+                Spacer(minLength: 4)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(KinetiqPalette.accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sourceArtwork: some View {
+        Group {
+            if let iconURL = source.iconURL {
+                AsyncImage(url: iconURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        sourceSymbol
+                    }
+                }
+            } else {
+                sourceSymbol
+            }
+        }
+        .frame(width: 34, height: 34)
+        .padding(5)
+        .background(
+            KinetiqPalette.accent.opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+    }
+
+    private var sourceInformation: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(source.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text(source.subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            if let purpose = source.module.displayPurpose {
+                Text(purpose)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            if source.module.presentation?.recommended == true {
+                Text("RECOMMENDED")
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(KinetiqPalette.accent)
+            }
+            if release == .sameVersionMutation || release == .downgrade {
+                Text(release.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            let health = healthStore.status(
+                for: source,
+                installed: packageStore.installedModule(for: source)
+            )
+            if health != "Unverified on this build" {
+                Text(health)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var installationControl: some View {
+        if isVideo {
+            Button {
+                Task { await installPackage() }
+            } label: {
+                installationLabel
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.bordered)
+            .tint(KinetiqPalette.accent)
+            .disabled(!canInstall || packageStore.isInstalling(source))
+        } else {
+            Text("Later")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private var installationLabel: some View {
+        if packageStore.isInstalling(source) {
+            ProgressView().controlSize(.small)
+        } else if release == .current {
+            Label("Re-verify", systemImage: "checkmark.circle.fill")
+        } else if release == .updateAvailable {
+            Label("Update", systemImage: "arrow.up.circle")
+        } else {
+            Label(
+                trust.allowsInstall ? "Install" : "Trust first",
+                systemImage: trust.allowsInstall ? "arrow.down.circle" : "lock.shield"
+            )
+        }
     }
 
     private var sourceSymbol: some View {
