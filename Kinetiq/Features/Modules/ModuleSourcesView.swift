@@ -1087,7 +1087,7 @@ struct ModuleSourcesView: View {
     }
 
     private var sourceSelectionSection: some View {
-        Section("Source Selection") {
+        Section {
             HStack {
                 Image(systemName: store.activeSourceSymbol)
                     .foregroundStyle(KinetiqPalette.accent)
@@ -1111,6 +1111,8 @@ struct ModuleSourcesView: View {
             Text("\(store.availableSources.count) available modules across connected repositories.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } header: {
+            Text("Source Selection")
         } footer: {
             Text("Installed video modules use Kinetiq's native player. Manga and music modules remain listed but are not yet supported by the current runtime.")
         }
