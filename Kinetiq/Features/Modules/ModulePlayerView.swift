@@ -310,12 +310,14 @@ struct KinetiqModulePlayerView: View {
             }
             .onChange(of: pictureInPicture.isActive) { _, active in
                 if active {
+                    playback.prepareNativeCaptionsForPiP()
                     cancelAutoHide()
                     activePanel = nil
                     withAnimation(.easeInOut(duration: 0.2)) {
                         controlsVisible = false
                     }
                 } else {
+                    playback.restoreCaptionsAfterPiP()
                     revealControls()
                 }
             }
@@ -821,7 +823,7 @@ private struct ModulePlayerOptionsSheet: View {
                     }
                     .disabled(!playback.canSelectSourceSubtitle)
                 }
-                Text("Source subtitles display in the app. They are not yet shown in Picture in Picture or on AirPlay video.")
+                Text("External-only source subtitles are not available in system PiP. If a matching native caption track is present, Kinetiq uses it temporarily during PiP. AirPlay support depends on native tracks.")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -1285,6 +1287,64 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     let externalSubtitles = ModuleExternalSubtitleController()
     private var subtitleChanges: AnyCancellable?
     @Published private(set) var captionChoice: KinetiqCaptionChoice = .settings
+
+    // During native PiP, AVFoundation renders embedded legible tracks.
+    // If the current external SRT/VTT has a matching embedded track, select
+    // that track temporarily, then restore the user's exact source choice.
+    private var pipCaptionRestore: (
+        item: AVPlayerItem,
+        track: ModuleRemoteSubtitleTrack,
+        choice: KinetiqCaptionChoice
+    )?
+
+    func prepareNativeCaptionsForPiP() {
+        guard !hasStopped, pipCaptionRestore == nil,
+              captionChoice != .off,
+              let item = player.currentItem,
+              item === subtitleOptionsItem,
+              let subtitleGroup,
+              let selectedID = externalSubtitles.selectedTrackID,
+              let externalTrack = externalSubtitles.tracks.first(where: { $0.id == selectedID }),
+              let requestedLanguage = KinetiqCaptionLanguage(
+                  tag: externalTrack.language, name: externalTrack.label
+              ).tag else { return }
+
+        let ranked: [(Int, Int)] = subtitleOptions.enumerated().compactMap { index, option in
+            guard let rank = KinetiqCaptionLanguage.rank(
+                KinetiqCaptionLanguage(option).tag, for: requestedLanguage
+            ) else { return nil }
+            return (rank, index)
+        }
+        guard let selected = ranked.min(by: {
+            $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
+        }), subtitleOptions.indices.contains(selected.1) else { return }
+
+        // Do not turn off the selected subtitle unless the fallback exists.
+        pipCaptionRestore = (item, externalTrack, captionChoice)
+        externalSubtitles.turnOff()
+        item.select(subtitleOptions[selected.1], in: subtitleGroup)
+        selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+    }
+
+    func restoreCaptionsAfterPiP() {
+        guard let restore = pipCaptionRestore else { return }
+        pipCaptionRestore = nil
+        guard !hasStopped,
+              let item = player.currentItem,
+              item === restore.item,
+              externalSubtitles.tracks.contains(where: { $0.id == restore.track.id }) else {
+            return
+        }
+        captionChoice = restore.choice
+        selectedSubtitle = KinetiqCaptionTarget.manualSource.apply(
+            to: item, group: subtitleGroup
+        )
+        let playbackTime = player.currentTime().seconds
+        externalSubtitles.updatePlaybackTime(playbackTime.isFinite ? playbackTime : .nan)
+        externalSubtitles.select(
+            restore.track, rememberForSession: restore.choice == .source
+        )
+    }
     private weak var subtitleOptionsItem: AVPlayerItem?
     var requiresEmbeddedSubtitle: Bool { subtitleGroup?.allowsEmptySelection == false }
     var canSelectSourceSubtitle: Bool {
@@ -1666,6 +1726,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         audioGroup = nil
         subtitleGroup = nil
         subtitleOptionsItem = nil
+        pipCaptionRestore = nil
         externalSubtitles.configure(tracks: stream.subtitles)
 
         removeCurrentItemObservers()
@@ -2149,6 +2210,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
+        pipCaptionRestore = nil
         if let option {
             guard subtitleOptions.contains(option), subtitleOptionsItem === player.currentItem else { return }
             captionChoice = .embedded(KinetiqCaptionLanguage(option))
@@ -2169,6 +2231,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     func selectExternalSubtitle(_ track: ModuleRemoteSubtitleTrack) {
         guard canSelectSourceSubtitle, let item = player.currentItem,
               externalSubtitles.tracks.contains(where: { $0.id == track.id }) else { return }
+        pipCaptionRestore = nil
         captionChoice = .source
         selectedSubtitle = KinetiqCaptionTarget.manualSource.apply(to: item, group: subtitleGroup)
         externalSubtitles.updatePlaybackTime(isRestoringPosition ? .nan : player.currentTime().seconds)
@@ -2176,6 +2239,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func useSubtitleDefault() {
+        pipCaptionRestore = nil
         externalSubtitles.turnOff()
         captionChoice = .settings
         refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
@@ -2496,114 +2560,135 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 // MARK: - Module Picture in Picture
 
 @MainActor
-private final class ModulePictureInPictureController:
-    NSObject,
-    ObservableObject {
-
+private final class ModulePictureInPictureController: NSObject, ObservableObject {
     @Published private(set) var isPossible = false
     @Published private(set) var isActive = false
     @Published private(set) var lastFailure: String?
+
     let isSupported = AVPictureInPictureController.isPictureInPictureSupported()
 
     private weak var attachedLayer: AVPlayerLayer?
     private var controller: AVPictureInPictureController?
     private var possibleObservation: NSKeyValueObservation?
+    private var reviewFailure: Task<Void, Never>?
+    private var attemptSerial = 0
+    private var lastRequestTime: Date?
+    private var manualRequest = false
 
     func attach(to layer: AVPlayerLayer) {
         guard attachedLayer !== layer else { return }
+        // SwiftUI may recreate the view during presentation transitions.
+        // Do not destroy a PiP controller while PiP is actively playing.
+        if controller?.isPictureInPictureActive == true { return }
 
+        reviewFailure?.cancel()
+        reviewFailure = nil
+        attemptSerial &+= 1
         possibleObservation?.invalidate()
         possibleObservation = nil
-
         controller?.delegate = nil
         controller = nil
-
         attachedLayer = layer
         isPossible = false
         isActive = false
         lastFailure = nil
+        lastRequestTime = nil
+        manualRequest = false
 
-        guard AVPictureInPictureController.isPictureInPictureSupported() else {
-            return
-        }
-
-        guard let pipController =
-            AVPictureInPictureController(playerLayer: layer) else {
-            return
-        }
-
-        pipController.delegate = self
-        pipController.canStartPictureInPictureAutomaticallyFromInline = true
-        controller = pipController
-
-        possibleObservation = pipController.observe(
-            \.isPictureInPicturePossible,
-            options: [.initial, .new]
-        ) { [weak self] _, change in
+        guard AVPictureInPictureController.isPictureInPictureSupported(),
+              let next = AVPictureInPictureController(playerLayer: layer) else { return }
+        next.delegate = self
+        next.canStartPictureInPictureAutomaticallyFromInline = true
+        controller = next
+        possibleObservation = next.observe(
+            \.isPictureInPicturePossible, options: [.initial, .new]
+        ) { [weak self] observed, change in
             let possible = change.newValue ?? false
-
+            let observedID = ObjectIdentifier(observed)
             Task { @MainActor [weak self] in
-                self?.isPossible = possible
+                // KVO is nonisolated. Only a Sendable identity crosses actors.
+                guard let self,
+                      self.controller.map({ ObjectIdentifier($0) }) == observedID else { return }
+                self.isPossible = possible
             }
         }
     }
 
     func start() {
         guard isSupported, let controller else {
-            lastFailure = "Picture in Picture is unavailable on this device or this video surface."
+            lastFailure = "Picture in Picture isn't available for this video surface."
             return
         }
         guard (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("audio") == true else {
-            lastFailure = "Background media playback is not enabled in this build. Install the updated project.pbxproj and rebuild Kinetiq."
+            lastFailure = "Background playback isn't enabled in this build."
             return
         }
-        guard controller.isPictureInPicturePossible else {
-            lastFailure = "PiP is not ready. Start playing a video, then retry. Also check iPhone Settings → General → Picture in Picture."
+        guard controller.isPictureInPicturePossible || controller.isPictureInPictureActive else {
+            lastFailure = "Start video playback and try PiP again."
             return
         }
-        guard !controller.isPictureInPictureActive else { return }
-        lastFailure = nil
-        controller.startPictureInPicture()
+        requestStart(manual: true)
     }
 
-    /// System automatic PiP is preferred. This foreground-transition nudge
-    /// handles custom AVPlayerLayer presenters where system auto-start may
-    /// not engage; never retry from the background or for paused media.
     func startIfLeavingAppWhilePlaying(_ playing: Bool) {
         guard playing, isSupported, let controller,
               controller.isPictureInPicturePossible,
               !controller.isPictureInPictureActive else { return }
+        requestStart(manual: false)
+    }
+
+    private func requestStart(manual: Bool) {
+        guard let controller, !controller.isPictureInPictureActive else { return }
+        // AVKit may be automatically starting PiP at the same time we get
+        // the foreground transition callback. Coalesce duplicate requests.
+        if let lastRequestTime, Date().timeIntervalSince(lastRequestTime) < 2.0 { return }
+        lastRequestTime = Date()
+        manualRequest = manual
+        lastFailure = nil
+        reviewFailure?.cancel()
+        reviewFailure = nil
+        attemptSerial &+= 1
         controller.startPictureInPicture()
     }
 
     func clearFailure() { lastFailure = nil }
 
     func stop() {
-        guard let controller,
-              controller.isPictureInPictureActive else {
-            return
-        }
-
+        guard let controller, controller.isPictureInPictureActive else { return }
         controller.stopPictureInPicture()
     }
 }
 
-extension ModulePictureInPictureController:
-    @preconcurrency AVPictureInPictureControllerDelegate {
-
+extension ModulePictureInPictureController: @preconcurrency AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
+        let reportedID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor [weak self] in
-            self?.isActive = true
+            guard let self,
+                  self.controller.map({ ObjectIdentifier($0) }) == reportedID else { return }
+            self.reviewFailure?.cancel()
+            self.reviewFailure = nil
+            self.manualRequest = false
+            self.lastRequestTime = nil
+            self.lastFailure = nil
+            self.isActive = true
         }
     }
 
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
+        let reportedID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor [weak self] in
-            self?.isActive = false
+            guard let self,
+                  self.controller.map({ ObjectIdentifier($0) }) == reportedID else { return }
+            self.reviewFailure?.cancel()
+            self.reviewFailure = nil
+            self.manualRequest = false
+            self.lastRequestTime = nil
+            self.lastFailure = nil
+            self.isActive = false
         }
     }
 
@@ -2611,10 +2696,28 @@ extension ModulePictureInPictureController:
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
-        let description = error.localizedDescription
+        let reportedID = ObjectIdentifier(pictureInPictureController)
         Task { @MainActor [weak self] in
-            self?.isActive = false
-            self?.lastFailure = "iOS rejected Picture in Picture: " + description
+            guard let self,
+                  self.controller.map({ ObjectIdentifier($0) }) == reportedID else { return }
+            let wasManual = self.manualRequest
+            let serial = self.attemptSerial
+            self.manualRequest = false
+            self.lastRequestTime = nil
+            self.reviewFailure?.cancel()
+            // A delegate failure may race against a successful automatic
+            // PiP start. Only a genuine failed MANUAL attempt shows an error.
+            self.reviewFailure = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled, let self,
+                      self.controller.map({ ObjectIdentifier($0) }) == reportedID,
+                      self.attemptSerial == serial,
+                      !self.isActive,
+                      self.controller?.isPictureInPictureActive != true else { return }
+                if wasManual {
+                    self.lastFailure = "PiP didn't start this time. Playback is unchanged; try again."
+                }
+            }
         }
     }
 
