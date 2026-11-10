@@ -251,14 +251,24 @@ jobs:
           echo "Unsigned IPA created successfully."
 
       # --------------------------------------------------
-      # 9. Upload unsigned IPA
+      # 9. Verify and upload the IPA directly (without nested artifact ZIP)
       # --------------------------------------------------
 
-      - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+      - name: Verify IPA integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="$GITHUB_WORKSPACE/Kinetiq-unsigned.ipa"
+          test -s "$IPA"
+          unzip -t "$IPA" > /dev/null
+          unzip -Z1 "$IPA" | grep -Fx 'Payload/Kinetiq.app/Kinetiq'
+          shasum -a 256 "$IPA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA (direct download)
+        uses: actions/upload-artifact@v7
         with:
-          name: Kinetiq-iOS-Unsigned-IPA
           path: Kinetiq-unsigned.ipa
+          archive: false
           if-no-files-found: error
           retention-days: 14
 
