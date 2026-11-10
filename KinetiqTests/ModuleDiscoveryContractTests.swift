@@ -551,3 +551,82 @@ final class KinetiqModuleUpdateCenterContractTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Batch 05P-D: nonblocking notification regression coverage
+final class KinetiqNoticeContractTests: XCTestCase {
+    func testNotificationHistoryRedactsNetworkURLsAndCredentials() {
+        let source = "Install failed https://media.example/stream?token=secret123 " +
+            "Authorization: Bearer abc.def.123\nCookie: session=should-never-save"
+        let result = KinetiqNoticeRedaction.safe(source)
+        XCTAssertFalse(result.contains("media.example"))
+        XCTAssertFalse(result.contains("secret123"))
+        XCTAssertFalse(result.contains("abc.def.123"))
+        XCTAssertFalse(result.contains("should-never-save"))
+        XCTAssertTrue(result.contains("[URL redacted]"))
+        XCTAssertTrue(result.contains("[credential redacted]"))
+    }
+
+    @MainActor
+    func testFailuresQueueWithoutModalAndAreSavedForReview() {
+        let suite = "kinetiq.notice.fixture.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let center = KinetiqNoticeCenter(defaults: defaults, schedulesAutoDismiss: false)
+        center.post(.failure, title: "Install Failed", message: "DramaFun is invalid",
+                    groupKey: "module.dramafun")
+        center.post(.success, title: "Installed", message: "AniPM is ready",
+                    groupKey: "module.anipm")
+        XCTAssertEqual(center.current?.title, "Install Failed")
+        XCTAssertEqual(center.pendingCount, 1)
+        XCTAssertEqual(center.history.count, 2)
+        XCTAssertEqual(center.history.first?.title, "Installed")
+        XCTAssertEqual(KinetiqNoticeCenter(defaults: defaults,
+            schedulesAutoDismiss: false).history.count, 2)
+    }
+
+    @MainActor
+    func testDismissingBannerAdvancesQueueWithoutAConfirmationDialog() async {
+        let suite = "kinetiq.notice.fixture.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let center = KinetiqNoticeCenter(defaults: defaults, schedulesAutoDismiss: false)
+        center.post(.warning, title: "One", message: "First event", groupKey: "first")
+        center.post(.success, title: "Two", message: "Second event", groupKey: "second")
+        XCTAssertEqual(center.current?.title, "One")
+        center.dismissCurrent()
+        try? await Task.sleep(for: .milliseconds(280))
+        XCTAssertEqual(center.current?.title, "Two")
+        XCTAssertEqual(center.pendingCount, 0)
+    }
+
+    @MainActor
+    func testRepeatedErrorsAreCoalescedAndNeverFloodTheQueue() {
+        let suite = "kinetiq.notice.fixture.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let center = KinetiqNoticeCenter(defaults: defaults, schedulesAutoDismiss: false)
+        for index in 0..<20 {
+            center.post(.failure, title: "DramaFun Failed", message: "Failure \(index)",
+                        groupKey: "module.dramafun")
+        }
+        XCTAssertEqual(center.history.count, 1)
+        XCTAssertEqual(center.history[0].occurrences, 20)
+        XCTAssertEqual(center.pendingCount, 0)
+        XCTAssertEqual(center.current?.occurrences, 20)
+        center.post(.failure, title: "Secret source failed", message: "Invalid module",
+                    groupKey: "https://repo.example/repository.json?token=hidden123")
+        XCTAssertFalse(center.history.contains { $0.groupKey.contains("hidden123") })
+        let encoded = String(data: defaults.data(forKey:
+            "kinetiq.notifications.history.05PD.v1") ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertFalse(encoded.contains("hidden123"))
+        for index in 0..<30 {
+            center.post(.information, title: "Info", message: "Info \(index)",
+                        groupKey: "different.\(index)")
+        }
+        XCTAssertLessThanOrEqual(center.pendingCount, 8)
+        XCTAssertEqual(center.history.count, 32)
+        center.clearHistory()
+        XCTAssertTrue(center.history.isEmpty)
+        XCTAssertEqual(center.pendingCount, 0)
+    }
+}
