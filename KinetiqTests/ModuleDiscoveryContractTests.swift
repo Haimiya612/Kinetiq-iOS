@@ -441,4 +441,113 @@ final class KinetiqModuleUpdateCenterContractTests: XCTestCase {
         XCTAssertFalse(KinetiqModuleReleaseState.sameVersionMutation.permitsAutomaticInstall)
         XCTAssertFalse(KinetiqModuleReleaseState.downgrade.permitsAutomaticInstall)
     }
+
+    // MARK: Batch 05P-C - recovery and publisher-signature regression guards
+
+    func testRollbackSnapshotRejectsModifiedFilesAndSymlinks() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kinetiq-05pc-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let manifest = Data("{\"id\":\"example\"}".utf8)
+        let script = Data("export function searchResults() { return []; }".utf8)
+        let manifestURL = temp.appendingPathComponent("manifest.json")
+        let scriptURL = temp.appendingPathComponent("index.js")
+        try manifest.write(to: manifestURL)
+        try script.write(to: scriptURL)
+        let mh = SHA256.hash(data: manifest).map { String(format: "%02x", $0) }.joined()
+        let sh = SHA256.hash(data: script).map { String(format: "%02x", $0) }.joined()
+        XCTAssertTrue(KinetiqModuleRollbackVault.verifyFilePair(at: temp,
+            manifestDigest: mh, scriptDigest: sh))
+        try Data("modified".utf8).write(to: scriptURL)
+        XCTAssertFalse(KinetiqModuleRollbackVault.verifyFilePair(at: temp,
+            manifestDigest: mh, scriptDigest: sh))
+        try FileManager.default.removeItem(at: scriptURL)
+        try FileManager.default.createSymbolicLink(at: scriptURL, withDestinationURL: manifestURL)
+        XCTAssertFalse(KinetiqModuleRollbackVault.verifyFilePair(at: temp,
+            manifestDigest: mh, scriptDigest: sh))
+    }
+
+    func testUpdateFailureRecoveryIsNeededOnlyForChangedInstall() {
+        let old = InstalledModuleRecord(
+            sourceID: "repo|module", repositoryURL: "https://example.org/repository.json",
+            repositoryName: "Demo", moduleID: "module", name: "Module", version: "1.0.0",
+            contentType: "video", packageSHA256: String(repeating: "a", count: 64),
+            installedAt: Date(), directoryPath: "/safe/module",
+            manifestPath: "/safe/module/manifest.json", entryScriptPath: "/safe/module/index.js")
+        let same = old
+        XCTAssertFalse(KinetiqModuleUpdateSafety.requiresRecovery(from: old, current: same))
+        XCTAssertTrue(KinetiqModuleUpdateSafety.requiresRecovery(from: old, current: nil))
+        let new = InstalledModuleRecord(
+            sourceID: old.sourceID, repositoryURL: old.repositoryURL,
+            repositoryName: old.repositoryName, moduleID: old.moduleID,
+            name: old.name, version: "1.1.0", contentType: "video",
+            packageSHA256: String(repeating: "b", count: 64),
+            installedAt: Date(), directoryPath: old.directoryPath,
+            manifestPath: old.manifestPath, entryScriptPath: old.entryScriptPath)
+        XCTAssertTrue(KinetiqModuleUpdateSafety.requiresRecovery(from: old, current: new))
+    }
+
+    func testPublisherSignaturesRejectTamperedBytesAndMessages() throws {
+        let key = P256.Signing.PrivateKey()
+        let message = Data("kinetiq-p256-v1\nfixture\n123\n".utf8)
+        let signature = try key.signature(for: message).rawRepresentation
+        XCTAssertTrue(KinetiqPublisherSignature.verify(
+            signatureBase64: signature.base64EncodedString(), message: message,
+            publicKey: key.publicKey.rawRepresentation))
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: signature.base64EncodedString(),
+            message: Data("kinetiq-p256-v1\nfixture\n124\n".utf8),
+            publicKey: key.publicKey.rawRepresentation))
+        var corrupted = signature
+        corrupted[0] ^= 0x01
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: corrupted.base64EncodedString(), message: message,
+            publicKey: key.publicKey.rawRepresentation))
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: "not-a-signature", message: message,
+            publicKey: key.publicKey.rawRepresentation))
+        XCTAssertFalse(KinetiqPublisherSignature.verify(
+            signatureBase64: signature.base64EncodedString() + "\n", message: message,
+            publicKey: key.publicKey.rawRepresentation))
+        // A testing key is not automatically trusted as a production publisher.
+        XCTAssertFalse(KinetiqPublisherSignature.independentlyPinnedKeys.values.contains(
+            key.publicKey.rawRepresentation))
+    }
+
+    func testRecoveryMustMatchExactSnapshotAndNeverSubstituteAnother() {
+        let checksum = String(repeating: "a", count: 64)
+        let newer = String(repeating: "b", count: 64)
+        let record = InstalledModuleRecord(
+            sourceID: "repo|module", repositoryURL: "https://example.org/index.json",
+            repositoryName: "Demo", moduleID: "module", name: "Module", version: "1.0.0",
+            contentType: "video", packageSHA256: checksum, installedAt: Date(),
+            directoryPath: "/safe/module", manifestPath: "/safe/module/manifest.json",
+            entryScriptPath: "/safe/module/index.js")
+        let first = KinetiqModuleRollbackVault.Snapshot(
+            record: record, folder: UUID().uuidString, savedAt: Date(),
+            manifestDigest: checksum, scriptDigest: checksum)
+        let second = KinetiqModuleRollbackVault.Snapshot(
+            record: record, folder: UUID().uuidString, savedAt: Date(),
+            manifestDigest: newer, scriptDigest: newer)
+        XCTAssertEqual(KinetiqModuleRollbackVault.pinnedSnapshot(
+            in: [first, second], sourceID: first.id, folder: first.folder,
+            version: record.version, packageSHA256: checksum)?.folder, first.folder)
+        XCTAssertNil(KinetiqModuleRollbackVault.pinnedSnapshot(
+            in: [second], sourceID: first.id, folder: first.folder,
+            version: record.version, packageSHA256: checksum))
+        XCTAssertNil(KinetiqModuleRollbackVault.pinnedSnapshot(
+            in: [first], sourceID: first.id, folder: first.folder,
+            version: "1.1.0", packageSHA256: checksum))
+        XCTAssertNil(KinetiqModuleRollbackVault.pinnedSnapshot(
+            in: [first], sourceID: first.id, folder: first.folder,
+            version: record.version, packageSHA256: newer))
+    }
+
+    func testRollbackFolderRequiresCanonicalUUID() {
+        XCTAssertTrue(KinetiqModuleRollbackVault.isSafeFolder(UUID().uuidString))
+        for folder in ["../escape", "random", ".hidden", "sub/folder", "", "ABC"] {
+            XCTAssertFalse(KinetiqModuleRollbackVault.isSafeFolder(folder))
+        }
+    }
 }
