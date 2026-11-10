@@ -907,7 +907,7 @@ struct ModuleSourcesView: View {
     @State private var batchInstalled = 0
     @State private var batchCurrent = ""
     @State private var report: String?
-    @State private var showReport = false
+    @State private var showingNotificationHistory = false
 
     // MARK: - Composable screen
     //
@@ -919,6 +919,7 @@ struct ModuleSourcesView: View {
 
     var body: some View {
         reportPresentation
+            .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
             .task {
                 await store.loadSavedRepositoriesIfNeeded()
                 updateCenter.scan()
@@ -934,12 +935,8 @@ struct ModuleSourcesView: View {
             .fullScreenCover(isPresented: $showingUpdateCenter) {
                 KinetiqModuleUpdateCenterView()
             }
-            .alert("Module Report", isPresented: $showReport) {
-                Button("Copy Report") { UIPasteboard.general.string = report ?? "" }
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(report ?? "No report was generated.")
-            }
+            // Diagnostics are copied on demand. Routine batch results never
+            // interrupt the user with a mandatory alert or report sheet.
     }
 
     private var batchConfirmationPresentation: some View {
@@ -972,8 +969,15 @@ struct ModuleSourcesView: View {
                    let repo = store.repositories.first(where: { $0.id == trustTarget }) {
                     Button("Trust All \(repo.modules.count) Sources") {
                         if !trustStore.approveAllSources(in: repo) {
-                            report = "This repository could not be approved. Refresh it and review its publisher identity or signature before trying again."
-                            showReport = true
+                            KinetiqNoticeCenter.shared.post(.warning,
+                                title: "Repository Trust Blocked",
+                                message: "Review the publisher or signature before approving \(repo.name).",
+                                groupKey: "trust.\(repo.id)")
+                        } else {
+                            KinetiqNoticeCenter.shared.post(.success,
+                                title: "Repository Approved",
+                                message: "All \(repo.modules.count) sources from \(repo.name) are approved.",
+                                groupKey: "trust.success.\(repo.id)")
                         }
                         self.trustTarget = nil
                     }
@@ -994,6 +998,12 @@ struct ModuleSourcesView: View {
         .navigationTitle("Module Sources")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showingNotificationHistory = true } label: {
+                    Image(systemName: "bell")
+                }
+                .accessibilityLabel("Notification history")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await store.refreshAll() } } label: {
                     Image(systemName: "arrow.clockwise")
@@ -1001,6 +1011,9 @@ struct ModuleSourcesView: View {
                 .disabled(store.repositories.isEmpty || store.isRefreshing)
                 .accessibilityLabel("Refresh repositories")
             }
+        }
+        .sheet(isPresented: $showingNotificationHistory) {
+            NavigationStack { KinetiqNoticeHistoryView() }
         }
     }
 
@@ -1251,14 +1264,23 @@ struct ModuleSourcesView: View {
                         showingTrustConfirmation = true
                     }.buttonStyle(.borderedProminent)
                 } else if status == .communityApproved {
-                    Button("Revoke Trust", role: .destructive) { trustStore.revoke(repo) }
-                        .buttonStyle(.bordered)
+                    Button("Revoke Trust", role: .destructive) {
+                        trustStore.revoke(repo)
+                        KinetiqNoticeCenter.shared.post(.information,
+                            title: "Repository Trust Revoked",
+                            message: "Automatic installs from \(repo.name) are no longer approved.",
+                            groupKey: "trust.revoked.\(repo.id)")
+                    }
+                    .buttonStyle(.bordered)
                 }
                 Spacer()
                 Button {
                     report = moduleReport(repo)
                     UIPasteboard.general.string = report
-                    showReport = true
+                    KinetiqNoticeCenter.shared.post(.information,
+                        title: "Diagnostics Copied",
+                        message: "\(repo.name) diagnostics are on your clipboard.",
+                        groupKey: "copy-diagnostics.\(repo.id)")
                 } label: {
                     Label("Copy Diagnostics", systemImage: "doc.on.doc")
                 }.font(.caption).buttonStyle(.bordered)
@@ -1375,7 +1397,16 @@ struct ModuleSourcesView: View {
             activeBatch = nil
             batchTask = nil
             batchCurrent = ""
-            showReport = true
+            let failureCount = batchFailures.count
+            let level: KinetiqNoticeLevel = failureCount > 0 ? .warning :
+                (cancelled ? .information : .success)
+            KinetiqNoticeCenter.shared.post(level,
+                title: cancelled ? "Installation Stopped" : "Repository Installation Finished",
+                message: "\(repo.name): \(batchInstalled) installed, \(failureCount) failed.",
+                groupKey: "batch.install.\(repo.id).\(UUID().uuidString)",
+                details: report)
+            // A broken module never interrupts the remaining batch or opens
+            // an OK dialog. Full redacted details remain in Notifications.
         }
     }
 
@@ -1405,7 +1436,16 @@ struct ModuleSourcesView: View {
         do {
             try await store.addRepository(from: repositoryURL)
             repositoryURL = ""
-        } catch { errorMessage = error.localizedDescription }
+            KinetiqNoticeCenter.shared.post(.success,
+                title: "Repository Added",
+                message: "The new module repository is ready for review.",
+                groupKey: "repository.add.\(UUID().uuidString)")
+        } catch {
+            errorMessage = error.localizedDescription
+            KinetiqNoticeCenter.shared.post(.failure,
+                title: "Repository Not Added", message: error.localizedDescription,
+                groupKey: "repository.add.failed")
+        }
     }
 }
 
@@ -1420,8 +1460,6 @@ struct KinetiqApprovedModuleSourceRow: View {
     @StateObject private var sourceStore = ModuleSourceStore.shared
     @StateObject private var trustStore = KinetiqRepositoryTrustStore.shared
     @StateObject private var healthStore = KinetiqModuleHealthStore.shared
-    @State private var errorMessage: String?
-
     private var repository: ModuleRepositoryRecord? {
         sourceStore.repositories.first { $0.url == source.repositoryURL }
     }
@@ -1447,18 +1485,6 @@ struct KinetiqApprovedModuleSourceRow: View {
             installationControl
         }
         .padding(.vertical, 4)
-        .alert("Module Installation", isPresented: installationErrorBinding) {
-            Button("OK", role: .cancel) { errorMessage = nil }
-        } message: {
-            Text(errorMessage ?? "The module could not be installed.")
-        }
-    }
-
-    private var installationErrorBinding: Binding<Bool> {
-        Binding(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
-        )
     }
 
     private var selectionControl: some View {
@@ -1582,7 +1608,10 @@ struct KinetiqApprovedModuleSourceRow: View {
     @MainActor private func installPackage() async {
         guard trust.allowsInstall,
               (release.permitsAutomaticInstall || release == .current) else {
-            errorMessage = "Trust this repository first, or review the blocked release."
+            KinetiqNoticeCenter.shared.post(.warning,
+                title: "Installation Needs Approval",
+                message: "Review the repository trust or blocked release for \(source.module.displayName).",
+                groupKey: "module.install.trust.\(source.id)")
             return
         }
         do {
@@ -1592,7 +1621,16 @@ struct KinetiqApprovedModuleSourceRow: View {
             }
             try await packageStore.install(source)
             KinetiqModuleUpdateCenterStore.shared.scan()
-        } catch { errorMessage = error.localizedDescription }
+            KinetiqNoticeCenter.shared.post(.success,
+                title: release == .current ? "Module Verified" : "Module Installed",
+                message: "\(source.module.displayName) is ready.",
+                groupKey: "module.install.success.\(source.id)")
+        } catch {
+            KinetiqNoticeCenter.shared.post(.failure,
+                title: "Module Installation Failed",
+                message: "\(source.module.displayName): \(error.localizedDescription)",
+                groupKey: "module.install.failure.\(source.id)")
+        }
     }
 }
 
@@ -1642,6 +1680,7 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
     @Published private(set) var dismissedRevisions: Set<String> = []
     @Published private(set) var isRefreshing = false
     @Published private(set) var activeModuleID: String?
+    @Published private(set) var isUpdatingAll = false
     @Published private(set) var installedThisSession = 0
     @Published private(set) var processed = 0
     @Published private(set) var total = 0
@@ -1737,7 +1776,18 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
         await sources.refreshAll()
         guard !Task.isCancelled else { return }
         scan()
-        if updates.isEmpty { statusMessage = "No newer installed module releases were found." }
+        if updates.isEmpty {
+            statusMessage = "No newer installed module releases were found."
+            KinetiqNoticeCenter.shared.post(.information,
+                title: "Modules Up to Date",
+                message: "No new versions found for installed modules.",
+                groupKey: "module.updates.none")
+        } else {
+            KinetiqNoticeCenter.shared.post(.information,
+                title: "Updates Available",
+                message: "\(updates.count) installed modules have newer versions.",
+                groupKey: "module.updates.available")
+        }
     }
 
     func remindMeLater() {
@@ -1819,10 +1869,18 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
         }
         installedThisSession += 1
         statusMessage = "Updated \(installed.name) to v\(installed.version). A previous version is available under Recovery."
+        if !isUpdatingAll {
+            KinetiqNoticeCenter.shared.post(.success,
+                title: "Module Updated",
+                message: "\(installed.name) was updated to v\(installed.version).",
+                groupKey: "module.update.success.\(installed.sourceID)")
+        }
     }
 
     func updateAll() async {
-        guard activeModuleID == nil else { return }
+        guard activeModuleID == nil, !isUpdatingAll else { return }
+        isUpdatingAll = true
+        defer { isUpdatingAll = false }
         let batch = updates
         total = batch.count
         processed = 0
@@ -1839,6 +1897,10 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
         let stopped = Task.isCancelled ? " Stopped by user." : ""
         statusMessage = summary + stopped + (failures.isEmpty ? "" :
             " \(failures.count) failed: " + failures.prefix(3).joined(separator: "; "))
+        KinetiqNoticeCenter.shared.post(failures.isEmpty ? .success : .warning,
+            title: failures.isEmpty ? "Module Updates Finished" : "Some Updates Failed",
+            message: "\(installedThisSession) updated; \(failures.count) failed.",
+            groupKey: "batch.update.\(UUID().uuidString)", details: statusMessage)
         scan()
     }
 }
@@ -2166,8 +2228,8 @@ struct KinetiqModuleUpdateCenterView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var updates = KinetiqModuleUpdateCenterStore.shared
     @State private var batchTask: Task<Void, Never>?
-    @State private var error: String?
     @State private var restoreTarget: KinetiqModuleRollbackVault.Snapshot?
+    @State private var showingNotificationHistory = false
 
     var body: some View {
         NavigationStack {
@@ -2183,10 +2245,10 @@ struct KinetiqModuleUpdateCenterView: View {
                 updates.statusMessage = message
             }
         }
-        .alert("Module Update", isPresented: Binding(
-            get: { error != nil }, set: { if !$0 { error = nil } }
-        )) { Button("OK", role: .cancel) {} }
-        message: { Text(error ?? "Unknown error") }
+        .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
+        .sheet(isPresented: $showingNotificationHistory) {
+            NavigationStack { KinetiqNoticeHistoryView() }
+        }
         .confirmationDialog("Restore previous module version?",
             isPresented: Binding(get: { restoreTarget != nil },
                                  set: { if !$0 { restoreTarget = nil } }),
@@ -2197,7 +2259,16 @@ struct KinetiqModuleUpdateCenterView: View {
                     do {
                         try KinetiqModuleRollbackVault.requestRestore(restoreTarget)
                         updates.statusMessage = "Recovery scheduled for \(restoreTarget.record.name). Close Kinetiq fully and reopen it to restore the previous version."
-                    } catch { self.error = error.localizedDescription }
+                        KinetiqNoticeCenter.shared.post(.information,
+                            title: "Recovery Scheduled",
+                            message: "Restart Kinetiq to restore \(restoreTarget.record.name).",
+                            groupKey: "module.recovery.\(restoreTarget.record.sourceID)")
+                    } catch {
+                        KinetiqNoticeCenter.shared.post(.failure,
+                            title: "Recovery Unavailable",
+                            message: "\(restoreTarget.record.name): \(error.localizedDescription)",
+                            groupKey: "module.recovery.failure.\(restoreTarget.record.sourceID)")
+                    }
                     self.restoreTarget = nil
                 }
             }
@@ -2331,13 +2402,24 @@ struct KinetiqModuleUpdateCenterView: View {
                 .accessibilityLabel("Check for module updates")
         }
         ToolbarItem(placement: .topBarTrailing) {
+            Button { showingNotificationHistory = true } label: {
+                Image(systemName: "bell")
+            }
+            .accessibilityLabel("Notification history")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Button("Done") { dismiss() }.fontWeight(.semibold)
         }
     }
 
     @MainActor private func install(_ offer: KinetiqModuleUpdateOffer) async {
         do { try await updates.update(offer) }
-        catch { self.error = error.localizedDescription }
+        catch {
+            KinetiqNoticeCenter.shared.post(.failure,
+                title: "Module Update Failed",
+                message: "\(offer.source.module.displayName): \(error.localizedDescription)",
+                groupKey: "module.update.failure.\(offer.id)")
+        }
     }
 }
 
