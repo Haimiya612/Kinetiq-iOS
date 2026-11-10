@@ -345,6 +345,7 @@ enum KinetiqPublisherSignature {
 
     static func verify(signatureBase64: String, message: Data, publicKey: Data) -> Bool {
         guard let bytes = Data(base64Encoded: signatureBase64), bytes.count == 64,
+              signatureBase64 == bytes.base64EncodedString(),
               let key = try? P256.Signing.PublicKey(rawRepresentation: publicKey),
               let signature = try? P256.Signing.ECDSASignature(rawRepresentation: bytes)
         else { return false }
@@ -357,7 +358,8 @@ enum KinetiqPublisherSignature {
               let repositoryID = record.repositoryId, !repositoryID.isEmpty,
               let issued = record.publishedAtMs, issued > 0,
               let encoded = record.signature,
-              let decoded = Data(base64Encoded: encoded), decoded.count == 64 else {
+              let decoded = Data(base64Encoded: encoded), decoded.count == 64,
+              encoded == decoded.base64EncodedString() else {
             return false
         }
         return true
@@ -1770,13 +1772,49 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
         activeModuleID = live.id
         defer { activeModuleID = nil; scan() }
         try Task.checkCancellation()
-        // The vault only holds verified installed manifest + script files,
-        // and remains available after the new installer removes its temporary backup.
-        try KinetiqModuleRollbackVault.capture(original)
-        try await packages.install(live)
-        guard let installed = packages.installedModule(for: live),
-              installed.version == live.module.version,
-              installed.packageSHA256.caseInsensitiveCompare(live.module.sha256 ?? "") == .orderedSame else {
+        // Capture an exact, hash-checked previous release before any write.
+        // The native installer manages its own temporary backup; this vault
+        // survives successful swaps so a user can recover on the next launch.
+        let previous = try KinetiqModuleRollbackVault.capture(original)
+        do {
+            try await packages.install(live)
+        } catch {
+            // The native installer may have rolled back on its own. Schedule
+            // cold-start recovery only if its persisted record differs from
+            // the version we captured; never touch favorites/history/downloads.
+            let current = packages.installedModule(for: live)
+            if KinetiqModuleUpdateSafety.requiresRecovery(from: original, current: current) ||
+                !KinetiqModuleRollbackVault.installedFilesMatch(previous) {
+                do {
+                    try KinetiqModuleRollbackVault.requestRestore(previous)
+                    statusMessage = "Update interrupted for \(original.name). Recovery is scheduled for the next launch."
+                } catch {
+                    statusMessage = "Update interrupted for \(original.name). Open Module Updates → Recovery to restore your previous version."
+                }
+            }
+            throw error
+        }
+        // Revalidate the current catalogue/trust AFTER the network await,
+        // since another task may have refreshed or revoked this repository.
+        let currentRepository = sources.repositories.first(where: { $0.id == liveRepo.id })
+        let currentRelease = currentRepository.flatMap { repo in
+            sources.sources(in: repo).first(where: { $0.id == live.id })
+        }
+        let installed = packages.installedModule(for: live)
+        let postinstallValid = installed?.moduleID == original.moduleID &&
+            installed?.sourceID == original.sourceID &&
+            installed?.version == live.module.version &&
+            installed?.packageSHA256.caseInsensitiveCompare(live.module.sha256 ?? "") == .orderedSame &&
+            currentRepository.map { $0.refreshError == nil && trust.trust(for: $0).allowsInstall } == true &&
+            currentRelease?.module.version == live.module.version &&
+            currentRelease?.module.sha256?.lowercased() == live.module.sha256?.lowercased()
+        guard postinstallValid, let installed else {
+            do {
+                try KinetiqModuleRollbackVault.requestRestore(previous)
+                statusMessage = "Update verification failed for \(original.name). Recovery is scheduled for the next launch."
+            } catch {
+                statusMessage = "Update verification failed for \(original.name). Open Module Updates → Recovery to restore your previous version."
+            }
             throw KinetiqModuleUpdateError.installationVerificationFailed
         }
         installedThisSession += 1
@@ -1802,6 +1840,22 @@ final class KinetiqModuleUpdateCenterStore: ObservableObject {
         statusMessage = summary + stopped + (failures.isEmpty ? "" :
             " \(failures.count) failed: " + failures.prefix(3).joined(separator: "; "))
         scan()
+    }
+}
+
+// A failed installer must not schedule an unnecessary rollback if its own
+// atomic swap restored the original installed record successfully.
+enum KinetiqModuleUpdateSafety {
+    static func requiresRecovery(from previous: InstalledModuleRecord,
+                                 current: InstalledModuleRecord?) -> Bool {
+        guard let current else { return true }
+        return previous.sourceID != current.sourceID ||
+            previous.repositoryURL != current.repositoryURL ||
+            previous.moduleID != current.moduleID ||
+            previous.version != current.version ||
+            previous.packageSHA256.caseInsensitiveCompare(current.packageSHA256) != .orderedSame ||
+            previous.manifestPath != current.manifestPath ||
+            previous.entryScriptPath != current.entryScriptPath
     }
 }
 
@@ -1834,6 +1888,14 @@ enum KinetiqModuleRollbackVault {
 
     private static let pendingKey = "kinetiq.modules.rollbackPending.05PB.v1"
     private static let resultKey = "kinetiq.modules.lastRollbackResult.05PB.v1"
+    private static let pendingV2Key = "kinetiq.modules.rollbackPending.05PC.v2"
+
+    private struct PendingRecovery: Codable {
+        let sourceID: String
+        let folder: String
+        let version: String
+        let packageSHA256: String
+    }
 
     static func root() throws -> URL {
         guard let appSupport = FileManager.default.urls(
@@ -1864,8 +1926,28 @@ enum KinetiqModuleRollbackVault {
     }
 
     static func isSafeFolder(_ folder: String) -> Bool {
-        !folder.isEmpty && folder != "." && folder != ".." && !folder.contains("/") &&
-        !folder.contains("\\") && !folder.hasPrefix(".") && folder.count <= 128
+        guard let id = UUID(uuidString: folder) else { return false }
+        return id.uuidString == folder
+    }
+
+    // Shared by the runtime and deterministic tests: reject any file changed
+    // after capture, including a replacement that retains the same filename.
+    static func verifyFilePair(at directory: URL, manifestDigest: String,
+                               scriptDigest: String) -> Bool {
+        let manifestURL = directory.appendingPathComponent("manifest.json")
+        let scriptURL = directory.appendingPathComponent("index.js")
+        for url in [directory, manifestURL, scriptURL] {
+            guard let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
+                  values.isSymbolicLink != true else { return false }
+        }
+        guard let manifest = try? Data(contentsOf: manifestURL),
+              let script = try? Data(contentsOf: scriptURL),
+              !manifest.isEmpty, !script.isEmpty,
+              manifest.count <= 512 * 1024, script.count <= 9 * 1024 * 1024,
+              KinetiqRepositorySecurity.isValidSHA(manifestDigest),
+              KinetiqRepositorySecurity.isValidSHA(scriptDigest) else { return false }
+        return digest(manifest).caseInsensitiveCompare(manifestDigest) == .orderedSame &&
+            digest(script).caseInsensitiveCompare(scriptDigest) == .orderedSame
     }
 
     private static func validatedLocation(_ record: InstalledModuleRecord) throws -> URL {
@@ -1883,19 +1965,31 @@ enum KinetiqModuleRollbackVault {
 
     private static func validSnapshot(_ snapshot: Snapshot) -> Bool {
         guard isSafeFolder(snapshot.folder),
+              KinetiqRepositorySecurity.isValidSHA(snapshot.record.packageSHA256),
+              !snapshot.record.sourceID.isEmpty,
+              !snapshot.record.moduleID.isEmpty,
+              !snapshot.record.version.isEmpty,
+              (try? validatedLocation(snapshot.record)) != nil,
               let base = try? vault() else { return false }
         let dir = base.appendingPathComponent(snapshot.folder, isDirectory: true)
-        guard let manifest = try? Data(contentsOf: dir.appendingPathComponent("manifest.json")),
-              let script = try? Data(contentsOf: dir.appendingPathComponent("index.js")) else { return false }
-        return digest(manifest) == snapshot.manifestDigest &&
-               digest(script) == snapshot.scriptDigest
+        return verifyFilePair(at: dir, manifestDigest: snapshot.manifestDigest,
+                              scriptDigest: snapshot.scriptDigest)
+    }
+
+    // The record can remain unchanged when a partially failed replacement
+    // has already modified the actual installed files. Verify BOTH layers.
+    static func installedFilesMatch(_ snapshot: Snapshot) -> Bool {
+        guard let live = try? validatedLocation(snapshot.record) else { return false }
+        return verifyFilePair(at: live, manifestDigest: snapshot.manifestDigest,
+                              scriptDigest: snapshot.scriptDigest)
     }
 
     static func usableSnapshots() -> [Snapshot] {
         snapshots().filter(validSnapshot).sorted(by: { $0.savedAt > $1.savedAt })
     }
 
-    static func capture(_ record: InstalledModuleRecord) throws {
+    @discardableResult
+    static func capture(_ record: InstalledModuleRecord) throws -> Snapshot {
         let fm = FileManager.default
         let active = try validatedLocation(record)
         guard fm.fileExists(atPath: active.path),
@@ -1926,17 +2020,35 @@ enum KinetiqModuleRollbackVault {
             for expired in old where isSafeFolder(expired.folder) {
                 try? fm.removeItem(at: base.appendingPathComponent(expired.folder, isDirectory: true))
             }
+            return new
         } catch {
             try? fm.removeItem(at: snapshotURL)
             throw error
         }
     }
 
+    // Only an exact release may satisfy an approved recovery request.
+    // An updated snapshot must NEVER be substituted merely because its
+    // sourceID matches the previously approved module.
+    static func pinnedSnapshot(in snapshots: [Snapshot], sourceID: String,
+                               folder: String, version: String,
+                               packageSHA256: String) -> Snapshot? {
+        snapshots.first(where: {
+            $0.id == sourceID && $0.folder == folder &&
+            $0.record.version == version &&
+            $0.record.packageSHA256.caseInsensitiveCompare(packageSHA256) == .orderedSame
+        })
+    }
+
     static func requestRestore(_ snapshot: Snapshot) throws {
         guard usableSnapshots().contains(where: { $0.id == snapshot.id && $0.folder == snapshot.folder }) else {
             throw KinetiqModuleRollbackError.unsafeSnapshot
         }
-        UserDefaults.standard.set(snapshot.id, forKey: pendingKey)
+        let request = PendingRecovery(sourceID: snapshot.id, folder: snapshot.folder,
+                                      version: snapshot.record.version,
+                                      packageSHA256: snapshot.record.packageSHA256)
+        UserDefaults.standard.set(try JSONEncoder().encode(request), forKey: pendingV2Key)
+        UserDefaults.standard.removeObject(forKey: pendingKey)
     }
 
     /// App.init invokes this BEFORE ModulePackageStore.shared loads its cached
@@ -1944,19 +2056,47 @@ enum KinetiqModuleRollbackVault {
     /// is private and is read only once at initialization.
     static func restorePendingOnLaunch() {
         let defaults = UserDefaults.standard
-        guard let id = defaults.string(forKey: pendingKey) else { return }
-        guard let snapshot = usableSnapshots().first(where: { $0.id == id }) else {
-            defaults.set("Recovery was cancelled: previous files are missing or altered.", forKey: resultKey)
+        let pending: PendingRecovery?
+        if let data = defaults.data(forKey: pendingV2Key) {
+            pending = try? JSONDecoder().decode(PendingRecovery.self, from: data)
+            if pending == nil {
+                defaults.set("Recovery refused: pending request is malformed.", forKey: resultKey)
+                defaults.removeObject(forKey: pendingV2Key)
+                return
+            }
+        } else if let legacyID = defaults.string(forKey: pendingKey) {
+            // Legacy 05P-B had no version/folder pin. Only accept it when
+            // exactly one valid snapshot exists for that installed source.
+            let candidates = usableSnapshots().filter { $0.id == legacyID }
+            guard candidates.count == 1, let snapshot = candidates.first else {
+                defaults.set("Legacy recovery refused: no unique verified backup exists.", forKey: resultKey)
+                defaults.removeObject(forKey: pendingKey)
+                return
+            }
+            pending = PendingRecovery(sourceID: legacyID, folder: snapshot.folder,
+                                      version: snapshot.record.version,
+                                      packageSHA256: snapshot.record.packageSHA256)
+        } else { return }
+        guard let pending,
+              let snapshot = pinnedSnapshot(in: usableSnapshots(),
+                                            sourceID: pending.sourceID,
+                                            folder: pending.folder,
+                                            version: pending.version,
+                                            packageSHA256: pending.packageSHA256) else {
+            defaults.set("Recovery refused: the selected backup is missing or changed.", forKey: resultKey)
+            defaults.removeObject(forKey: pendingV2Key)
             defaults.removeObject(forKey: pendingKey)
             return
         }
         do {
             try restore(snapshot)
             defaults.set("Restored \(snapshot.record.name) v\(snapshot.record.version).", forKey: resultKey)
+            defaults.removeObject(forKey: pendingV2Key)
             defaults.removeObject(forKey: pendingKey)
         } catch {
             defaults.set("Recovery failed: \(error.localizedDescription)", forKey: resultKey)
-            // Leave pending operation for retry, but never delete user data.
+            // Preserve the exact request for one more attempt; never erase
+            // or modify favorites, history, downloads or user media.
         }
     }
 
@@ -1974,7 +2114,12 @@ enum KinetiqModuleRollbackVault {
         let indexURL = try installedIndex()
         let previousData = try Data(contentsOf: indexURL)
         var installed = try JSONDecoder().decode([InstalledModuleRecord].self, from: previousData)
-        guard installed.contains(where: { $0.sourceID == snapshot.id }) else {
+        guard installed.contains(where: {
+            $0.sourceID == snapshot.id &&
+            $0.moduleID == snapshot.record.moduleID &&
+            $0.repositoryURL == snapshot.record.repositoryURL &&
+            $0.directoryPath == snapshot.record.directoryPath
+        }) else {
             throw KinetiqModuleRollbackError.invalidInstalledModule
         }
         installed.removeAll { $0.sourceID == snapshot.id }
@@ -1987,6 +2132,10 @@ enum KinetiqModuleRollbackVault {
                 movedOld = true
             }
             try fm.copyItem(at: snapshotFolder, to: live)
+            guard verifyFilePair(at: live, manifestDigest: snapshot.manifestDigest,
+                                 scriptDigest: snapshot.scriptDigest) else {
+                throw KinetiqModuleRollbackError.unsafeSnapshot
+            }
             try JSONEncoder().encode(installed).write(to: indexURL, options: .atomic)
             if movedOld { try? fm.removeItem(at: oldDestination) }
         } catch {
