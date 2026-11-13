@@ -90,6 +90,8 @@ struct KinetiqApp: App {
 
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
 
     @State private var showingWhatsNew = false
     @State private var showingModuleUpdates = false
@@ -108,7 +110,9 @@ struct KinetiqApp: App {
             MainTabView(tagline: taglineStore.tagline)
                 .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
                 .preferredColorScheme(
-                    AppAppearance(rawValue: appearanceRawValue)?.colorScheme
+                    visualThemeRawValue == KinetiqVisualTheme.signature.rawValue
+                        ? AppAppearance(rawValue: appearanceRawValue)?.colorScheme
+                        : .dark
                 )
                 .task {
                     guard !checkedForUpdates else { return }
