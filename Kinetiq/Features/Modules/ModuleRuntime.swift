@@ -3232,6 +3232,16 @@ private enum ModuleBrowserPreferences {
 struct ModuleBrowserView: View {
 
     let source: ModuleSourceOption
+    let startInSearch: Bool
+    let embeddedInHome: Bool
+
+    init(source: ModuleSourceOption, startInSearch: Bool = false, embeddedInHome: Bool = false) {
+        self.source = source
+        self.startInSearch = startInSearch
+        self.embeddedInHome = embeddedInHome
+    }
+
+    @FocusState private var searchIsFocused: Bool
 
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var themeRawValue = KinetiqVisualTheme.signature.rawValue
@@ -3335,13 +3345,30 @@ struct ModuleBrowserView: View {
                 animeCatalogue
             }
         }
-        .background(KinetiqExperienceBackground())
+        .background {
+            if !embeddedInHome { KinetiqExperienceBackground() }
+        }
         .task(id: runtimeIdentity) {
-            catalogueSection = ModuleBrowserPreferences.section(for: source.id)
+            catalogueSection = startInSearch ? .search : ModuleBrowserPreferences.section(for: source.id)
             await prepareRuntime()
         }
         .onChange(of: catalogueSection) { _, section in
-            ModuleBrowserPreferences.save(section, for: source.id)
+            if !startInSearch { ModuleBrowserPreferences.save(section, for: source.id) }
+            if section == .search && startInSearch && runtime != nil {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(240))
+                    searchIsFocused = true
+                }
+            }
+        }
+        .onChange(of: runtime != nil) { _, ready in
+            if ready && startInSearch {
+                catalogueSection = .search
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    searchIsFocused = true
+                }
+            }
         }
         .onDisappear {
             activeSearchID = nil
@@ -3505,7 +3532,11 @@ struct ModuleBrowserView: View {
 
     private var animeCatalogue: some View {
         VStack(alignment: .leading, spacing: theme == .cinema ? 8 : 0) {
-            catalogueExperienceHeader
+            if embeddedInHome {
+                featuredModuleHero
+            } else {
+                catalogueExperienceHeader
+            }
             Picker("Anime collection", selection: $catalogueSection) {
                 ForEach(ModuleCatalogueSection.allCases) { section in
                     Text(section.rawValue).tag(section)
@@ -3607,6 +3638,93 @@ struct ModuleBrowserView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // Real source-owned artwork; no fabricated rankings or posters.
+    private var featuredEntry: ModuleAnimeCollectionEntry? {
+        animeCollection.continueWatching.first {
+            $0.sourceID == source.id && !$0.isCompleted
+        } ?? animeCollection.favorites(for: source.id).first
+    }
+
+    private var featuredModuleHero: some View {
+        Group {
+            if let entry = featuredEntry {
+                Button {
+                    selectedItem = entry.anime
+                } label: {
+                    ZStack(alignment: .bottomLeading) {
+                        ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: theme == .cinema ? 300 : theme == .anime ? 272 : theme == .nocturne ? 218 : 255)
+                            .clipped()
+                        LinearGradient(
+                            colors: [.black.opacity(0.03), .black.opacity(0.24), .black.opacity(0.94)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(entry.playbackFraction > 0 && !entry.isCompleted
+                                  ? "PICK UP WHERE YOU LEFT OFF" : "FROM YOUR COLLECTION",
+                                  systemImage: "play.circle.fill")
+                                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                .tracking(1.5)
+                                .foregroundStyle(theme.accent)
+                            Text(entry.title)
+                                .font(.system(size: theme == .cinema ? 28 : 25, weight: .bold,
+                                              design: theme == .cinema ? .serif : .rounded))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            HStack(spacing: 8) {
+                                Image(systemName: "play.fill")
+                                Text(entry.playbackFraction > 0 && !entry.isCompleted ? "Continue watching" : "View episodes")
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .padding(.horizontal, 15)
+                            .padding(.vertical, 11)
+                            .background(theme.accent, in: Capsule())
+                            .foregroundStyle(.black)
+                            if entry.playbackFraction > 0 && !entry.isCompleted {
+                                ProgressView(value: entry.playbackFraction)
+                                    .tint(theme.accent)
+                                    .padding(.top, 3)
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                            .strokeBorder(theme.accent.opacity(theme == .anime ? 0.42 : 0.14), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(entry.title), \(entry.playbackFraction > 0 ? "continue watching" : "view episodes")")
+            } else {
+                HStack(spacing: 13) {
+                    Image(systemName: theme.heroSymbol)
+                        .font(.system(size: 27, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(theme == .cinema ? "Now showing" :
+                             theme == .anime ? "Your anime universe" :
+                             theme == .nocturne ? "Find your next story" :
+                             theme == .aurora ? "Explore without limits" : "Discover your favorites")
+                            .font(.system(size: 22, weight: .bold,
+                                          design: theme == .cinema ? .serif : .rounded))
+                        Text("Browse titles from \(source.title)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, theme == .nocturne ? 14 : 21)
+            }
+        }
+        .padding(.horizontal, embeddedInHome ? 0 : 14)
+        .padding(.top, 10)
+    }
+
     private var catalogueExperienceHeader: some View {
         HStack(spacing: 12) {
             Image(systemName: theme.heroSymbol)
@@ -3633,7 +3751,7 @@ struct ModuleBrowserView: View {
         .padding(13)
         .background(theme.cardBackground,
                     in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-        .padding(.horizontal, 14)
+        .padding(.horizontal, embeddedInHome ? 0 : 14)
         .padding(.top, 8)
     }
 
@@ -3694,8 +3812,8 @@ struct ModuleBrowserView: View {
                             .padding(.horizontal, 12)
                             .frame(height: 51)
                             .background(
-                                Color(uiColor: .secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 13)
+                                theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: theme == .cinema ? 6 : theme.cardCornerRadius)
                             )
                         }
                         .buttonStyle(.plain)
@@ -3734,8 +3852,8 @@ struct ModuleBrowserView: View {
             .buttonStyle(.borderedProminent)
             .tint(KinetiqPalette.accent)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 22)
+        .padding(.horizontal, embeddedInHome ? 0 : 16)
+        .padding(.vertical, embeddedInHome ? 15 : 22)
     }
 
     private func exploreShelf(
@@ -3943,8 +4061,8 @@ struct ModuleBrowserView: View {
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 17)
+            theme.cardBackground,
+            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius)
         )
     }
 
@@ -4035,7 +4153,8 @@ struct ModuleBrowserView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("Search anime…", text: $searchQuery)
+            TextField("Search \(source.title)…", text: $searchQuery)
+                .focused($searchIsFocused)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -4059,7 +4178,7 @@ struct ModuleBrowserView: View {
             theme.cardBackground,
             in: RoundedRectangle(cornerRadius: theme.cardCornerRadius)
         )
-        .padding(.horizontal, 16)
+        .padding(.horizontal, embeddedInHome ? 0 : 16)
         .padding(.top, 14)
         .padding(.bottom, 5)
     }
@@ -4152,6 +4271,14 @@ struct ModuleAnimeDetailsView: View {
 
     @State private var isLoading = true
     @State private var isResolvingStream = false
+    @State private var activeLaunchID: UUID?
+    @State private var pendingEpisodeNumber = ""
+    @State private var pendingLanguage = "sub"
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var detailThemeRaw = KinetiqVisualTheme.signature.rawValue
+    private var detailTheme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: detailThemeRaw) ?? .signature
+    }
 
     @State private var detailsFailure: String?
     @State private var detailsFailureDiagnostics: String?
@@ -4194,7 +4321,7 @@ struct ModuleAnimeDetailsView: View {
                 }
                 .padding(18)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(KinetiqExperienceBackground())
             .navigationTitle(details?.title ?? item.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4220,6 +4347,20 @@ struct ModuleAnimeDetailsView: View {
             }
             .task {
                 await loadDetailsAndEpisodes()
+            }
+            .overlay {
+                if isResolvingStream {
+                    KinetiqPortraitStreamLaunchView(
+                        title: details?.title ?? item.title,
+                        source: sourceName,
+                        episode: pendingEpisodeNumber,
+                        language: pendingLanguage,
+                        onCancel: cancelLaunch
+                    )
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .zIndex(100)
+                }
             }
             .fullScreenCover(item: $selectedPlaybackSession, onDismiss: {
                 if let report = playbackSession?.playerFailureDiagnostics {
@@ -4299,35 +4440,20 @@ struct ModuleAnimeDetailsView: View {
         VStack(alignment: .leading, spacing: 12) {
             ModuleAnimeArtworkView(url: details?.imageURL ?? item.imageURL)
                 .frame(maxWidth: .infinity)
-                .frame(height: 220)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-
-            if let synopsis = details?.synopsis ?? item.synopsis,
-               !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Synopsis")
-                        .font(.system(size: 16, weight: .bold))
-                    Text(synopsis)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                .frame(height: detailTheme == .cinema ? 305 : detailTheme == .anime ? 270 : 246)
+                .clipShape(RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
 
             Text(details?.title ?? item.title)
-                .font(.system(size: 23, weight: .bold))
+                .font(.system(size: detailTheme == .cinema ? 28 : 24,
+                              weight: .bold, design: detailTheme == .cinema ? .serif : .rounded))
                 .fixedSize(horizontal: false, vertical: true)
 
             if let continuation {
                 Button {
-                    Task {
-                        await play(
-                            episode: continuation.episode,
-                            language: continuation.language
-                        )
-                    }
+                    beginPlayback(
+                        episode: continuation.episode,
+                        language: continuation.language
+                    )
                 } label: {
                     Label(
                         "\(continuation.isResume ? "Resume" : "Play") Episode \(continuation.episode.number) · \(continuation.language.uppercased())",
@@ -4342,6 +4468,20 @@ struct ModuleAnimeDetailsView: View {
                 Label("All available episodes watched", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(KinetiqPalette.accent)
+            }
+
+            if let synopsis = details?.synopsis ?? item.synopsis,
+               !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Synopsis")
+                        .font(.system(size: 16, weight: .bold))
+                    Text(synopsis)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
         }
@@ -4384,8 +4524,8 @@ struct ModuleAnimeDetailsView: View {
                     }
                 }
                 .padding(12)
-                .background(Color(uiColor: .secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12))
+                .background(detailTheme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
 
                 Text("Watched in either Sub or Dub. Resume positions are saved separately.")
                     .font(.caption2)
@@ -4485,9 +4625,9 @@ struct ModuleAnimeDetailsView: View {
         }
         .padding(13)
         .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
+            detailTheme.cardBackground,
             in: RoundedRectangle(
-                cornerRadius: 14,
+                cornerRadius: detailTheme.cardCornerRadius,
                 style: .continuous
             )
         )
@@ -4500,7 +4640,7 @@ struct ModuleAnimeDetailsView: View {
         let action = saved?.isCompleted == true ? "Replay" :
             ((saved?.resumePosition ?? 0) > 0 ? "Resume" : "Play")
         return Button(language == "sub" ? "Sub" : "Dub") {
-            Task { await play(episode: episode, language: language) }
+            beginPlayback(episode: episode, language: language)
         }
         .buttonStyle(.bordered)
         .tint(KinetiqPalette.accent)
@@ -4657,20 +4797,38 @@ struct ModuleAnimeDetailsView: View {
 
     // MARK: Resolve Stream
 
+    // Synchronous tap handoff: show loading before any async module call.
     @MainActor
-    private func play(
-        episode: ModuleAnimeEpisode,
-        language: String
-    ) async {
-        guard !isResolvingStream else {
-            return
-        }
-
+    private func beginPlayback(episode: ModuleAnimeEpisode, language: String) {
+        guard !isResolvingStream else { return }
+        let requestID = UUID()
+        activeLaunchID = requestID
+        pendingEpisodeNumber = episode.number
+        pendingLanguage = language
         isResolvingStream = true
         lastPlaybackDiagnostics = nil
         lastPlaybackFailure = nil
+        Task { await play(episode: episode, language: language, requestID: requestID) }
+    }
+
+    @MainActor
+    private func cancelLaunch() {
+        activeLaunchID = nil
+        isResolvingStream = false
+    }
+
+    @MainActor
+    private func play(
+        episode: ModuleAnimeEpisode,
+        language: String,
+        requestID: UUID
+    ) async {
+        guard activeLaunchID == requestID else { return }
         defer {
-            isResolvingStream = false
+            if activeLaunchID == requestID {
+                activeLaunchID = nil
+                isResolvingStream = false
+            }
         }
 
         let session: ModuleEpisodePlaybackSession
@@ -4692,6 +4850,8 @@ struct ModuleAnimeDetailsView: View {
             episode: episode,
             language: language
         )
+
+        guard activeLaunchID == requestID, !Task.isCancelled else { return }
 
         if didResolve {
             // Record the selected episode only after stream resolution.
@@ -4715,6 +4875,93 @@ struct ModuleAnimeDetailsView: View {
     }
 }
 
+
+// MARK: - Batch 06E: Portrait launch, before entering the landscape player.
+private struct KinetiqPortraitStreamLaunchView: View {
+    let title: String
+    let source: String
+    let episode: String
+    let language: String
+    let onCancel: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRaw = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
+    }
+
+    var body: some View {
+        ZStack {
+            theme.backdrop
+            LinearGradient(
+                colors: [theme.stageColors[0].opacity(0.78), theme.backdrop,
+                         theme.stageColors[2].opacity(0.46)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            VStack(spacing: 26) {
+                Spacer()
+                ZStack {
+                    Circle()
+                        .stroke(theme.accent.opacity(0.18), lineWidth: 1)
+                        .frame(width: 180, height: 180)
+                    Circle()
+                        .trim(from: 0.04, to: 0.68)
+                        .stroke(
+                            AngularGradient(colors: [theme.accent, theme.highlight, .clear],
+                                            center: .center),
+                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                        )
+                        .frame(width: 135, height: 135)
+                        .rotationEffect(.degrees(-90))
+                        .opacity(reduceMotion ? 0.75 : 1)
+                    Image(systemName: theme.heroSymbol)
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(theme.accent)
+                }
+                .accessibilityHidden(true)
+                VStack(spacing: 11) {
+                    Text("PREPARING YOUR EPISODE")
+                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                        .tracking(2.4)
+                        .foregroundStyle(theme.accent)
+                    Text(title)
+                        .font(.system(size: theme == .cinema ? 30 : 27, weight: .bold,
+                                      design: theme == .cinema ? .serif : .rounded))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .foregroundStyle(.white)
+                    Text("Episode \(episode)  ·  \(language.uppercased())")
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.88))
+                    Text("Finding a playable server from \(source)")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.64))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 28)
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(theme.accent)
+                    .accessibilityLabel("Resolving episode stream")
+                Spacer()
+                Button(action: onCancel) {
+                    Text("Back to episodes")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .padding(.vertical, 14)
+                        .frame(maxWidth: .infinity)
+                        .background(.white.opacity(0.10), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 38)
+                .padding(.bottom, 44)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+    }
+}
 
 // MARK: - Batch 05D: Privacy-Safe Server Health History
 

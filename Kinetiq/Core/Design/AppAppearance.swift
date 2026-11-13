@@ -94,11 +94,11 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
     }
     var subtitle: String {
         switch self {
-        case .signature: "The original Kinetiq cyan"
-        case .cinema: "Dramatic, editorial and focused"
-        case .anime: "Electric color and expressive energy"
-        case .aurora: "Fresh gradients and soft contrast"
-        case .nocturne: "Quiet, immersive, nearly black"
+        case .signature: "Original Kinetiq · luminous cyan shelves"
+        case .cinema: "Theater-style artwork · editorial headings"
+        case .anime: "Anime-first posters · expressive color"
+        case .aurora: "Soft glass · luminous gradients"
+        case .nocturne: "Nearly-black canvas · minimal distractions"
         }
     }
     var symbol: String {

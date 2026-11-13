@@ -898,15 +898,7 @@ private struct KinetiqThemeGallery: View {
             }
         } label: {
             HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 15)
-                        .fill(LinearGradient(colors: [option.highlight, option.accent, option.backdrop],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Image(systemName: option.symbol)
-                        .font(.system(size: 25, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 63, height: 64)
+                themeMiniature(option)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(option.name)
                         .font(.headline.weight(.semibold))
@@ -931,6 +923,50 @@ private struct KinetiqThemeGallery: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(option.name) theme")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    // Live miniature of each preset's navigation and artwork geometry.
+    private func themeMiniature(_ option: KinetiqVisualTheme) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: max(7, option.cardCornerRadius * 0.5))
+                .fill(option.backdrop)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 5) {
+                    Circle().fill(option.accent).frame(width: 5, height: 5)
+                    Capsule().fill(.white.opacity(0.75)).frame(width: 27, height: 3)
+                    Spacer(minLength: 0)
+                }
+                ZStack(alignment: .bottomLeading) {
+                    RoundedRectangle(cornerRadius: max(3, option.cardCornerRadius * 0.25))
+                        .fill(LinearGradient(colors: option.stageColors,
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    HStack {
+                        Image(systemName: option.heroSymbol)
+                            .font(.system(size: option == .anime ? 20 : 17, weight: .light))
+                            .foregroundStyle(.white.opacity(0.72))
+                        Spacer()
+                        Capsule().fill(option.accent).frame(width: 25, height: 9)
+                    }
+                    .padding(7)
+                }
+                .frame(height: 34)
+                HStack(spacing: 4) {
+                    ForEach(0..<3, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: option == .cinema ? 2 : 5)
+                            .fill(index == 0 ? option.accent.opacity(0.75)
+                                             : option.highlight.opacity(0.42))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 13)
+                    }
+                }
+            }
+            .padding(8)
+        }
+        .frame(width: 116, height: 78)
+        .overlay {
+            RoundedRectangle(cornerRadius: max(7, option.cardCornerRadius * 0.5))
+                .strokeBorder(option.accent.opacity(0.30), lineWidth: 1)
+        }
     }
 
     private var motionSection: some View {

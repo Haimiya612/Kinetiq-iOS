@@ -122,6 +122,7 @@ struct HomeView: View {
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
     }
+    @State private var showingSourceSearch = false
     @State private var showingSourcePicker = false
     @State private var openManageModulesAfterDismiss = false
 
@@ -153,7 +154,7 @@ struct HomeView: View {
                         videoContent
                     case .remoteVideo:
                         if let activeSource = moduleSourceStore.activeSource {
-                            ModuleBrowserView(source: activeSource)
+                            ModuleBrowserView(source: activeSource, embeddedInHome: true)
                                 .id(activeSource.id) // Prevent state crossing between module identities.
                         }
                     case .unavailableSource:
@@ -161,7 +162,7 @@ struct HomeView: View {
                     }
                 }
                 .padding(.horizontal, 21)
-                .padding(.top, 12)
+                .padding(.top, theme == .nocturne ? 4 : 12)
                 .padding(.bottom, 30)
             }
         }
@@ -184,6 +185,24 @@ struct HomeView: View {
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(30)
         }
+        .sheet(isPresented: $showingSourceSearch) {
+            if let source = moduleSourceStore.activeSource {
+                NavigationStack {
+                    ModuleBrowserView(source: source, startInSearch: true)
+                        .navigationTitle("Search \(source.title)")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showingSourceSearch = false }
+                                    .fontWeight(.semibold)
+                            }
+                        }
+                }
+                .tint(KinetiqPalette.accent)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            }
+        }
         .task {
             await moduleSourceStore.loadSavedRepositoriesIfNeeded()
         }
@@ -203,6 +222,17 @@ struct HomeView: View {
             // its local file remains. Only files actually removed from the
             // library have their thumbnails cleaned up.
             LocalMediaThumbnailCache.shared.removeOrphans()
+        }
+    }
+
+    // Real source-aware search, never the empty Discover placeholder.
+    private func openSourceSearch() {
+        if selectedMode == .video, moduleSourceStore.activeSource != nil {
+            showingSourceSearch = true
+        } else if selectedMode == .video, moduleSourceStore.isLocalLibrarySelected {
+            onOpenLibrary()
+        } else {
+            onDiscover()
         }
     }
 
@@ -271,13 +301,14 @@ struct HomeView: View {
                 .padding(10)
                 .background(
                     theme.cardBackground,
-                    in: RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 19, style: .continuous)
-                        .strokeBorder(KinetiqPalette.accent.opacity(0.13), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous)
+                        .strokeBorder(KinetiqPalette.accent.opacity(theme == .anime ? 0.38 : 0.13),
+                                      lineWidth: theme == .cinema ? 0.5 : 1)
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Choose source. Current: \(moduleSourceStore.activeSourceTitle)")
@@ -418,7 +449,7 @@ struct HomeView: View {
     }
 
     private var animeSpotlight: some View {
-        Button(action: onDiscover) {
+        Button(action: openSourceSearch) {
             HStack(spacing: 16) {
                 Image(systemName: "sparkles.tv.fill")
                     .font(.system(size: 34))
@@ -472,7 +503,9 @@ struct HomeView: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("KINETIQ")
-                    .font(.system(size: 15, weight: .black, design: .rounded))
+                    .font(.system(size: theme == .cinema ? 18 : 15,
+                                  weight: .black,
+                                  design: theme == .cinema ? .serif : .rounded))
                     .tracking(2.2)
 
                 Text("YOUR MEDIA UNIVERSE")
@@ -483,7 +516,7 @@ struct HomeView: View {
 
             Spacer()
 
-            Button(action: onDiscover) {
+            Button(action: openSourceSearch) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -493,7 +526,7 @@ struct HomeView: View {
                         in: Circle()
                     )
             }
-            .accessibilityLabel("Search and discover")
+            .accessibilityLabel(moduleSourceStore.activeSource.map { "Search \($0.title)" } ?? "Open local media library")
         }
     }
 
@@ -590,7 +623,7 @@ struct HomeView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
 
-                Button(action: onDiscover) {
+                Button(action: openSourceSearch) {
                     HStack(spacing: 9) {
                         Text("Explore Kinetiq")
                         Image(systemName: "arrow.right")
