@@ -65,6 +65,11 @@ struct MainTabView: View {
 
     @AppStorage(AppStorageKey.accentColor)
     private var accentColorRawValue = AppAccentColor.kinetiq.rawValue
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
 
     @State private var selectedTab: KinetiqTab = .home
     @State private var navigationDirection: TabNavigationDirection = .forward
@@ -115,11 +120,10 @@ struct MainTabView: View {
 
             bottomBar
         }
-        .background(Color(uiColor: .systemBackground))
-        .tint(
-            AppAccentColor(rawValue: accentColorRawValue)?.accent
-                ?? KinetiqPalette.accent
-        )
+        .background(KinetiqExperienceBackground())
+        .tint(KinetiqPalette.accent)
+        .animation(reduceMotion ? nil : KinetiqMotionMode.chosen.animation,
+                   value: themeRawValue)
         .sheet(item: $activeSheet) { destination in
             NavigationStack {
                 Group {
@@ -243,23 +247,30 @@ struct MainTabView: View {
 
     private var bottomBar: some View {
         dockContent
-            .background(
-                .regularMaterial,
-                in: Capsule()
-            )
+            .background {
+                if theme == .signature {
+                    Capsule().fill(.regularMaterial)
+                } else if theme == .anime || theme == .aurora {
+                    RoundedRectangle(cornerRadius: theme.dockCornerRadius)
+                        .fill(LinearGradient(
+                            colors: [theme.stageColors[0], theme.stageColors[1].opacity(0.8)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        ))
+                } else {
+                    RoundedRectangle(cornerRadius: theme.dockCornerRadius)
+                        .fill(theme == .cinema ? Color.black.opacity(0.94) : theme.backdrop.opacity(0.98))
+                }
+            }
             .overlay {
-                Capsule()
+                RoundedRectangle(cornerRadius: theme.dockCornerRadius)
                     .strokeBorder(
-                        Color.primary.opacity(0.08),
-                        lineWidth: 0.7
+                        theme == .signature ? Color.primary.opacity(0.08) :
+                        theme.accent.opacity(theme == .nocturne ? 0.16 : 0.38),
+                        lineWidth: 0.9
                     )
             }
-            .shadow(
-                color: Color.black.opacity(0.07),
-                radius: 14,
-                x: 0,
-                y: 5
-            )
+            .shadow(color: theme == .signature ? .black.opacity(0.07) : theme.accent.opacity(0.14),
+                    radius: theme == .nocturne ? 8 : 16, x: 0, y: 5)
             .padding(.horizontal, 17)
             .padding(.top, 8)
             .padding(.bottom, 8)
@@ -430,18 +441,25 @@ struct MainTabView: View {
 
     @ViewBuilder
     private var selectedTabIndicator: some View {
-        if #available(iOS 26.0, *), useLiquidGlassDock {
+        if #available(iOS 26.0, *), useLiquidGlassDock, theme == .signature {
             Capsule()
                 .fill(.clear)
                 .glassEffect(
                     .regular.interactive(),
                     in: Capsule()
                 )
+        } else if theme == .cinema {
+            VStack {
+                Spacer()
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(theme.accent)
+                    .frame(height: 3)
+            }
         } else {
-            Capsule()
-                .fill(
-                    KinetiqPalette.accent.opacity(0.15)
-                )
+            RoundedRectangle(cornerRadius: theme == .signature ? 27 : theme.dockCornerRadius)
+                .fill(theme == .signature
+                      ? KinetiqPalette.accent.opacity(0.15)
+                      : theme.accent.opacity(theme == .nocturne ? 0.13 : 0.30))
         }
     }
 
@@ -516,6 +534,11 @@ private struct KinetiqPlaceholderView: View {
     let symbol: String
     let accent: Color
 
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
     @State private var appeared = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -526,7 +549,7 @@ private struct KinetiqPlaceholderView: View {
                 header
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("YOUR MEDIA UNIVERSE")
+                    Text(theme == .cinema ? "THE VAULT" : theme == .anime ? "YOUR COLLECTION HUB" : "YOUR MEDIA UNIVERSE")
                         .font(
                             .system(
                                 size: 10,
@@ -540,7 +563,7 @@ private struct KinetiqPlaceholderView: View {
                     Text(title)
                         .font(
                             .system(
-                                size: 37,
+                                size: theme == .cinema ? 43 : 37,
                                 weight: .bold,
                                 design: .rounded
                             )
@@ -559,7 +582,7 @@ private struct KinetiqPlaceholderView: View {
 
                 ZStack {
                     RoundedRectangle(
-                        cornerRadius: 28,
+                        cornerRadius: theme.cardCornerRadius,
                         style: .continuous
                     )
                     .fill(
@@ -567,9 +590,7 @@ private struct KinetiqPlaceholderView: View {
                             colors: [
                                 accent.opacity(0.25),
                                 accent.opacity(0.06),
-                                Color(
-                                    uiColor: .secondarySystemGroupedBackground
-                                )
+                                theme.cardBackground
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -590,12 +611,12 @@ private struct KinetiqPlaceholderView: View {
                 .frame(height: 220)
                 .clipShape(
                     RoundedRectangle(
-                        cornerRadius: 28,
+                        cornerRadius: theme.cardCornerRadius,
                         style: .continuous
                     )
                 )
 
-                Text("A NEW CHAPTER IS TAKING SHAPE")
+                Text("OFFLINE MEDIA MANAGEMENT IS IN DEVELOPMENT")
                     .font(
                         .system(
                             size: 9,
@@ -610,7 +631,7 @@ private struct KinetiqPlaceholderView: View {
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 12)
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(KinetiqExperienceBackground())
         .onAppear {
             withAnimation(
                 reduceMotion
@@ -1172,6 +1193,11 @@ struct ModuleGlobalFavoritesView: View {
     @StateObject private var collection = ModuleAnimeCollectionStore.shared
     @StateObject private var sourceStore = ModuleSourceStore.shared
 
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
     @State private var search = ""
     @State private var selectedEntry: ModuleAnimeCollectionEntry?
 
@@ -1189,13 +1215,14 @@ struct ModuleGlobalFavoritesView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("YOUR COLLECTION")
+                        Text(theme == .cinema ? "YOUR WATCHLIST" : theme == .anime ? "SAVED WORLDS" : "YOUR COLLECTION")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .tracking(2)
                             .foregroundStyle(KinetiqPalette.accent)
 
                         Text("Favorites")
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .font(.system(size: theme == .cinema ? 42 : 36, weight: .bold,
+                                          design: theme == .cinema ? .serif : .rounded))
 
                         Text("Anime you saved from your module sources")
                             .font(.subheadline)
@@ -1210,7 +1237,7 @@ struct ModuleGlobalFavoritesView: View {
                                 .textInputAutocapitalization(.never)
                         }
                         .padding(13)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                        .background(theme.cardBackground,
                                     in: RoundedRectangle(cornerRadius: 15))
                     }
 
@@ -1227,6 +1254,9 @@ struct ModuleGlobalFavoritesView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 45)
                     } else {
+                        if theme.usesPosterGrid {
+                            posterGrid
+                        } else {
                         LazyVStack(spacing: 12) {
                             ForEach(filtered) { entry in
                                 HStack(spacing: 12) {
@@ -1281,15 +1311,16 @@ struct ModuleGlobalFavoritesView: View {
                                     .accessibilityLabel("Remove \(entry.title) from favorites")
                                 }
                                 .padding(12)
-                                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                .background(theme.cardBackground,
                                             in: RoundedRectangle(cornerRadius: 19))
                             }
+                        }
                         }
                     }
                 }
                 .padding(20)
             }
-            .background(Color(uiColor: .systemBackground))
+            .background(KinetiqExperienceBackground())
             .navigationBarHidden(true)
         }
         .task { await sourceStore.loadSavedRepositoriesIfNeeded() }
@@ -1297,8 +1328,70 @@ struct ModuleGlobalFavoritesView: View {
             ModuleSavedAnimeDetailsHost(entry: entry)
         }
     }
-}
 
+    private var posterGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 16) {
+            ForEach(filtered) { entry in
+                VStack(alignment: .leading, spacing: 8) {
+                    Button {
+                        selectedEntry = entry
+                    } label: {
+                        VStack(alignment: .leading, spacing: 9) {
+                            GeometryReader { geometry in
+                                ModuleAnimeSavedArtwork(
+                                    urlString: entry.artworkURL,
+                                    width: geometry.size.width,
+                                    height: geometry.size.height
+                                )
+                            }
+                            .frame(height: theme == .cinema ? 205 : 190)
+                            Text(entry.title)
+                                .font(.system(size: 14, weight: .bold,
+                                              design: theme == .cinema ? .serif : .rounded))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(entry.sourceName)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(KinetiqPalette.accent)
+                                .lineLimit(1)
+                            if entry.playbackFraction > 0 {
+                                ProgressView(value: entry.playbackFraction)
+                                    .tint(KinetiqPalette.accent)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    HStack {
+                        if entry.latestEpisodeID != nil {
+                            Text(entry.playbackLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button {
+                            collection.toggleFavorite(
+                                sourceID: entry.sourceID,
+                                sourceName: entry.sourceName,
+                                anime: entry.anime
+                            )
+                        } label: {
+                            Image(systemName: "heart.slash")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(KinetiqPalette.accent)
+                                .frame(width: 32, height: 30)
+                        }
+                        .accessibilityLabel("Remove \(entry.title) from favorites")
+                    }
+                }
+                .padding(11)
+                .background(theme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+            }
+        }
+    }
+}
 // MARK: - Remote Continue Watching on Home
 
 @MainActor
