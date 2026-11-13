@@ -165,3 +165,160 @@ enum KinetiqMotionMode: String, CaseIterable, Identifiable {
         KinetiqMotionMode(rawValue: UserDefaults.standard.string(forKey: storageKey) ?? "") ?? .balanced
     }
 }
+
+// MARK: - Batch 06D: distinct app-wide experience design tokens
+extension KinetiqVisualTheme {
+    var stageColors: [Color] {
+        switch self {
+        case .signature:
+            return [Color(red: 0.08, green: 0.20, blue: 0.38),
+                    Color(red: 0.13, green: 0.34, blue: 0.57),
+                    Color(red: 0.34, green: 0.22, blue: 0.58)]
+        case .cinema:
+            return [Color(red: 0.11, green: 0.025, blue: 0.04),
+                    Color(red: 0.32, green: 0.06, blue: 0.10),
+                    Color(red: 0.07, green: 0.035, blue: 0.07)]
+        case .anime:
+            return [Color(red: 0.34, green: 0.09, blue: 0.48),
+                    Color(red: 0.90, green: 0.22, blue: 0.40),
+                    Color(red: 1.00, green: 0.48, blue: 0.18)]
+        case .aurora:
+            return [Color(red: 0.02, green: 0.25, blue: 0.39),
+                    Color(red: 0.04, green: 0.45, blue: 0.38),
+                    Color(red: 0.13, green: 0.23, blue: 0.53)]
+        case .nocturne:
+            return [Color(red: 0.045, green: 0.045, blue: 0.09),
+                    Color(red: 0.09, green: 0.08, blue: 0.19),
+                    Color(red: 0.02, green: 0.025, blue: 0.052)]
+        }
+    }
+
+    var cardBackground: Color {
+        self == .signature
+            ? Color(uiColor: .secondarySystemGroupedBackground)
+            : Color.white.opacity(self == .nocturne ? 0.042 : 0.09)
+    }
+
+    var cardCornerRadius: CGFloat {
+        switch self {
+        case .signature: 19
+        case .cinema: 9
+        case .anime: 24
+        case .aurora: 27
+        case .nocturne: 12
+        }
+    }
+    var dockCornerRadius: CGFloat {
+        switch self {
+        case .signature: 34
+        case .cinema: 12
+        case .anime: 25
+        case .aurora: 34
+        case .nocturne: 15
+        }
+    }
+    var heroHeight: CGFloat {
+        switch self {
+        case .signature: 258
+        case .cinema: 330
+        case .anime: 270
+        case .aurora: 290
+        case .nocturne: 215
+        }
+    }
+    var eyebrow: String {
+        switch self {
+        case .signature: "ONE HOME. EVERY STORY."
+        case .cinema: "NOW SHOWING · KINETIQ"
+        case .anime: "YOUR NEXT OBSESSION"
+        case .aurora: "DISCOVER WITHOUT LIMITS"
+        case .nocturne: "JUST YOU AND THE STORY"
+        }
+    }
+    var homeHeadline: String {
+        switch self {
+        case .signature: "Your world of media."
+        case .cinema: "The screen is yours."
+        case .anime: "Find your next favorite."
+        case .aurora: "Follow your curiosity."
+        case .nocturne: "Less noise. More story."
+        }
+    }
+    var heroHeadline: String {
+        switch self {
+        case .signature: "Every kind of story.\nOne place to find it."
+        case .cinema: "Your private\nscreening room."
+        case .anime: "Your next\nbig adventure."
+        case .aurora: "A whole universe\nof discoveries."
+        case .nocturne: "Press play.\nDisappear awhile."
+        }
+    }
+    var heroDescription: String {
+        switch self {
+        case .signature: "A universe built around what you love."
+        case .cinema: "A cinematic home for the stories that stay with you."
+        case .anime: "New worlds and familiar favorites await."
+        case .aurora: "Explore the unexpected, your way."
+        case .nocturne: "Your media, without distractions."
+        }
+    }
+    var heroSymbol: String {
+        switch self {
+        case .signature: "play.rectangle.on.rectangle.fill"
+        case .cinema: "film.stack.fill"
+        case .anime: "sparkles.tv.fill"
+        case .aurora: "sparkles.rectangle.stack.fill"
+        case .nocturne: "play.square.stack.fill"
+        }
+    }
+    var usesPosterGrid: Bool { self == .cinema || self == .anime }
+}
+
+// Background is behind the main app only, never over an AVPlayer surface.
+struct KinetiqExperienceBackground: View {
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                if theme == .signature {
+                    Color(uiColor: .systemBackground)
+                } else {
+                    theme.backdrop
+                    LinearGradient(
+                        colors: [
+                            theme.stageColors[0].opacity(theme == .nocturne ? 0.32 : 0.75),
+                            theme.backdrop,
+                            theme.stageColors[2].opacity(0.48)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    if theme == .aurora || theme == .anime {
+                        Circle()
+                            .fill(theme.accent.opacity(theme == .anime ? 0.18 : 0.14))
+                            .frame(width: 320, height: 320)
+                            .blur(radius: 75)
+                            .offset(x: geometry.size.width * 0.35,
+                                    y: -geometry.size.height * 0.27)
+                    }
+                    if theme == .cinema {
+                        LinearGradient(
+                            colors: [.black.opacity(0.26), .clear, .black.opacity(0.65)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    }
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
