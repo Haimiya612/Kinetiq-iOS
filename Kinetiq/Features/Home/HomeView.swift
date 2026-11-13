@@ -117,6 +117,11 @@ struct HomeView: View {
     private var selectedModeRawValue = HomeMediaMode.video.rawValue
 
     @State private var appeared = false
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
     @State private var showingSourcePicker = false
     @State private var openManageModulesAfterDismiss = false
 
@@ -161,7 +166,7 @@ struct HomeView: View {
             }
         }
         .padding(.top, 10)
-        .background(Color(uiColor: .systemBackground))
+        .background(KinetiqExperienceBackground())
         .sheet(isPresented: $showingSourcePicker, onDismiss: {
             if openManageModulesAfterDismiss {
                 openManageModulesAfterDismiss = false
@@ -265,7 +270,7 @@ struct HomeView: View {
                 }
                 .padding(10)
                 .background(
-                    Color(uiColor: .secondarySystemGroupedBackground),
+                    theme.cardBackground,
                     in: RoundedRectangle(cornerRadius: 19, style: .continuous)
                 )
                 .overlay {
@@ -358,7 +363,7 @@ struct HomeView: View {
         }
         .padding(5)
         .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
+            theme.cardBackground,
             in: RoundedRectangle(
                 cornerRadius: 17,
                 style: .continuous
@@ -370,21 +375,78 @@ struct HomeView: View {
     // MARK: Video Home
 
     private var videoContent: some View {
-        VStack(alignment: .leading, spacing: 27) {
-            introduction
-                .entrance(appeared, delay: 0.04)
-
-            heroCard
-                .entrance(appeared, delay: 0.10)
-
-            if !continueWatching.isEmpty {
-                continueWatchingSection
-                    .entrance(appeared, delay: 0.16)
+        VStack(alignment: .leading, spacing: theme == .nocturne ? 20 : 27) {
+            switch theme {
+            case .signature:
+                introduction.entrance(appeared, delay: 0.04)
+                heroCard.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                librarySection.entrance(appeared, delay: 0.22)
+            case .cinema:
+                heroCard.entrance(appeared, delay: 0.04)
+                introduction.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                librarySection.entrance(appeared, delay: 0.22)
+            case .anime:
+                introduction.entrance(appeared, delay: 0.04)
+                animeSpotlight.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                heroCard.entrance(appeared, delay: 0.20)
+                librarySection.entrance(appeared, delay: 0.24)
+            case .aurora:
+                introduction.entrance(appeared, delay: 0.04)
+                heroCard.entrance(appeared, delay: 0.10)
+                librarySection.entrance(appeared, delay: 0.16)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.22)
+                }
+            case .nocturne:
+                introduction.entrance(appeared, delay: 0.04)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.10)
+                }
+                librarySection.entrance(appeared, delay: 0.16)
+                heroCard.entrance(appeared, delay: 0.22)
             }
-
-            librarySection
-                .entrance(appeared, delay: 0.22)
         }
+    }
+
+    private var animeSpotlight: some View {
+        Button(action: onDiscover) {
+            HStack(spacing: 16) {
+                Image(systemName: "sparkles.tv.fill")
+                    .font(.system(size: 34))
+                    .frame(width: 73, height: 82)
+                    .background(.white.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: 18))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("ANIME PULSE")
+                        .font(.caption2.weight(.black)).tracking(2)
+                    Text("Find something to binge.")
+                        .font(.system(size: 19, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.leading)
+                    Text("Discover stories across your sources")
+                        .font(.caption).opacity(0.85)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "arrow.up.right")
+                    .font(.headline.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .padding(17)
+            .background(
+                LinearGradient(colors: [theme.stageColors[0], theme.stageColors[1]],
+                               startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Header
@@ -427,7 +489,7 @@ struct HomeView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 42, height: 42)
                     .background(
-                        Color(uiColor: .secondarySystemGroupedBackground),
+                        theme.cardBackground,
                         in: Circle()
                     )
             }
@@ -439,13 +501,15 @@ struct HomeView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("ONE HOME. EVERY STORY.")
+            Text(theme.eyebrow)
                 .font(.system(size: 10, weight: .bold, design: .rounded))
                 .tracking(2.4)
                 .foregroundStyle(KinetiqPalette.accent)
 
-            Text("Your world of media.")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+            Text(theme.homeHeadline)
+                .font(.system(size: theme == .cinema ? 41 : theme == .nocturne ? 29 : 34,
+                              weight: theme == .nocturne ? .medium : .bold,
+                              design: theme == .cinema ? .serif : .rounded))
                 .tracking(-1.25)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -469,11 +533,7 @@ struct HomeView: View {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [
-                            Color(red: 0.08, green: 0.20, blue: 0.38),
-                            Color(red: 0.13, green: 0.34, blue: 0.57),
-                            Color(red: 0.34, green: 0.22, blue: 0.58)
-                        ],
+                        colors: theme.stageColors,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -496,7 +556,7 @@ struct HomeView: View {
                         .frame(width: 285, height: 285)
                         .offset(x: proxy.size.width * 0.38, y: -48)
 
-                    Image(systemName: "play.rectangle.on.rectangle.fill")
+                    Image(systemName: theme.heroSymbol)
                         .font(.system(size: 76, weight: .ultraLight))
                         .foregroundStyle(.white.opacity(0.18))
                         .rotationEffect(.degrees(-13))
@@ -512,19 +572,21 @@ struct HomeView: View {
                         .fill(KinetiqPalette.cyan)
                         .frame(width: 6, height: 6)
 
-                    Text("THE KINETIQ EXPERIENCE")
+                    Text(theme == .cinema ? "NOW SHOWING" : theme == .anime ? "FEATURED EXPERIENCE" : "THE KINETIQ EXPERIENCE")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .tracking(1.8)
                         .foregroundStyle(.white.opacity(0.82))
                 }
 
-                Text("Every kind of story.\nOne place to find it.")
-                    .font(.system(size: 27, weight: .bold, design: .rounded))
+                Text(theme.heroHeadline)
+                    .font(.system(size: theme == .cinema ? 31 : theme == .nocturne ? 26 : 27,
+                                  weight: theme == .nocturne ? .medium : .bold,
+                                  design: theme == .cinema ? .serif : .rounded))
                     .tracking(-0.8)
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("A universe built around what you love.")
+                Text(theme.heroDescription)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
 
@@ -545,9 +607,9 @@ struct HomeView: View {
             }
             .padding(21)
         }
-        .frame(height: 258)
+        .frame(height: theme.heroHeight)
         .clipShape(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -722,7 +784,7 @@ struct HomeView: View {
                 }
                 .padding(15)
                 .background(
-                    Color(uiColor: .secondarySystemGroupedBackground),
+                    theme.cardBackground,
                     in: RoundedRectangle(
                         cornerRadius: 20,
                         style: .continuous
@@ -779,7 +841,7 @@ struct HomeView: View {
                         colors: [
                             KinetiqPalette.violet.opacity(0.20),
                             KinetiqPalette.blue.opacity(0.12),
-                            Color(uiColor: .secondarySystemGroupedBackground)
+                            theme.cardBackground
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
