@@ -995,6 +995,8 @@ struct ModuleSourcesView: View {
             connectedRepositoriesSection
             sourceSelectionSection
         }
+        .scrollContentBackground(.hidden)
+        .background(KinetiqExperienceBackground())
         .navigationTitle("Module Sources")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2304,7 +2306,7 @@ struct KinetiqModuleUpdateCenterView: View {
             }
             .padding(20)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(KinetiqExperienceBackground())
     }
 
     private var header: some View {
