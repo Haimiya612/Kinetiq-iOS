@@ -304,7 +304,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        Text("Choose the colour used throughout Kinetiq's interface.")
+                        Text("Choose the original accent fallback. Custom RGB Studio colors, when enabled, take priority and are managed inside Themes.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -836,11 +836,14 @@ private struct KinetiqThemeGallery: View {
                         .tracking(1.8)
                         .foregroundStyle(.white.opacity(0.67))
                         .padding(.top, 4)
-                    ForEach(KinetiqVisualTheme.allCases) { choice in
-                        themeCard(choice)
-                    }
+                    themeCollection("KINETIQ ORIGINAL", choices: [.signature])
+                    themeCollection("CINEMATIC & SERIES", choices: [.cinema, .prism, .nebula, .aurora, .studio])
+                    themeCollection("ANIME", choices: [.anime, .ember])
+                    themeCollection("EDITORIAL CINEMA", choices: [.nocturne, .atelier, .zen])
+                    themeCollection("LIBRARY & VIDEO", choices: [.vault, .signal])
+                    rgbSection
                     motionSection
-                    Text("Theme presets redesign the app layout, color family and supported player surfaces without changing saved media, modules or account data. iOS Reduce Motion takes precedence.")
+                    Text("These are independent Kinetiq experiences inspired by streaming design patterns, not affiliated with the named services. Shared source permissions, media history and player technology remain unchanged. iOS Reduce Motion takes precedence.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.55))
                         .padding(.bottom, 20)
@@ -862,6 +865,15 @@ private struct KinetiqThemeGallery: View {
         .preferredColorScheme(.dark)
     }
 
+    private func themeCollection(_ title: String, choices: [KinetiqVisualTheme]) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(title).font(.caption2.weight(.bold)).tracking(1.6)
+                .foregroundStyle(.white.opacity(0.65))
+                .accessibilityAddTraits(.isHeader)
+            ForEach(choices) { choice in themeCard(choice) }
+        }
+    }
+
     private var hero: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 28)
@@ -878,9 +890,9 @@ private struct KinetiqThemeGallery: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("MAKE IT YOURS")
                     .font(.system(size: 10, weight: .heavy)).tracking(2.2)
-                Text("A new look for every mood.")
+                Text("Thirteen ways to watch.")
                     .font(.system(size: 27, weight: .bold, design: .rounded))
-                Text("Curated colors. Native controls. Your library.")
+                Text("Original experiences, one shared media library.")
                     .font(.subheadline).foregroundStyle(.white.opacity(0.85))
             }
             .foregroundStyle(.white)
@@ -907,6 +919,11 @@ private struct KinetiqThemeGallery: View {
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.65))
                         .fixedSize(horizontal: false, vertical: true)
+                    if option != .signature {
+                        Text("Inspired by · independent Kinetiq UI")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.48))
+                    }
                 }
                 Spacer(minLength: 4)
                 Image(systemName: isCurrent ? "checkmark.circle.fill" : "circle")
@@ -932,7 +949,7 @@ private struct KinetiqThemeGallery: View {
                 .fill(option.backdrop)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 5) {
-                    Circle().fill(option.accent).frame(width: 5, height: 5)
+                    Circle().fill(option.defaultAccent).frame(width: 5, height: 5)
                     Capsule().fill(.white.opacity(0.75)).frame(width: 27, height: 3)
                     Spacer(minLength: 0)
                 }
@@ -942,18 +959,18 @@ private struct KinetiqThemeGallery: View {
                                              startPoint: .topLeading, endPoint: .bottomTrailing))
                     HStack {
                         Image(systemName: option.heroSymbol)
-                            .font(.system(size: option == .anime ? 20 : 17, weight: .light))
+                            .font(.system(size: option.isEnergetic ? 20 : 17, weight: .light))
                             .foregroundStyle(.white.opacity(0.72))
                         Spacer()
-                        Capsule().fill(option.accent).frame(width: 25, height: 9)
+                        Capsule().fill(option.defaultAccent).frame(width: 25, height: 9)
                     }
                     .padding(7)
                 }
                 .frame(height: 34)
                 HStack(spacing: 4) {
                     ForEach(0..<3, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: option == .cinema ? 2 : 5)
-                            .fill(index == 0 ? option.accent.opacity(0.75)
+                        RoundedRectangle(cornerRadius: option.isEditorial ? 2 : 5)
+                            .fill(index == 0 ? option.defaultAccent.opacity(0.75)
                                              : option.highlight.opacity(0.42))
                             .frame(maxWidth: .infinity)
                             .frame(height: 13)
@@ -965,8 +982,36 @@ private struct KinetiqThemeGallery: View {
         .frame(width: 116, height: 78)
         .overlay {
             RoundedRectangle(cornerRadius: max(7, option.cardCornerRadius * 0.5))
-                .strokeBorder(option.accent.opacity(0.30), lineWidth: 1)
+                .strokeBorder(option.defaultAccent.opacity(0.30), lineWidth: 1)
         }
+    }
+
+    private var rgbSection: some View {
+        NavigationLink {
+            KinetiqRGBStudio()
+        } label: {
+            HStack(spacing: 13) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.title2)
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 36)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("RGB Studio")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text("Custom accent, background & surface · precise RGB 0–255 · HEX")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .padding(17)
+            .background(theme.cardSurface, in: RoundedRectangle(cornerRadius: 19))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Customize app-wide RGB colors. No player settings are changed.")
     }
 
     private var motionSection: some View {

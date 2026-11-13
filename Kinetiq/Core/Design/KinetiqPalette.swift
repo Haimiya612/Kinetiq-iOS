@@ -1,8 +1,8 @@
 import SwiftUI
 
 // MARK: - Dynamic Application Palette
-// The original accent palette remains the default. Custom experience themes
-// supply coordinated colors without destroying the user's saved accent.
+// Original legacy presets remain the default and original storage keys
+// are never mutated by choosing a streaming-inspired experience.
 enum KinetiqPalette {
     private static var selectedAccent: AppAccentColor {
         let raw = UserDefaults.standard.string(forKey: AppStorageKey.accentColor)
@@ -12,11 +12,17 @@ enum KinetiqPalette {
     private static var visualTheme: KinetiqVisualTheme { KinetiqVisualTheme.chosen }
 
     static var accent: Color {
-        visualTheme == .signature ? selectedAccent.accent : visualTheme.accent
+        if let custom = KinetiqRGBPalette.customColor(for: KinetiqRGBPalette.accentKey) {
+            return custom
+        }
+        return visualTheme == .signature ? selectedAccent.accent : visualTheme.accent
     }
 
     static var cyan: Color {
-        visualTheme == .signature ? selectedAccent.cyanTone : visualTheme.accent
+        if let custom = KinetiqRGBPalette.customColor(for: KinetiqRGBPalette.accentKey) {
+            return custom
+        }
+        return visualTheme == .signature ? selectedAccent.cyanTone : visualTheme.accent
     }
 
     static var blue: Color {
