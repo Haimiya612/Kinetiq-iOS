@@ -63,8 +63,6 @@ struct KinetiqModulePlayerView: View {
     // Restore external captions if no PiP session actually starts.
     @State private var pipCaptionRollbackTask: Task<Void, Never>?
     @State private var loadingStartedAt = Date()
-    @State private var showingThemeGallery = false
-    @AppStorage(KinetiqVisualTheme.storageKey) private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
 
     private let autoHideDelay: Duration = .seconds(3.4)
 
@@ -88,7 +86,8 @@ struct KinetiqModulePlayerView: View {
                 ModulePlayerSurface(
                     player: playback.player,
                     aspectFill: playback.isAspectFill,
-                    pictureInPicture: pictureInPicture
+                    pictureInPicture: pictureInPicture,
+                    onFirstFrame: { item in playback.registerFirstVideoFrame(item: item) }
                 )
                 .frame(
                     width: geometry.size.width,
@@ -128,7 +127,7 @@ struct KinetiqModulePlayerView: View {
                 if playback.errorMessage == nil,
                    webPlayerStream == nil,
                    (playback.isResolvingEpisode ||
-                    (playback.isBuffering && playback.currentTime < 1)) {
+                    !playback.hasFinishedPresentingFirstFrame) {
                     KinetiqModuleLoadingScene(
                         title: session.currentEpisodeTitle,
                         sourceName: ModulePlaybackDiagnostics.redact(session.sourceName, limit: 70),
@@ -262,10 +261,6 @@ struct KinetiqModulePlayerView: View {
                 reduceMotion ? nil : KinetiqMotionMode.chosen.animation,
                 value: activePanel
             )
-            .animation(
-                reduceMotion ? nil : KinetiqMotionMode.chosen.animation,
-                value: visualThemeRawValue
-            )
             .onAppear {
                 if !hasOrientationLease {
                     KinetiqPlaybackPresentation.enterPlayer()
@@ -276,6 +271,7 @@ struct KinetiqModulePlayerView: View {
                 displayEmbeddedPlayerIfNeeded()
             }
             .onChange(of: session.currentStream?.id) { _, _ in
+                loadingStartedAt = Date()
                 displayEmbeddedPlayerIfNeeded()
             }
             .onChange(of: session.currentEpisode?.id) { _, _ in
@@ -391,11 +387,6 @@ struct KinetiqModulePlayerView: View {
             Button("OK", role: .cancel) { pictureInPicture.clearFailure() }
         } message: {
             Text(pictureInPicture.lastFailure ?? "PiP isn't available for this video.")
-        }
-        .sheet(isPresented: $showingThemeGallery) {
-            KinetiqThemeGallery()
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
     }
 
@@ -545,11 +536,7 @@ struct KinetiqModulePlayerView: View {
                 panel: panel,
                 playback: playback,
                 session: session,
-                onOpenWebPlayer: openWebFallback,
-                onOpenThemes: {
-                    activePanel = nil
-                    showingThemeGallery = true
-                }
+                onOpenWebPlayer: openWebFallback
             ) {
                 activePanel = nil
             }
@@ -662,7 +649,6 @@ private struct ModulePlayerOptionsSheet: View {
     @ObservedObject var playback: ModulePlayerPlaybackController
     @ObservedObject var session: ModuleEpisodePlaybackSession
     let onOpenWebPlayer: () -> Void
-    let onOpenThemes: () -> Void
     let onClose: () -> Void
 
     private let speeds: [Float] = [
@@ -954,28 +940,6 @@ private struct ModulePlayerOptionsSheet: View {
 
         case .more:
             VStack(alignment: .leading, spacing: 13) {
-                sectionLabel("PERSONALIZE KINETIQ")
-                Button(action: onOpenThemes) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "paintpalette.fill")
-                            .font(.title3)
-                            .frame(width: 38, height: 38)
-                            .background(KinetiqPalette.cyan.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Themes & motion").font(.subheadline.weight(.bold))
-                            Text("Explore five looks and control animation intensity")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.67))
-                        }
-                        Spacer(minLength: 4)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.bold()).foregroundStyle(.white.opacity(0.62))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(12)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-                }
-                .buttonStyle(.plain)
                 sectionLabel("SLEEP TIMER")
 
                 HStack(spacing: 9) {
@@ -1521,6 +1485,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     @Published private(set) var player = AVPlayer()
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = true
+    @Published private(set) var hasFinishedPresentingFirstFrame = false
+    private var sawFirstVideoFrame = false
+    private var startupOverlayTask: Task<Void, Never>?
     @Published private(set) var isResolvingEpisode = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var duration: Double = 0
@@ -1747,10 +1714,31 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                                 startupSeconds: elapsed
                             )
                             self.note("Verified playback progress on \(stream.hostName)")
+                            self.registerFirstVideoFrame(item: item)
                         }
                     }
                 }
             }
+        }
+    }
+
+    // Video item readiness is NOT the same as video being visible.
+    // Finish the full-screen loading scene only after AVPlayerLayer displays video.
+    func registerFirstVideoFrame(item: AVPlayerItem?) {
+        guard !hasStopped, let item, player.currentItem === item,
+              !sawFirstVideoFrame else { return }
+        sawFirstVideoFrame = true
+        playbackStatus = "Video ready"
+        note("First video frame ready for display")
+        startupTask?.cancel()
+        startupTask = nil
+        startupOverlayTask?.cancel()
+        startupOverlayTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(950)) }
+            catch { return }
+            guard let self, !self.hasStopped, self.player.currentItem === item,
+                  self.sawFirstVideoFrame else { return }
+            self.hasFinishedPresentingFirstFrame = true
         }
     }
 
@@ -1770,8 +1758,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 case .playing:
                     self.startedCurrentItem = true
                     self.playbackStatus = "Playing"
-                    self.startupTask?.cancel()
-                    self.startupTask = nil
+                    // Startup watchdog stays active until the first video frame.
                     self.stallTask?.cancel()
                     self.stallTask = nil
                 case .waitingToPlayAtSpecifiedRate:
@@ -1864,6 +1851,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         startupTask?.cancel()
         startupTask = nil
         startedCurrentItem = false
+        startupOverlayTask?.cancel()
+        startupOverlayTask = nil
+        sawFirstVideoFrame = false
+        hasFinishedPresentingFirstFrame = false
         playbackProofItem = nil
         playbackProofAnchor = nil
         verifiedPlayingStreamID = nil
@@ -2126,7 +2117,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                       let self,
                       !self.hasStopped,
                       self.wantsToPlay,
-                      !self.startedCurrentItem,
+                      !self.sawFirstVideoFrame,
                       !self.isHandlingStreamFailure,
                       self.player.currentItem === item else { return }
 
@@ -2915,34 +2906,61 @@ private struct ModulePlayerSurface: UIViewRepresentable {
     let player: AVPlayer
     let aspectFill: Bool
     let pictureInPicture: ModulePictureInPictureController
+    let onFirstFrame: (AVPlayerItem?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onFirstFrame: onFirstFrame)
+    }
 
     func makeUIView(context: Context) -> ModulePlayerLayerView {
         let view = ModulePlayerLayerView()
         view.playerLayer.player = player
-        view.playerLayer.videoGravity = aspectFill
-            ? .resizeAspectFill
-            : .resizeAspect
+        view.playerLayer.videoGravity = aspectFill ? .resizeAspectFill : .resizeAspect
         view.backgroundColor = .black
+        context.coordinator.watch(view.playerLayer)
         pictureInPicture.attach(to: view.playerLayer)
         return view
     }
 
-    func updateUIView(
-        _ uiView: ModulePlayerLayerView,
-        context: Context
-    ) {
+    func updateUIView(_ uiView: ModulePlayerLayerView, context: Context) {
         uiView.playerLayer.player = player
-        uiView.playerLayer.videoGravity = aspectFill
-            ? .resizeAspectFill
-            : .resizeAspect
+        uiView.playerLayer.videoGravity = aspectFill ? .resizeAspectFill : .resizeAspect
+        context.coordinator.onFirstFrame = onFirstFrame
+        context.coordinator.watch(uiView.playerLayer)
         pictureInPicture.attach(to: uiView.playerLayer)
     }
 
-    static func dismantleUIView(
-        _ uiView: ModulePlayerLayerView,
-        coordinator: ()
-    ) {
+    static func dismantleUIView(_ uiView: ModulePlayerLayerView, coordinator: Coordinator) {
+        coordinator.stopWatching()
         uiView.playerLayer.player = nil
+    }
+
+    final class Coordinator {
+        var onFirstFrame: (AVPlayerItem?) -> Void
+        private var readinessObservation: NSKeyValueObservation?
+        private weak var watchedLayer: AVPlayerLayer?
+
+        init(onFirstFrame: @escaping (AVPlayerItem?) -> Void) {
+            self.onFirstFrame = onFirstFrame
+        }
+
+        func watch(_ layer: AVPlayerLayer) {
+            guard watchedLayer !== layer else { return }
+            stopWatching()
+            watchedLayer = layer
+            readinessObservation = layer.observe(\.isReadyForDisplay, options: [.initial, .new]) {
+                [weak self] observed, _ in
+                guard observed.isReadyForDisplay else { return }
+                let item = observed.player?.currentItem
+                DispatchQueue.main.async { [weak self] in self?.onFirstFrame(item) }
+            }
+        }
+
+        func stopWatching() {
+            readinessObservation?.invalidate()
+            readinessObservation = nil
+            watchedLayer = nil
+        }
     }
 }
 
@@ -4198,165 +4216,5 @@ private struct KinetiqModuleLoadingScene: View {
         .foregroundStyle(.white.opacity(0.47))
         .padding(.horizontal, 18)
         .padding(.bottom, 25)
-    }
-}
-
-// MARK: - Batch 06C: Theme gallery and motion preferences
-// Kept in an existing target-member Swift file to avoid pbxproj changes and
-// preserve the user's GitSync full-file replacement workflow.
-@MainActor
-private struct KinetiqThemeGallery: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(KinetiqVisualTheme.storageKey)
-    private var chosenTheme = KinetiqVisualTheme.signature.rawValue
-    @AppStorage(KinetiqMotionMode.storageKey)
-    private var chosenMotion = KinetiqMotionMode.balanced.rawValue
-
-    private var theme: KinetiqVisualTheme {
-        KinetiqVisualTheme(rawValue: chosenTheme) ?? .signature
-    }
-    private var motion: KinetiqMotionMode {
-        KinetiqMotionMode(rawValue: chosenMotion) ?? .balanced
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 22) {
-                    hero
-                    Text("CHOOSE YOUR EXPERIENCE")
-                        .font(.system(size: 11, weight: .heavy, design: .rounded))
-                        .tracking(1.8)
-                        .foregroundStyle(.white.opacity(0.67))
-                        .padding(.top, 4)
-                    ForEach(KinetiqVisualTheme.allCases) { choice in
-                        themeCard(choice)
-                    }
-                    motionSection
-                    Text("Themes change Kinetiq's color family and supported player surfaces. They do not replace content artwork, alter modules, or change your saved library. Reduce Motion always takes precedence.")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.55))
-                        .padding(.bottom, 20)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-            }
-            .background(theme.backdrop.ignoresSafeArea())
-            .navigationTitle("Themes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
-                        .tint(theme.accent)
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    private var hero: some View {
-        ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 28)
-                .fill(LinearGradient(colors: [theme.highlight.opacity(0.69), theme.accent.opacity(0.44), theme.backdrop],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            HStack {
-                Spacer()
-                Image(systemName: "sparkles.rectangle.stack.fill")
-                    .font(.system(size: 92))
-                    .rotationEffect(.degrees(-14))
-                    .foregroundStyle(.white.opacity(0.20))
-                    .padding(18)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("MAKE IT YOURS")
-                    .font(.system(size: 10, weight: .heavy)).tracking(2.2)
-                Text("A new look for every mood.")
-                    .font(.system(size: 27, weight: .bold, design: .rounded))
-                Text("Curated colors. Native controls. Your library.")
-                    .font(.subheadline).foregroundStyle(.white.opacity(0.85))
-            }
-            .foregroundStyle(.white)
-            .padding(22)
-        }
-        .frame(height: 182)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func themeCard(_ option: KinetiqVisualTheme) -> some View {
-        let isCurrent = option == theme
-        return Button {
-            withAnimation(reduceMotion ? nil : motion.animation) {
-                chosenTheme = option.rawValue
-            }
-        } label: {
-            HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 15)
-                        .fill(LinearGradient(colors: [option.highlight, option.accent, option.backdrop],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                    Image(systemName: option.symbol)
-                        .font(.system(size: 25, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 63, height: 64)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(option.name)
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.white)
-                    Text(option.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.65))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: isCurrent ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isCurrent ? option.accent : .white.opacity(0.30))
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(option.cardSurface, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20)
-                .stroke(isCurrent ? option.accent.opacity(0.8) : .white.opacity(0.08), lineWidth: isCurrent ? 1.5 : 1))
-            .scaleEffect(isCurrent && !reduceMotion && motion == .expressive ? 1.005 : 1)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(option.name) theme")
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-    }
-
-    private var motionSection: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Label("Motion intensity", systemImage: "waveform.path")
-                .font(.headline)
-                .foregroundStyle(.white)
-            HStack(spacing: 7) {
-                ForEach(KinetiqMotionMode.allCases) { choice in
-                    Button {
-                        withAnimation(reduceMotion ? nil : choice.animation) {
-                            chosenMotion = choice.rawValue
-                        }
-                    } label: {
-                        Text(choice.title)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(chosenMotion == choice.rawValue ? .black : .white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(chosenMotion == choice.rawValue ? theme.accent : .white.opacity(0.09),
-                                        in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            if reduceMotion {
-                Text("Reduce Motion is enabled in iOS Accessibility. Kinetiq will keep animations minimal.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.62))
-            }
-        }
-        .padding(16)
-        .background(theme.cardSurface, in: RoundedRectangle(cornerRadius: 20))
     }
 }
