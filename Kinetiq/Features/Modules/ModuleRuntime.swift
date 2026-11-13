@@ -3650,7 +3650,7 @@ struct ModuleBrowserView: View {
             if let entry = featuredEntry {
                 Button { selectedItem = entry.anime } label: {
                     Group {
-                        if theme == .nocturne || theme == .aurora {
+                        if theme.isQuiet || theme.isAtmospheric || theme == .vault {
                             HStack(spacing: 15) {
                                 ModuleAnimeArtworkView(url: entry.anime.imageURL)
                                     .frame(width: theme == .nocturne ? 94 : 116,
@@ -3709,17 +3709,17 @@ struct ModuleBrowserView: View {
                                         .foregroundStyle(theme.accent)
                                     Text(entry.title)
                                         .font(.system(size: theme == .cinema ? 32 : 25, weight: .bold,
-                                                      design: theme == .cinema ? .serif : .rounded))
+                                                      design: theme.preferredFontDesign))
                                         .foregroundStyle(.white)
                                         .lineLimit(2)
                                         .multilineTextAlignment(.leading)
                                     Label(entry.playbackFraction > 0 && !entry.isCompleted
                                           ? "Continue watching" : "View episodes", systemImage: "play.fill")
                                         .font(.caption.weight(.bold))
-                                        .foregroundStyle(theme == .cinema ? Color.black : .white)
+                                        .foregroundStyle(theme.isEditorial ? Color.black : .white)
                                         .padding(.horizontal, 15)
                                         .padding(.vertical, 11)
-                                        .background(theme == .cinema ? Color.white : theme.accent,
+                                        .background(theme.isEditorial ? Color.white : theme.accent,
                                                     in: RoundedRectangle(cornerRadius: theme == .cinema ? 6 : 16))
                                     if entry.playbackFraction > 0 && !entry.isCompleted {
                                         ProgressView(value: entry.playbackFraction).tint(theme.accent)
@@ -3744,12 +3744,9 @@ struct ModuleBrowserView: View {
                         .font(.system(size: 27, weight: .medium))
                         .foregroundStyle(theme.accent)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(theme == .cinema ? "Your screening room" :
-                             theme == .anime ? "Your anime universe" :
-                             theme == .nocturne ? "Just you and the story" :
-                             theme == .aurora ? "Explore without limits" : "Discover your favorites")
+                        Text(theme.homeHeadline)
                             .font(.system(size: 22, weight: .bold,
-                                          design: theme == .cinema ? .serif : .rounded))
+                                          design: theme.preferredFontDesign))
                         Text("Browse titles from \(source.title)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -3767,22 +3764,19 @@ struct ModuleBrowserView: View {
     private var catalogueExperienceHeader: some View {
         HStack(spacing: 12) {
             Image(systemName: theme.heroSymbol)
-                .font(.system(size: theme == .anime ? 27 : 20, weight: .semibold))
+                .font(.system(size: theme.isEnergetic ? 27 : 20, weight: .semibold))
                 .foregroundStyle(KinetiqPalette.accent)
                 .frame(width: 48, height: 48)
                 .background(theme.cardBackground,
                             in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
             VStack(alignment: .leading, spacing: 4) {
-                Text(theme == .cinema ? "SCREENING ROOM" :
-                     theme == .anime ? "ANIME DISCOVERY" :
-                     theme == .aurora ? "EXPLORE THE UNEXPECTED" :
-                     theme == .nocturne ? "YOUR QUIET CORNER" : "YOUR SOURCE")
+                Text(theme.eyebrow)
                     .font(.system(size: 10, weight: .heavy)).tracking(1.7)
                     .foregroundStyle(KinetiqPalette.accent)
                 Text(source.title)
-                    .font(.system(size: theme == .cinema ? 22 : 19,
+                    .font(.system(size: theme.isEditorial ? 22 : 19,
                                   weight: .semibold,
-                                  design: theme == .cinema ? .serif : .rounded))
+                                  design: theme.preferredFontDesign))
                     .lineLimit(1)
             }
             Spacer(minLength: 1)
@@ -3800,15 +3794,14 @@ struct ModuleBrowserView: View {
     private var exploreContent: some View {
         VStack(alignment: .leading, spacing: 21) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(theme == .cinema ? "CURATED FOR YOUR SCREEN" :
-                     theme == .anime ? "ANIME PULSE" : "DISCOVER ON YOUR SOURCE")
+                Text(theme.eyebrow)
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
                     .foregroundStyle(KinetiqPalette.accent)
 
                 Text(theme == .cinema ? "Explore the catalogue" : "Explore anime")
-                    .font(.system(size: theme == .cinema ? 32 : 27,
-                                  weight: .bold, design: theme == .cinema ? .serif : .rounded))
+                    .font(.system(size: theme.isEditorial ? 32 : 27,
+                                  weight: .bold, design: theme.preferredFontDesign))
 
                 Text("Search results come directly from \(source.title). Choose a topic or search for a title.")
                     .font(.subheadline)
@@ -3872,7 +3865,7 @@ struct ModuleBrowserView: View {
     private var genreSuggestions: some View {
         let genres = ["Romance", "Action", "Fantasy", "Comedy", "Mystery", "Adventure"]
         return Group {
-            if theme == .cinema || theme == .nocturne {
+            if theme.isEditorial || theme.isQuiet {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(genres, id: \.self) { genre in genreButton(genre) }

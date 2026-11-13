@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
+import ImageIO
 
 // MARK: - Continue Watching Thumbnail View
 
@@ -149,7 +151,7 @@ struct HomeView: View {
                         sourceAvailable: moduleSourceStore.activeSource != nil
                     ) {
                     case .manga:
-                        mangaPlaceholder
+                        KinetiqMangaLocalLibraryView()
                     case .localVideo:
                         videoContent
                     case .remoteVideo:
@@ -444,6 +446,47 @@ struct HomeView: View {
                 }
                 librarySection.entrance(appeared, delay: 0.16)
                 heroCard.entrance(appeared, delay: 0.22)
+            case .studio:
+                introduction.entrance(appeared, delay: 0.04)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.12) }
+                heroCard.entrance(appeared, delay: 0.18)
+                librarySection.entrance(appeared, delay: 0.23)
+            case .prism:
+                heroCard.entrance(appeared, delay: 0.04)
+                introduction.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.17) }
+                librarySection.entrance(appeared, delay: 0.24)
+            case .atelier:
+                introduction.entrance(appeared, delay: 0.04)
+                heroCard.entrance(appeared, delay: 0.10)
+                librarySection.entrance(appeared, delay: 0.17)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.24) }
+            case .signal:
+                introduction.entrance(appeared, delay: 0.03)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.07) }
+                librarySection.entrance(appeared, delay: 0.13)
+                heroCard.entrance(appeared, delay: 0.19)
+            case .ember:
+                introduction.entrance(appeared, delay: 0.04)
+                animeSpotlight.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.16) }
+                heroCard.entrance(appeared, delay: 0.21)
+                librarySection.entrance(appeared, delay: 0.26)
+            case .vault:
+                introduction.entrance(appeared, delay: 0.04)
+                librarySection.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.17) }
+                heroCard.entrance(appeared, delay: 0.24)
+            case .zen:
+                introduction.entrance(appeared, delay: 0.04)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.10) }
+                heroCard.entrance(appeared, delay: 0.16)
+                librarySection.entrance(appeared, delay: 0.23)
+            case .nebula:
+                heroCard.entrance(appeared, delay: 0.04)
+                if !continueWatching.isEmpty { continueWatchingSection.entrance(appeared, delay: 0.11) }
+                introduction.entrance(appeared, delay: 0.17)
+                librarySection.entrance(appeared, delay: 0.23)
             }
         }
     }
@@ -505,7 +548,7 @@ struct HomeView: View {
                 Text("KINETIQ")
                     .font(.system(size: theme == .cinema ? 18 : 15,
                                   weight: .black,
-                                  design: theme == .cinema ? .serif : .rounded))
+                                  design: theme.preferredFontDesign))
                     .tracking(2.2)
 
                 Text("YOUR MEDIA UNIVERSE")
@@ -540,9 +583,9 @@ struct HomeView: View {
                 .foregroundStyle(KinetiqPalette.accent)
 
             Text(theme.homeHeadline)
-                .font(.system(size: theme == .cinema ? 41 : theme == .nocturne ? 29 : 34,
+                .font(.system(size: theme.isEditorial ? 40 : theme.isQuiet ? 30 : 34,
                               weight: theme == .nocturne ? .medium : .bold,
-                              design: theme == .cinema ? .serif : .rounded))
+                              design: theme.preferredFontDesign))
                 .tracking(-1.25)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -571,6 +614,20 @@ struct HomeView: View {
                         endPoint: .bottomTrailing
                     )
                 )
+
+            // Actual local artwork from playback history, not a fabricated poster.
+            if let item = continueWatching.first {
+                GeometryReader { proxy in
+                    ContinueWatchingThumbnailView(mediaID: item.id, url: localMediaURL(for: item))
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .overlay {
+                            LinearGradient(colors: [.clear, .black.opacity(0.48), .black.opacity(0.87)],
+                                           startPoint: .top, endPoint: .bottom)
+                        }
+                }
+                .accessibilityHidden(true)
+            }
 
             GeometryReader { proxy in
                 ZStack {
@@ -605,16 +662,16 @@ struct HomeView: View {
                         .fill(KinetiqPalette.cyan)
                         .frame(width: 6, height: 6)
 
-                    Text(theme == .cinema ? "NOW SHOWING" : theme == .anime ? "FEATURED EXPERIENCE" : "THE KINETIQ EXPERIENCE")
+                    Text(!continueWatching.isEmpty ? "CONTINUE WATCHING" : theme.eyebrow)
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .tracking(1.8)
                         .foregroundStyle(.white.opacity(0.82))
                 }
 
-                Text(theme.heroHeadline)
-                    .font(.system(size: theme == .cinema ? 31 : theme == .nocturne ? 26 : 27,
+                Text(continueWatching.first?.title ?? theme.heroHeadline)
+                    .font(.system(size: theme.isEditorial ? 31 : theme.isQuiet ? 26 : 28,
                                   weight: theme == .nocturne ? .medium : .bold,
-                                  design: theme == .cinema ? .serif : .rounded))
+                                  design: theme.preferredFontDesign))
                     .tracking(-0.8)
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
@@ -623,9 +680,12 @@ struct HomeView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
 
-                Button(action: openSourceSearch) {
+                Button {
+                    if let item = continueWatching.first { onContinueWatching(item) }
+                    else { openSourceSearch() }
+                } label: {
                     HStack(spacing: 9) {
-                        Text("Explore Kinetiq")
+                        Text(continueWatching.isEmpty ? "Explore Kinetiq" : "Resume playback")
                         Image(systemName: "arrow.right")
                     }
                     .font(.system(size: 12, weight: .bold))
@@ -1479,6 +1539,392 @@ private struct KinetiqSourcePickerSheet: View {
                             in: RoundedRectangle(cornerRadius: 18))
             }
             .buttonStyle(.plain)
+        }
+    }
+}
+
+// MARK: - Phase 7: private on-device image-album reading foundation
+// No remote module scripts, network hosts, or third-party content used.
+
+private struct KinetiqMangaAlbum: Identifiable {
+    let directory: URL
+    let pages: [URL]
+    var id: String { directory.lastPathComponent }
+    var title: String { directory.lastPathComponent.replacingOccurrences(of: "_", with: " ") }
+}
+
+@MainActor
+private enum KinetiqMangaStorage {
+    static let supported: Set<String> = ["jpg", "jpeg", "png", "webp", "heic", "tif", "tiff", "bmp"]
+    static var libraryURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("KinetiqManga", isDirectory: true)
+    }
+
+    static func albums() -> [KinetiqMangaAlbum] {
+        let fm = FileManager.default
+        let folders = (try? fm.contentsOfDirectory(
+            at: libraryURL, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles])) ?? []
+        return folders.compactMap { folder -> KinetiqMangaAlbum? in
+            guard (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return nil
+            }
+            let pages = ((try? fm.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles])) ?? []).filter {
+                supported.contains($0.pathExtension.lowercased())
+            }.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+            guard !pages.isEmpty else { return nil }
+            return KinetiqMangaAlbum(directory: folder, pages: pages)
+        }.sorted { $0.id > $1.id }
+    }
+
+    static func importPages(_ files: [URL]) throws -> Int {
+        guard !files.isEmpty else { return 0 }
+        let fm = FileManager.default
+        try fm.createDirectory(at: libraryURL, withIntermediateDirectories: true)
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let newFolder = libraryURL.appendingPathComponent(
+            "Album_\(timestamp)_\(UUID().uuidString.prefix(6))", isDirectory: true
+        )
+        try fm.createDirectory(at: newFolder, withIntermediateDirectories: true)
+        var count = 0
+        do {
+            for source in files.sorted(by: {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }) {
+                let accessed = source.startAccessingSecurityScopedResource()
+                defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+                let ext = source.pathExtension.lowercased()
+                guard supported.contains(ext) else { continue }
+                let size = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                guard size > 0 && size <= 40 * 1024 * 1024 else { continue }
+                guard CGImageSourceCreateWithURL(source as CFURL, nil) != nil else { continue }
+                let target = newFolder.appendingPathComponent(
+                    String(format: "%05d.%@", count + 1, ext)
+                )
+                try fm.copyItem(at: source, to: target)
+                count += 1
+            }
+        } catch {
+            try? fm.removeItem(at: newFolder)
+            throw error
+        }
+        if count == 0 { try? fm.removeItem(at: newFolder) }
+        return count
+    }
+
+    static func remove(_ album: KinetiqMangaAlbum) throws {
+        guard album.directory.deletingLastPathComponent().standardizedFileURL ==
+                libraryURL.standardizedFileURL else { return }
+        try FileManager.default.removeItem(at: album.directory)
+    }
+}
+
+@MainActor
+private struct KinetiqMangaLocalLibraryView: View {
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var selectedTheme = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: selectedTheme) ?? .signature
+    }
+    @State private var books: [KinetiqMangaAlbum] = []
+    @State private var showImporter = false
+    @State private var showReader: KinetiqMangaAlbum?
+    @State private var deleteRequest: KinetiqMangaAlbum?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 19) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("THE READING SPACE")
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .tracking(1.8)
+                    .foregroundStyle(theme.accent)
+                Text("Manga & images")
+                    .font(.system(size: 32, weight: .bold, design: theme.preferredFontDesign))
+                Text("Import image pages from Files and read offline in your own private library.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button { showImporter = true } label: {
+                Label("Import image pages", systemImage: "square.and.arrow.down")
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .foregroundStyle(theme.backdrop)
+                    .background(theme.accent, in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+            }
+            .buttonStyle(.plain)
+
+            if books.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.system(size: 43))
+                        .foregroundStyle(theme.accent)
+                    Text("Your first chapter starts here.")
+                        .font(.title3.weight(.semibold))
+                    Text("Select image files in page order. Kinetiq keeps a separate private copy and remembers your reading position.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Remote manga sources are a future Phase 7 integration.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(23)
+                .background(theme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+            } else {
+                Text("\(books.count) local \(books.count == 1 ? "album" : "albums")")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LazyVStack(spacing: 12) {
+                    ForEach(books) { book in
+                        HStack(spacing: 11) {
+                            Button { showReader = book } label: {
+                                HStack(spacing: 13) {
+                                    KinetiqMangaPageImage(url: book.pages[0], pixels: 400)
+                                        .frame(width: 81, height: 112)
+                                        .clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(book.title)
+                                            .font(.headline)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(2)
+                                        Text("\(book.pages.count) pages · Stored on this iPhone")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Label("Read", systemImage: "book.closed")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(theme.accent)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Button(role: .destructive) { deleteRequest = book } label: {
+                                Image(systemName: "trash")
+                                    .font(.body)
+                                    .frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel("Delete \(book.title)")
+                        }
+                        .padding(12)
+                        .background(theme.cardBackground,
+                                    in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+                    }
+                }
+            }
+        }
+        .onAppear { books = KinetiqMangaStorage.albums() }
+        .fileImporter(
+            isPresented: $showImporter, allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                do {
+                    let count = try KinetiqMangaStorage.importPages(urls)
+                    if count == 0 { error = "No supported image pages were imported." }
+                    books = KinetiqMangaStorage.albums()
+                } catch { self.error = error.localizedDescription }
+            case .failure(let failure):
+                error = failure.localizedDescription
+            }
+        }
+        .sheet(item: $showReader) { book in
+            KinetiqMangaReaderView(book: book)
+        }
+        .alert("Manga library", isPresented: Binding(
+            get: { error != nil },
+            set: { if !$0 { error = nil } }
+        )) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: {
+            Text(error ?? "Please retry.")
+        }
+        .confirmationDialog(
+            "Delete this album?",
+            isPresented: Binding(
+                get: { deleteRequest != nil },
+                set: { if !$0 { deleteRequest = nil } }
+            )
+        ) {
+            Button("Delete Kinetiq copy", role: .destructive) {
+                if let book = deleteRequest {
+                    do { try KinetiqMangaStorage.remove(book) }
+                    catch { error = error.localizedDescription }
+                    books = KinetiqMangaStorage.albums()
+                }
+                deleteRequest = nil
+            }
+        } message: {
+            Text("Only Kinetiq's copy is deleted. The originals in Files are not changed.")
+        }
+    }
+}
+
+private struct KinetiqMangaPageImage: View {
+    let url: URL
+    let pixels: Int
+    @State private var renderedImage: UIImage?
+
+    var body: some View {
+        Group {
+            if let renderedImage {
+                Image(uiImage: renderedImage).resizable().scaledToFit()
+            } else {
+                ZStack {
+                    Color.secondary.opacity(0.12)
+                    ProgressView()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: url.path) {
+            renderedImage = nil
+            let file = url
+            let targetPixels = pixels
+            let decoded = await Task.detached(priority: .utility) { () -> UIImage? in
+                guard let source = CGImageSourceCreateWithURL(file as CFURL, nil) else {
+                    return nil
+                }
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: targetPixels
+                ]
+                guard let image = CGImageSourceCreateThumbnailAtIndex(
+                    source, 0, options as CFDictionary
+                ) else { return nil }
+                return UIImage(cgImage: image)
+            }.value
+            guard !Task.isCancelled else { return }
+            renderedImage = decoded
+        }
+    }
+}
+
+@MainActor
+private struct KinetiqMangaReaderView: View {
+    let book: KinetiqMangaAlbum
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("kinetiq.manga.layout.v1") private var layout = "vertical"
+    @AppStorage("kinetiq.manga.direction.v1") private var direction = "ltr"
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var selectedTheme = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: selectedTheme) ?? .signature
+    }
+    @State private var position = 0
+    @State private var controlsVisible = true
+
+    private var sortedPages: [URL] {
+        direction == "rtl" ? Array(book.pages.reversed()) : book.pages
+    }
+    private var positionKey: String { "kinetiq.manga.position.\(book.id)" }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if controlsVisible {
+                HStack(spacing: 7) {
+                    Button("Done", systemImage: "chevron.down") { dismiss() }
+                    Spacer(minLength: 5)
+                    VStack(spacing: 3) {
+                        Text(book.title)
+                            .font(.caption.weight(.semibold)).lineLimit(1)
+                        Text("Page \(min(position + 1, sortedPages.count)) / \(sortedPages.count)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 5)
+                    Menu {
+                        Button("Vertical scroll", systemImage: "arrow.down") {
+                            layout = "vertical"
+                        }
+                        Button("Horizontal pages", systemImage: "arrow.left.and.right") {
+                            layout = "horizontal"
+                        }
+                        Divider()
+                        Button("Left to right", systemImage: "text.alignleft") {
+                            direction = "ltr"
+                            position = 0
+                        }
+                        Button("Right to left", systemImage: "text.alignright") {
+                            direction = "rtl"
+                            position = 0
+                        }
+                    } label: {
+                        Image(systemName: "textformat.size")
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Reader direction and layout")
+                }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(theme.backdrop)
+                .tint(theme.accent)
+            }
+            Group {
+                if layout == "horizontal" {
+                    TabView(selection: $position) {
+                        ForEach(sortedPages.indices, id: \.self) { index in
+                            KinetiqMangaPageImage(url: sortedPages[index], pixels: 2200)
+                                .padding(.vertical, 9)
+                                .tag(index)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 5) {
+                                ForEach(sortedPages.indices, id: \.self) { index in
+                                    KinetiqMangaPageImage(
+                                        url: sortedPages[index], pixels: 2200
+                                    )
+                                    .frame(minHeight: 170)
+                                    .id(index)
+                                    .onAppear { position = index }
+                                }
+                            }
+                        }
+                        .onAppear {
+                            let saved = UserDefaults.standard.integer(forKey: positionKey)
+                            proxy.scrollTo(
+                                min(max(saved, 0), sortedPages.count - 1),
+                                anchor: .top
+                            )
+                        }
+                    }
+                }
+            }
+            .background(Color.black)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    controlsVisible.toggle()
+                }
+            }
+        }
+        .foregroundStyle(.white)
+        .background(Color.black.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .onAppear {
+            let saved = UserDefaults.standard.integer(forKey: positionKey)
+            position = min(max(saved, 0), sortedPages.count - 1)
+        }
+        .onChange(of: position) { _, next in
+            UserDefaults.standard.set(next, forKey: positionKey)
         }
     }
 }

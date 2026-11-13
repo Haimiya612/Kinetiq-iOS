@@ -81,18 +81,18 @@ struct KinetiqUnifiedPlayerChrome: View {
                 .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(theme == .cinema ? "NOW SHOWING" :
-                     theme == .anime ? "ANIME PULSE" :
-                     theme == .aurora ? "YOUR STREAM" :
-                     theme == .nocturne ? "FOCUS MODE" : "NOW PLAYING")
+                Text(theme.isEditorial ? "NOW SHOWING" :
+                     theme.isEnergetic ? "THE NEXT EPISODE" :
+                     theme.isQuiet ? "FOCUS MODE" :
+                     theme.isAtmospheric ? "YOUR STREAM" : "NOW PLAYING")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .tracking(1.8)
                     .foregroundStyle(playerAccent)
 
                 Text(title)
-                    .font(.system(size: theme == .cinema ? 16 : 14,
+                    .font(.system(size: theme.isEditorial ? 16 : 14,
                                   weight: .semibold,
-                                  design: theme == .cinema ? .serif : .rounded))
+                                  design: theme.preferredFontDesign))
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
@@ -102,7 +102,7 @@ struct KinetiqUnifiedPlayerChrome: View {
             airPlayControl
                 .frame(width: 40, height: 40)
                 .background {
-                    if theme == .cinema || theme == .nocturne {
+                    if theme.isEditorial || theme.isQuiet {
                         RoundedRectangle(cornerRadius: 9)
                             .fill(.black.opacity(0.68))
                     } else {
@@ -110,7 +110,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                     }
                 }
                 .overlay {
-                    if theme == .anime {
+                    if theme.isEnergetic {
                         Circle().strokeBorder(playerAccent.opacity(0.5), lineWidth: 1)
                     }
                 }
@@ -143,7 +143,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                 .foregroundStyle(.white)
                 .frame(width: 40, height: 40)
                 .background {
-                    if theme == .cinema || theme == .nocturne {
+                    if theme.isEditorial || theme.isQuiet {
                         RoundedRectangle(cornerRadius: 9)
                             .fill(.black.opacity(0.68))
                     } else {
@@ -151,7 +151,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                     }
                 }
                 .overlay {
-                    if theme == .anime {
+                    if theme.isEnergetic {
                         Circle().strokeBorder(playerAccent.opacity(0.5), lineWidth: 1)
                     }
                 }
@@ -172,13 +172,13 @@ struct KinetiqUnifiedPlayerChrome: View {
                     .font(.system(size: 25, weight: .bold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: theme == .nocturne ? 64 : 72,
-                           height: theme == .nocturne ? 64 : 72)
+                    .frame(width: theme.isQuiet ? 64 : 72,
+                           height: theme.isQuiet ? 64 : 72)
                     .background {
-                        if theme == .cinema {
+                        if theme.isEditorial {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(.black.opacity(0.82))
-                        } else if theme == .anime {
+                        } else if theme.isEnergetic || theme.isAtmospheric {
                             Circle().fill(LinearGradient(colors: [
                                 theme.accent.opacity(0.86),
                                 theme.highlight.opacity(0.77)
@@ -190,7 +190,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                         }
                     }
                     .overlay {
-                        if theme == .cinema {
+                        if theme.isEditorial {
                             RoundedRectangle(cornerRadius: 12)
                                 .strokeBorder(.white.opacity(0.3), lineWidth: 1)
                         } else {
@@ -287,10 +287,10 @@ struct KinetiqUnifiedPlayerChrome: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 5)
         .background {
-            if theme == .cinema || theme == .nocturne {
+            if theme.isEditorial || theme.isQuiet {
                 RoundedRectangle(cornerRadius: theme == .cinema ? 8 : 14)
                     .fill(.black.opacity(theme == .nocturne ? 0.87 : 0.77))
-            } else if theme == .anime {
+            } else if theme.isEnergetic || theme.isAtmospheric {
                 RoundedRectangle(cornerRadius: 20)
                     .fill(.ultraThinMaterial)
                     .overlay {
@@ -302,7 +302,7 @@ struct KinetiqUnifiedPlayerChrome: View {
             }
         }
         .overlay {
-            if theme == .cinema || theme == .nocturne {
+            if theme.isEditorial || theme.isQuiet {
                 RoundedRectangle(cornerRadius: theme == .cinema ? 8 : 14)
                     .strokeBorder(.white.opacity(theme == .cinema ? 0.24 : 0.08), lineWidth: 1)
             }

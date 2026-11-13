@@ -1141,3 +1141,43 @@ can change. The integration programme above gives scope and acceptance tests.
 ---
 
 *Kinetiq -- One platform. Every kind of media.*
+
+
+<!-- KINETIQ_BATCH_06I_STREAMING_HQ_ADDENDUM_BEGIN -->
+## Batch 06I -- Streaming HQ Experiences and Local Manga Reader (candidate)
+
+Status: [ ] SOURCE CANDIDATE — not yet Xcode-compiled or accepted on a physical iPhone.
+Preserve the original twelve roadmap phases, 05I–05O, 07A–07D,
+and the eight-source repository research without deleting prior scope.
+
+### Phase 1 / 3 / 4 / 11: Original design system and media discovery
+- [ ] Preserve Home, Favorites, Downloads, Settings as the four top-level destinations.
+- [ ] Add eight original persisted visual presets: Studio, Prism, Atelier, Signal, Ember,
+  Vault, Zen and Nebula, alongside Signature, Cinema, Anime Pulse, Aurora and Nocturne.
+- [ ] Theme changes apply to app surfaces and native player chrome, not to source identities.
+- [ ] Theme picker remains in the main app Settings (never inside the player).
+- [ ] Make source-aware search the destination of Discover, not a generic marketing screen.
+- [ ] Show real local saved artwork on Home hero when an actual continue-watching item exists;
+  the primary hero button resumes that genuine media item.
+- [ ] Never invent provider data, rankings, posters, downloads or unsupported capability badges.
+- [ ] Verify dynamic type, Reduce Motion, VoiceOver, Dynamic Island and app safe-area insets.
+
+### Phase 7: Local-image reader foundation (not remote adapter completion)
+- [ ] Import user-selected image files via Files security-scoped URLs, into app-owned library.
+- [ ] Show actual local albums, ordered pages, private-copy deletion and bounded image decoding.
+- [ ] Provide vertical and horizontal reading, RTL reversal and persisted page position.
+- [ ] Run real iPhone image-format, long-album, seek/back, relaunch and delete tests.
+- [ ] Keep remote source parser/permission/host policy (07A/07C) unimplemented until tested;
+  do not mark manga module compatibility, text reader or offline-source downloads complete.
+
+### Phase 2 / 5 / 6 / 12: Release, streaming and security gates
+- [ ] Source package must match base 70ac7c6afac3cc73aa929d17fef6ae3a54b4be6b, no pbxproj changes.
+- [ ] XCTest and Xcode CI must pass on final commit with exact SHA recorded.
+- [ ] Validate real source search → details → episodes → server → native AVPlayer and local playback.
+- [ ] Verify manual/automatic/repeated PiP and return; embedded captions and known external
+  subtitle overlays in system PiP are separate acceptance cases (known failing).
+- [ ] Preserve load screen and landscape start semantics during first-frame gating.
+- [ ] Complete 05J fixture, 05L publisher trust, 05M URL/SSRF/redirect policy, 05N rollback,
+  05O diagnostics and certification before claiming security/source compatibility complete.
+- [ ] Record device model, iOS version, CI run URL, IPA SHA-256 and any failures.
+<!-- KINETIQ_BATCH_06I_STREAMING_HQ_ADDENDUM_END -->

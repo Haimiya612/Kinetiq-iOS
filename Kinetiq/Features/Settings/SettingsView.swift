@@ -836,11 +836,11 @@ private struct KinetiqThemeGallery: View {
                         .tracking(1.8)
                         .foregroundStyle(.white.opacity(0.67))
                         .padding(.top, 4)
-                    ForEach(KinetiqVisualTheme.allCases) { choice in
-                        themeCard(choice)
-                    }
+                    themeCollection("KINETIQ ORIGINALS", choices: [.signature, .cinema, .anime, .aurora, .nocturne])
+                    themeCollection("PREMIUM STREAMING", choices: [.studio, .prism, .atelier, .vault])
+                    themeCollection("ENERGY & ATMOSPHERE", choices: [.signal, .ember, .zen, .nebula])
                     motionSection
-                    Text("Theme presets redesign the app layout, color family and supported player surfaces without changing saved media, modules or account data. iOS Reduce Motion takes precedence.")
+                    Text("Thirteen theme presets redesign the app layout, color family and supported player surfaces without changing saved media, modules or account data. iOS Reduce Motion takes precedence.")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.55))
                         .padding(.bottom, 20)
@@ -862,6 +862,15 @@ private struct KinetiqThemeGallery: View {
         .preferredColorScheme(.dark)
     }
 
+    private func themeCollection(_ title: String, choices: [KinetiqVisualTheme]) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(title).font(.caption2.weight(.bold)).tracking(1.6)
+                .foregroundStyle(.white.opacity(0.65))
+                .accessibilityAddTraits(.isHeader)
+            ForEach(choices) { choice in themeCard(choice) }
+        }
+    }
+
     private var hero: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 28)
@@ -878,9 +887,9 @@ private struct KinetiqThemeGallery: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("MAKE IT YOURS")
                     .font(.system(size: 10, weight: .heavy)).tracking(2.2)
-                Text("A new look for every mood.")
+                Text("Thirteen ways to watch.")
                     .font(.system(size: 27, weight: .bold, design: .rounded))
-                Text("Curated colors. Native controls. Your library.")
+                Text("Original experiences, one shared media library.")
                     .font(.subheadline).foregroundStyle(.white.opacity(0.85))
             }
             .foregroundStyle(.white)
@@ -942,7 +951,7 @@ private struct KinetiqThemeGallery: View {
                                              startPoint: .topLeading, endPoint: .bottomTrailing))
                     HStack {
                         Image(systemName: option.heroSymbol)
-                            .font(.system(size: option == .anime ? 20 : 17, weight: .light))
+                            .font(.system(size: option.isEnergetic ? 20 : 17, weight: .light))
                             .foregroundStyle(.white.opacity(0.72))
                         Spacer()
                         Capsule().fill(option.accent).frame(width: 25, height: 9)
@@ -952,7 +961,7 @@ private struct KinetiqThemeGallery: View {
                 .frame(height: 34)
                 HStack(spacing: 4) {
                     ForEach(0..<3, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: option == .cinema ? 2 : 5)
+                        RoundedRectangle(cornerRadius: option.isEditorial ? 2 : 5)
                             .fill(index == 0 ? option.accent.opacity(0.75)
                                              : option.highlight.opacity(0.42))
                             .frame(maxWidth: .infinity)
