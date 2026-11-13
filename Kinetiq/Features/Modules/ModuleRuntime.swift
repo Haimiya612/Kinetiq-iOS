@@ -4239,6 +4239,16 @@ struct ModuleBrowserView: View {
 
 }
 
+// MARK: - Module Episode Launch
+// One presentation owns source resolution AND first-frame preparation.
+// Unlike Batch 06E this does not create an extra portrait overlay.
+private struct ModuleEpisodeLaunch: Identifiable {
+    let id = UUID()
+    let session: ModuleEpisodePlaybackSession
+    let episode: ModuleAnimeEpisode
+    let language: String
+}
+
 // MARK: - Anime Details and Episodes
 
 private enum ModuleEpisodeFilter: String, CaseIterable, Identifiable {
@@ -4267,13 +4277,9 @@ struct ModuleAnimeDetailsView: View {
     @State private var episodeFilter: ModuleEpisodeFilter = .all
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
-    @State private var selectedPlaybackSession: ModuleEpisodePlaybackSession?
+    @State private var activeLaunch: ModuleEpisodeLaunch?
 
     @State private var isLoading = true
-    @State private var isResolvingStream = false
-    @State private var activeLaunchID: UUID?
-    @State private var pendingEpisodeNumber = ""
-    @State private var pendingLanguage = "sub"
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var detailThemeRaw = KinetiqVisualTheme.signature.rawValue
     private var detailTheme: KinetiqVisualTheme {
@@ -4348,30 +4354,29 @@ struct ModuleAnimeDetailsView: View {
             .task {
                 await loadDetailsAndEpisodes()
             }
-            .overlay {
-                if isResolvingStream {
-                    KinetiqPortraitStreamLaunchView(
-                        title: details?.title ?? item.title,
-                        source: sourceName,
-                        episode: pendingEpisodeNumber,
-                        language: pendingLanguage,
-                        onCancel: cancelLaunch
-                    )
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-                    .zIndex(100)
-                }
-            }
-            .fullScreenCover(item: $selectedPlaybackSession, onDismiss: {
+            .fullScreenCover(item: $activeLaunch, onDismiss: {
                 if let report = playbackSession?.playerFailureDiagnostics {
                     lastPlaybackDiagnostics = report
                     lastPlaybackFailure = playbackSession?.playerFailureReason
                 }
-            }) { session in
-                KinetiqModulePlayerView(session: session)
-                    .preferredColorScheme(.dark)
-                    .presentationBackground(.black)
-                    .ignoresSafeArea()
+            }) { launch in
+                KinetiqModulePlayerView(
+                    session: launch.session,
+                    initialEpisode: launch.episode,
+                    initialLanguage: launch.language,
+                    onInitialResolution: {
+                        animeCollection.recordEpisode(
+                            sourceID: sourceID,
+                            sourceName: sourceName,
+                            anime: item,
+                            episode: launch.episode,
+                            language: launch.language
+                        )
+                    }
+                )
+                .preferredColorScheme(.dark)
+                .presentationBackground(.black)
+                .ignoresSafeArea()
             }
             .alert(
                 "Playback",
@@ -4463,7 +4468,7 @@ struct ModuleAnimeDetailsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(KinetiqPalette.accent)
-                .disabled(isResolvingStream || isLoading)
+                .disabled(activeLaunch != nil || isLoading)
             } else if !episodes.isEmpty, watchedEpisodeCount == episodes.count {
                 Label("All available episodes watched", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
@@ -4616,7 +4621,7 @@ struct ModuleAnimeDetailsView: View {
                         .font(.system(size: 19))
                         .frame(minWidth: 36, minHeight: 44)
                 }
-                .disabled(isResolvingStream || (!episode.subAvailable && !episode.dubAvailable))
+                .disabled(activeLaunch != nil || (!episode.subAvailable && !episode.dubAvailable))
                 .accessibilityLabel("Manage Episode \(episode.number) progress")
             }
 
@@ -4644,7 +4649,7 @@ struct ModuleAnimeDetailsView: View {
         }
         .buttonStyle(.bordered)
         .tint(KinetiqPalette.accent)
-        .disabled(isResolvingStream)
+        .disabled(activeLaunch != nil)
         .accessibilityLabel("\(action) Episode \(episode.number), \(language.uppercased())")
     }
 
@@ -4795,171 +4800,31 @@ struct ModuleAnimeDetailsView: View {
         }
     }
 
-    // MARK: Resolve Stream
+    // MARK: Unified Player Launch
 
-    // Synchronous tap handoff: show loading before any async module call.
+    // Setting the cover item is synchronous with the Sub/Dub/Resume tap.
+    // The cover starts module resolution only after its single loading
+    // scene has mounted. Landscape is deferred until the first video frame.
     @MainActor
     private func beginPlayback(episode: ModuleAnimeEpisode, language: String) {
-        guard !isResolvingStream else { return }
-        let requestID = UUID()
-        activeLaunchID = requestID
-        pendingEpisodeNumber = episode.number
-        pendingLanguage = language
-        isResolvingStream = true
+        guard activeLaunch == nil else { return }
         lastPlaybackDiagnostics = nil
         lastPlaybackFailure = nil
-        Task { await play(episode: episode, language: language, requestID: requestID) }
-    }
+        errorMessage = nil
 
-    @MainActor
-    private func cancelLaunch() {
-        activeLaunchID = nil
-        isResolvingStream = false
-    }
-
-    @MainActor
-    private func play(
-        episode: ModuleAnimeEpisode,
-        language: String,
-        requestID: UUID
-    ) async {
-        guard activeLaunchID == requestID else { return }
-        defer {
-            if activeLaunchID == requestID {
-                activeLaunchID = nil
-                isResolvingStream = false
-            }
-        }
-
-        let session: ModuleEpisodePlaybackSession
-
-        if let playbackSession {
-            session = playbackSession
-        } else {
-            session = ModuleEpisodePlaybackSession(
-                animeTitle: details?.title ?? item.title,
-                episodes: episodes,
-                runtime: runtime,
-                sourceID: sourceID,
-                animeItem: item
-            )
-            playbackSession = session
-        }
-
-        let didResolve = await session.play(
-            episode: episode,
-            language: language
+        // Create a fresh session per launch so no stale stream briefly
+        // plays while the user selects a different episode/language.
+        let session = ModuleEpisodePlaybackSession(
+            animeTitle: details?.title ?? item.title,
+            episodes: episodes,
+            runtime: runtime,
+            sourceID: sourceID,
+            animeItem: item
         )
-
-        guard activeLaunchID == requestID, !Task.isCancelled else { return }
-
-        if didResolve {
-            // Record the selected episode only after stream resolution.
-            // The native module player separately persists real play position.
-            animeCollection.recordEpisode(
-                sourceID: sourceID,
-                sourceName: sourceName,
-                anime: item,
-                episode: episode,
-                language: language
-            )
-            selectedPlaybackSession = session
-        } else {
-            lastPlaybackDiagnostics = session.diagnosticSummary
-            lastPlaybackFailure = ModulePlaybackDiagnostics.redact(
-                session.playbackError ?? "The episode stream could not be resolved."
-            )
-            errorMessage = session.playbackError
-                ?? "The episode stream could not be resolved."
-        }
-    }
-}
-
-
-// MARK: - Batch 06E: Portrait launch, before entering the landscape player.
-private struct KinetiqPortraitStreamLaunchView: View {
-    let title: String
-    let source: String
-    let episode: String
-    let language: String
-    let onCancel: () -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(KinetiqVisualTheme.storageKey)
-    private var themeRaw = KinetiqVisualTheme.signature.rawValue
-    private var theme: KinetiqVisualTheme {
-        KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
-    }
-
-    var body: some View {
-        ZStack {
-            theme.backdrop
-            LinearGradient(
-                colors: [theme.stageColors[0].opacity(0.78), theme.backdrop,
-                         theme.stageColors[2].opacity(0.46)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            VStack(spacing: 26) {
-                Spacer()
-                ZStack {
-                    Circle()
-                        .stroke(theme.accent.opacity(0.18), lineWidth: 1)
-                        .frame(width: 180, height: 180)
-                    Circle()
-                        .trim(from: 0.04, to: 0.68)
-                        .stroke(
-                            AngularGradient(colors: [theme.accent, theme.highlight, .clear],
-                                            center: .center),
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
-                        )
-                        .frame(width: 135, height: 135)
-                        .rotationEffect(.degrees(-90))
-                        .opacity(reduceMotion ? 0.75 : 1)
-                    Image(systemName: theme.heroSymbol)
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(theme.accent)
-                }
-                .accessibilityHidden(true)
-                VStack(spacing: 11) {
-                    Text("PREPARING YOUR EPISODE")
-                        .font(.system(size: 11, weight: .heavy, design: .rounded))
-                        .tracking(2.4)
-                        .foregroundStyle(theme.accent)
-                    Text(title)
-                        .font(.system(size: theme == .cinema ? 30 : 27, weight: .bold,
-                                      design: theme == .cinema ? .serif : .rounded))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                        .foregroundStyle(.white)
-                    Text("Episode \(episode)  ·  \(language.uppercased())")
-                        .font(.headline)
-                        .foregroundStyle(.white.opacity(0.88))
-                    Text("Finding a playable server from \(source)")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.64))
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.horizontal, 28)
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(theme.accent)
-                    .accessibilityLabel("Resolving episode stream")
-                Spacer()
-                Button(action: onCancel) {
-                    Text("Back to episodes")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.82))
-                        .padding(.vertical, 14)
-                        .frame(maxWidth: .infinity)
-                        .background(.white.opacity(0.10), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 38)
-                .padding(.bottom, 44)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .contain)
+        playbackSession = session
+        activeLaunch = ModuleEpisodeLaunch(
+            session: session, episode: episode, language: language
+        )
     }
 }
 

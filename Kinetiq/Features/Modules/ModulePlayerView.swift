@@ -63,10 +63,25 @@ struct KinetiqModulePlayerView: View {
     // Restore external captions if no PiP session actually starts.
     @State private var pipCaptionRollbackTask: Task<Void, Never>?
     @State private var loadingStartedAt = Date()
+    @State private var initialResolutionStarted = false
+
+    // An initial episode is resolved INSIDE the already presented player.
+    // The single loading scene remains portrait until AVPlayer has a frame.
+    private let initialEpisode: ModuleAnimeEpisode?
+    private let initialLanguage: String
+    private let onInitialResolution: (@MainActor () -> Void)?
 
     private let autoHideDelay: Duration = .seconds(3.4)
 
-    init(session: ModuleEpisodePlaybackSession) {
+    init(
+        session: ModuleEpisodePlaybackSession,
+        initialEpisode: ModuleAnimeEpisode? = nil,
+        initialLanguage: String = "sub",
+        onInitialResolution: (@MainActor () -> Void)? = nil
+    ) {
+        self.initialEpisode = initialEpisode
+        self.initialLanguage = initialLanguage
+        self.onInitialResolution = onInitialResolution
         _session = ObservedObject(wrappedValue: session)
         _playback = StateObject(
             wrappedValue: ModulePlayerPlaybackController(session: session)
@@ -121,15 +136,17 @@ struct KinetiqModulePlayerView: View {
                     .zIndex(2)
                 }
 
-                // Batch 06C: an honest, user-readable loading scene replaces
-                // the unexplained spinner. Diagnostics are sanitized by the
-                // existing module runtime and never expose signed media URLs.
+                // Single portrait-first launch scene for both JavaScript
+                // resolution and actual AVPlayer first-frame readiness.
+                // A compact spinner is only used for later rebuffering.
                 if playback.errorMessage == nil,
                    webPlayerStream == nil,
                    (playback.isResolvingEpisode ||
                     !playback.hasFinishedPresentingFirstFrame) {
                     KinetiqModuleLoadingScene(
-                        title: session.currentEpisodeTitle,
+                        title: initialEpisode.map {
+                            "\(session.animeTitle) · Episode \($0.number)"
+                        } ?? session.currentEpisodeTitle,
                         sourceName: ModulePlaybackDiagnostics.redact(session.sourceName, limit: 70),
                         phase: ModulePlaybackDiagnostics.redact(playback.playbackStatus, limit: 110),
                         isResolving: playback.isResolvingEpisode,
@@ -262,13 +279,35 @@ struct KinetiqModulePlayerView: View {
                 value: activePanel
             )
             .onAppear {
-                if !hasOrientationLease {
-                    KinetiqPlaybackPresentation.enterPlayer()
-                    hasOrientationLease = true
-                }
+                // The launch scene must stay portrait while a server resolves
+                // AND while AVPlayer is waiting for its first real frame.
                 KinetiqPlaybackPresentation.preparePlayer(playback.player)
+                if playback.hasFinishedPresentingFirstFrame {
+                    activateLandscapeIfNeeded()
+                }
                 revealControls()
                 displayEmbeddedPlayerIfNeeded()
+            }
+            .task {
+                // Begin after presentation, not from the details screen;
+                // this makes the portrait loader the only startup scene.
+                guard let initialEpisode, !initialResolutionStarted else { return }
+                initialResolutionStarted = true
+                let didResolve = await session.play(
+                    episode: initialEpisode,
+                    language: initialLanguage
+                )
+                if didResolve && !Task.isCancelled {
+                    onInitialResolution?()
+                }
+            }
+            .onChange(of: playback.hasFinishedPresentingFirstFrame) { _, ready in
+                if ready { activateLandscapeIfNeeded() }
+            }
+            .onChange(of: webPlayerStream?.id) { _, id in
+                // A web-embed has no AVPlayerLayer first-frame callback.
+                // Enter landscape only once its web surface is presented.
+                if id != nil { activateLandscapeIfNeeded() }
             }
             .onChange(of: session.currentStream?.id) { _, _ in
                 loadingStartedAt = Date()
@@ -377,8 +416,8 @@ struct KinetiqModulePlayerView: View {
             }
         }
         .ignoresSafeArea()
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
+        .statusBarHidden(hasOrientationLease)
+        .persistentSystemOverlays(hasOrientationLease ? .hidden : .automatic)
         .background(.black)
         .alert("Picture in Picture", isPresented: Binding(
             get: { pictureInPicture.lastFailure != nil },
@@ -413,6 +452,14 @@ struct KinetiqModulePlayerView: View {
     }
 
     // MARK: - Web-only Player Fallback (Batch 05C)
+
+    /// Playback is portrait during startup and landscape only after video
+    /// has actually produced its first frame (or opened an approved web embed).
+    private func activateLandscapeIfNeeded() {
+        guard !hasOrientationLease else { return }
+        KinetiqPlaybackPresentation.enterPlayer()
+        hasOrientationLease = true
+    }
 
     private func displayEmbeddedPlayerIfNeeded() {
         guard let stream = session.currentStream else {
@@ -552,13 +599,32 @@ struct KinetiqModulePlayerView: View {
         KinetiqUnifiedPlayerFailureOverlay(
             message: error,
             onRetry: {
-                playback.retryCurrentStream()
+                if session.currentStream == nil, let initialEpisode {
+                    playback.dismissError()
+                    Task { @MainActor in
+                        let didResolve = await session.play(
+                            episode: initialEpisode,
+                            language: initialLanguage
+                        )
+                        if didResolve && !Task.isCancelled {
+                            onInitialResolution?()
+                        }
+                    }
+                } else {
+                    playback.retryCurrentStream()
+                }
                 revealControls()
             },
             onSkip: {
-                playback.dismissError()
-                playback.playNext()
-                revealControls()
+                if session.currentStream == nil {
+                    // No stream was accepted, so there is no native
+                    // episode to skip. Return to the episode list.
+                    dismiss()
+                } else {
+                    playback.dismissError()
+                    playback.playNext()
+                    revealControls()
+                }
             }
         )
     }
@@ -1734,7 +1800,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         startupTask = nil
         startupOverlayTask?.cancel()
         startupOverlayTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .milliseconds(950)) }
+            do { try await Task.sleep(for: .milliseconds(250)) }
             catch { return }
             guard let self, !self.hasStopped, self.player.currentItem === item,
                   self.sawFirstVideoFrame else { return }
@@ -3988,7 +4054,7 @@ private struct KinetiqModuleLoadingScene: View {
     @AppStorage(KinetiqMotionMode.storageKey)
     private var motionRaw = KinetiqMotionMode.balanced.rawValue
     @State private var glow = false
-    @State private var expandedConsole = true
+    @State private var expandedConsole = false
 
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
