@@ -121,7 +121,7 @@ struct MainTabView: View {
             bottomBar
         }
         .background(KinetiqExperienceBackground())
-        .tint(theme == .signature ? KinetiqPalette.accent : theme.accent)
+        .tint(KinetiqPalette.accent)
         .animation(reduceMotion ? nil : KinetiqMotionMode.chosen.animation,
                    value: themeRawValue)
         .sheet(item: $activeSheet) { destination in
@@ -129,12 +129,7 @@ struct MainTabView: View {
                 Group {
                     switch destination {
                     case .discover:
-                        if let source = moduleSourceStore.activeSource {
-                            ModuleBrowserView(source: source, startInSearch: true)
-                                .id(source.id)
-                        } else {
-                            LibraryView(requestedMediaID: $requestedMediaID)
-                        }
+                        DiscoverView()
 
                     case .modules:
                         ModuleSourcesView()
@@ -253,9 +248,9 @@ struct MainTabView: View {
     private var bottomBar: some View {
         dockContent
             .background {
-                if theme == .signature || theme == .zen {
+                if theme == .signature {
                     Capsule().fill(.regularMaterial)
-                } else if theme.isEnergetic || theme.isAtmospheric {
+                } else if theme == .anime || theme == .aurora {
                     RoundedRectangle(cornerRadius: theme.dockCornerRadius)
                         .fill(LinearGradient(
                             colors: [theme.stageColors[0], theme.stageColors[1].opacity(0.8)],
@@ -263,7 +258,7 @@ struct MainTabView: View {
                         ))
                 } else {
                     RoundedRectangle(cornerRadius: theme.dockCornerRadius)
-                        .fill(theme.isEditorial ? Color.black.opacity(0.94) : theme.backdrop.opacity(0.98))
+                        .fill(theme == .cinema ? Color.black.opacity(0.94) : theme.backdrop.opacity(0.98))
                 }
             }
             .overlay {
@@ -355,7 +350,7 @@ struct MainTabView: View {
                             }
                             .foregroundStyle(
                                 displayedTabIndex == tab.index
-                                    ? (theme == .signature ? KinetiqPalette.accent : theme.accent)
+                                    ? KinetiqPalette.accent
                                     : Color.secondary
                             )
                             .frame(maxWidth: .infinity)
@@ -446,14 +441,14 @@ struct MainTabView: View {
 
     @ViewBuilder
     private var selectedTabIndicator: some View {
-        if #available(iOS 26.0, *), useLiquidGlassDock, (theme == .signature || theme == .zen) {
+        if #available(iOS 26.0, *), useLiquidGlassDock, theme == .signature {
             Capsule()
                 .fill(.clear)
                 .glassEffect(
                     .regular.interactive(),
                     in: Capsule()
                 )
-        } else if theme.isEditorial {
+        } else if theme == .cinema {
             VStack {
                 Spacer()
                 RoundedRectangle(cornerRadius: 2)
@@ -618,7 +613,7 @@ private struct KinetiqPlaceholderView: View {
     // explaining that offline management is a roadmap feature.
     @ViewBuilder
     private var offlineHero: some View {
-        if theme == .nocturne || theme == .zen || theme == .vault {
+        if theme == .nocturne {
             HStack(spacing: 20) {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 43, weight: .ultraLight))
@@ -1407,7 +1402,7 @@ struct ModuleGlobalFavoritesView: View {
                                     }
                                 }
                                 .overlay(alignment: .bottom) {
-                                    if theme == .nocturne || theme == .zen || theme == .vault {
+                                    if theme == .nocturne {
                                         Rectangle().fill(theme.accent.opacity(0.17)).frame(height: 1)
                                     }
                                 }

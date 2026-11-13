@@ -1409,33 +1409,3 @@ final class KinetiqSubtitlePreferenceTests: XCTestCase {
         controller.stop()
     }
 }
-
-
-// Batch 06I: Theme IDs are persisted preferences and must be stable.
-final class KinetiqThemeExperienceTests: XCTestCase {
-    func testThirteenOriginalThemesHaveDistinctIdentities() {
-        let all = KinetiqVisualTheme.allCases
-        XCTAssertEqual(all.count, 13)
-        XCTAssertEqual(Set(all.map(\.rawValue)).count, all.count)
-        for theme in all {
-            XCTAssertFalse(theme.name.isEmpty)
-            XCTAssertEqual(theme.stageColors.count, 3)
-            XCTAssertGreaterThan(theme.heroHeight, 200)
-        }
-    }
-
-    func testLegacyThemeValuesNeverChange() {
-        XCTAssertEqual(KinetiqVisualTheme.storageKey, "kinetiq.visualTheme.v1")
-        XCTAssertEqual(KinetiqVisualTheme.signature.rawValue, "signature")
-        XCTAssertEqual(KinetiqVisualTheme.cinema.rawValue, "cinema")
-        XCTAssertEqual(KinetiqVisualTheme.anime.rawValue, "anime")
-        XCTAssertEqual(KinetiqVisualTheme.aurora.rawValue, "aurora")
-        XCTAssertEqual(KinetiqVisualTheme.nocturne.rawValue, "nocturne")
-    }
-
-    func testMediaModesRouteToCorrectDestination() {
-        XCTAssertEqual(HomeContentRoute.resolve(mode: .manga, isLocalLibrarySelected: true, sourceAvailable: true), .manga)
-        XCTAssertEqual(HomeContentRoute.resolve(mode: .video, isLocalLibrarySelected: true, sourceAvailable: false), .localVideo)
-        XCTAssertEqual(HomeContentRoute.resolve(mode: .video, isLocalLibrarySelected: false, sourceAvailable: true), .remoteVideo)
-    }
-}

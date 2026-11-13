@@ -42,14 +42,6 @@ enum AppAccentColor: String, CaseIterable, Identifiable, Equatable {
         case .rose: Color(red: 0.88, green: 0.32, blue: 0.52)
         case .emerald: Color(red: 0.15, green: 0.63, blue: 0.46)
         case .amber: Color(red: 0.86, green: 0.51, blue: 0.19)
-                case .studio: Color(red: 0.4039, green: 0.7373, blue: 1.0000)
-        case .prism: Color(red: 0.4745, green: 0.6392, blue: 1.0000)
-        case .atelier: Color(red: 0.9216, green: 0.7333, blue: 0.5176)
-        case .signal: Color(red: 1.0000, green: 0.3686, blue: 0.4078)
-        case .ember: Color(red: 1.0000, green: 0.6314, blue: 0.2941)
-        case .vault: Color(red: 0.9059, green: 0.7294, blue: 0.3882)
-        case .zen: Color(red: 0.8941, green: 0.8902, blue: 0.8627)
-        case .nebula: Color(red: 0.8196, green: 0.6039, blue: 1.0000)
         }
     }
     var cyanTone: Color {
@@ -89,7 +81,7 @@ enum AppAccentColor: String, CaseIterable, Identifiable, Equatable {
 // New storage key does not alter legacy accent, light/dark or subtitle settings.
 enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
     static let storageKey = "kinetiq.visualTheme.v1"
-    case signature, cinema, anime, aurora, nocturne, studio, prism, atelier, signal, ember, vault, zen, nebula
+    case signature, cinema, anime, aurora, nocturne
     var id: String { rawValue }
     var name: String {
         switch self {
@@ -98,14 +90,6 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
         case .anime: "Anime Pulse"
         case .aurora: "Aurora"
         case .nocturne: "Nocturne"
-                case .studio: "Studio"
-        case .prism: "Prism"
-        case .atelier: "Atelier"
-        case .signal: "Signal"
-        case .ember: "Ember"
-        case .vault: "Vault"
-        case .zen: "Zen"
-        case .nebula: "Nebula"
         }
     }
     var subtitle: String {
@@ -115,14 +99,6 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
         case .anime: "Anime-first posters · expressive color"
         case .aurora: "Soft glass · luminous gradients"
         case .nocturne: "Nearly-black canvas · minimal distractions"
-                case .studio: "Clean cobalt shelves and discovery"
-        case .prism: "Luminous cinematic spectacle"
-        case .atelier: "Art-house editorial warmth"
-        case .signal: "Bold, fast-moving media discovery"
-        case .ember: "Warm anime-first chapter energy"
-        case .vault: "Personal-library warmth and precision"
-        case .zen: "Quiet monochrome and mindful media"
-        case .nebula: "Cosmic violet atmosphere"
         }
     }
     var symbol: String {
@@ -132,14 +108,6 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
         case .anime: "sparkles.tv"
         case .aurora: "sparkles"
         case .nocturne: "moon.stars.fill"
-                case .studio: "rectangle.stack.fill"
-        case .prism: "diamond.inset.filled"
-        case .atelier: "rectangle.portrait.on.rectangle.portrait"
-        case .signal: "bolt.circle.fill"
-        case .ember: "flame.fill"
-        case .vault: "square.stack.3d.up.fill"
-        case .zen: "circle.dotted.circle.fill"
-        case .nebula: "moon.stars"
         }
     }
     var accent: Color {
@@ -158,14 +126,6 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
         case .anime: Color(red: 0.76, green: 0.34, blue: 0.98)
         case .aurora: Color(red: 0.20, green: 0.61, blue: 1.00)
         case .nocturne: Color(red: 0.33, green: 0.38, blue: 0.86)
-                case .studio: Color(red: 0.1176, green: 0.4000, blue: 0.8627)
-        case .prism: Color(red: 0.8471, green: 0.6314, blue: 1.0000)
-        case .atelier: Color(red: 0.8275, green: 0.5098, blue: 0.4510)
-        case .signal: Color(red: 1.0000, green: 0.6863, blue: 0.3961)
-        case .ember: Color(red: 1.0000, green: 0.3569, blue: 0.5098)
-        case .vault: Color(red: 0.6431, green: 0.5333, blue: 0.3569)
-        case .zen: Color(red: 0.6078, green: 0.6471, blue: 0.6667)
-        case .nebula: Color(red: 0.4275, green: 0.5451, blue: 1.0000)
         }
     }
     var backdrop: Color {
@@ -175,14 +135,6 @@ enum KinetiqVisualTheme: String, CaseIterable, Identifiable {
         case .anime: Color(red: 0.078, green: 0.038, blue: 0.088)
         case .aurora: Color(red: 0.020, green: 0.069, blue: 0.083)
         case .nocturne: Color(red: 0.021, green: 0.024, blue: 0.052)
-                case .studio: Color(red: 0.0275, green: 0.0627, blue: 0.1176)
-        case .prism: Color(red: 0.0431, green: 0.0627, blue: 0.1686)
-        case .atelier: Color(red: 0.1098, green: 0.0824, blue: 0.0784)
-        case .signal: Color(red: 0.0863, green: 0.0392, blue: 0.0824)
-        case .ember: Color(red: 0.1216, green: 0.0627, blue: 0.0784)
-        case .vault: Color(red: 0.0667, green: 0.0667, blue: 0.0627)
-        case .zen: Color(red: 0.0863, green: 0.1020, blue: 0.1137)
-        case .nebula: Color(red: 0.0667, green: 0.0431, blue: 0.1412)
         }
     }
     var cardSurface: Color { Color.white.opacity(self == .nocturne ? 0.045 : 0.078) }
@@ -238,14 +190,6 @@ extension KinetiqVisualTheme {
             return [Color(red: 0.045, green: 0.045, blue: 0.09),
                     Color(red: 0.09, green: 0.08, blue: 0.19),
                     Color(red: 0.02, green: 0.025, blue: 0.052)]
-                case .studio: [Color(red: 0.0510, green: 0.1922, blue: 0.3451), Color(red: 0.0706, green: 0.3647, blue: 0.6275), Color(red: 0.0392, green: 0.0745, blue: 0.1529)]
-        case .prism: [Color(red: 0.0588, green: 0.1333, blue: 0.4157), Color(red: 0.3137, green: 0.2196, blue: 0.7059), Color(red: 0.0627, green: 0.1765, blue: 0.3647)]
-        case .atelier: [Color(red: 0.3176, green: 0.2039, blue: 0.1725), Color(red: 0.1647, green: 0.1137, blue: 0.1216), Color(red: 0.0824, green: 0.0627, blue: 0.0784)]
-        case .signal: [Color(red: 0.2627, green: 0.0706, blue: 0.1569), Color(red: 0.5020, green: 0.1098, blue: 0.2118), Color(red: 0.1333, green: 0.0824, blue: 0.1569)]
-        case .ember: [Color(red: 0.4588, green: 0.1922, blue: 0.1490), Color(red: 0.7216, green: 0.2941, blue: 0.1804), Color(red: 0.2549, green: 0.0745, blue: 0.1569)]
-        case .vault: [Color(red: 0.2039, green: 0.1608, blue: 0.0980), Color(red: 0.1294, green: 0.1137, blue: 0.0863), Color(red: 0.0667, green: 0.0667, blue: 0.0627)]
-        case .zen: [Color(red: 0.1882, green: 0.2039, blue: 0.2196), Color(red: 0.1255, green: 0.1451, blue: 0.1608), Color(red: 0.0627, green: 0.0784, blue: 0.0902)]
-        case .nebula: [Color(red: 0.2078, green: 0.0902, blue: 0.3647), Color(red: 0.2510, green: 0.1765, blue: 0.6510), Color(red: 0.0745, green: 0.1176, blue: 0.2941)]
         }
     }
 
@@ -262,14 +206,6 @@ extension KinetiqVisualTheme {
         case .anime: 24
         case .aurora: 27
         case .nocturne: 12
-                case .studio: 14
-        case .prism: 29
-        case .atelier: 4
-        case .signal: 18
-        case .ember: 22
-        case .vault: 6
-        case .zen: 7
-        case .nebula: 30
         }
     }
     var dockCornerRadius: CGFloat {
@@ -279,14 +215,6 @@ extension KinetiqVisualTheme {
         case .anime: 25
         case .aurora: 34
         case .nocturne: 15
-                case .studio: 17
-        case .prism: 30
-        case .atelier: 6
-        case .signal: 20
-        case .ember: 26
-        case .vault: 9
-        case .zen: 10
-        case .nebula: 34
         }
     }
     var heroHeight: CGFloat {
@@ -296,14 +224,6 @@ extension KinetiqVisualTheme {
         case .anime: 270
         case .aurora: 290
         case .nocturne: 215
-                case .studio: 284
-        case .prism: 338
-        case .atelier: 344
-        case .signal: 241
-        case .ember: 285
-        case .vault: 265
-        case .zen: 250
-        case .nebula: 315
         }
     }
     var eyebrow: String {
@@ -313,14 +233,6 @@ extension KinetiqVisualTheme {
         case .anime: "YOUR NEXT OBSESSION"
         case .aurora: "DISCOVER WITHOUT LIMITS"
         case .nocturne: "JUST YOU AND THE STORY"
-                case .studio: "YOUR PERSONAL PREMIERE"
-        case .prism: "BEYOND THE FRAME"
-        case .atelier: "A COLLECTION, CURATED"
-        case .signal: "TUNED TO YOU"
-        case .ember: "ON TO THE NEXT ARC"
-        case .vault: "YOUR COLLECTION. YOUR RULES."
-        case .zen: "A LITTLE LESS NOISE"
-        case .nebula: "DISCOVER NEW WORLDS"
         }
     }
     var homeHeadline: String {
@@ -330,14 +242,6 @@ extension KinetiqVisualTheme {
         case .anime: "Find your next favorite."
         case .aurora: "Follow your curiosity."
         case .nocturne: "Less noise. More story."
-                case .studio: "Everything, in view."
-        case .prism: "Stories in every shade."
-        case .atelier: "Discover with intention."
-        case .signal: "Find it. Play it."
-        case .ember: "Your story starts here."
-        case .vault: "Made for your collection."
-        case .zen: "A quieter way to watch."
-        case .nebula: "Follow the unknown."
         }
     }
     var heroHeadline: String {
@@ -347,14 +251,6 @@ extension KinetiqVisualTheme {
         case .anime: "Your next\nbig adventure."
         case .aurora: "A whole universe\nof discoveries."
         case .nocturne: "Press play.\nDisappear awhile."
-                case .studio: "A home for\nevery screen."
-        case .prism: "One universe.\nInfinite stories."
-        case .atelier: "Stories worth\nstaying for."
-        case .signal: "What are you\nwatching next?"
-        case .ember: "Every episode.\nEvery emotion."
-        case .vault: "Everything yours.\nAll in one place."
-        case .zen: "Stay with\nthe story."
-        case .nebula: "A universe of\nnew favorites."
         }
     }
     var heroDescription: String {
@@ -364,14 +260,6 @@ extension KinetiqVisualTheme {
         case .anime: "New worlds and familiar favorites await."
         case .aurora: "Explore the unexpected, your way."
         case .nocturne: "Your media, without distractions."
-                case .studio: "Your personal media, organized beautifully."
-        case .prism: "Find your next great watch, with color and clarity."
-        case .atelier: "An editorial home for unforgettable cinema."
-        case .signal: "A faster path to the media that matters."
-        case .ember: "Dive into a story, a world, a new favorite."
-        case .vault: "Your personal media, front and center."
-        case .zen: "A considered experience for every moment."
-        case .nebula: "Bring your favorite stories into orbit."
         }
     }
     var heroSymbol: String {
@@ -381,25 +269,9 @@ extension KinetiqVisualTheme {
         case .anime: "sparkles.tv.fill"
         case .aurora: "sparkles.rectangle.stack.fill"
         case .nocturne: "play.square.stack.fill"
-                case .studio: "play.rectangle.fill"
-        case .prism: "sparkles.tv.fill"
-        case .atelier: "theatermasks.fill"
-        case .signal: "bolt.fill"
-        case .ember: "flame.fill"
-        case .vault: "externaldrive.fill"
-        case .zen: "circle.grid.2x2"
-        case .nebula: "moon.stars.fill"
         }
     }
-    var usesPosterGrid: Bool { [.cinema, .anime, .studio, .prism, .ember, .signal].contains(self) }
-}
-
-extension KinetiqVisualTheme {
-    var isEditorial: Bool { [.cinema, .atelier, .vault].contains(self) }
-    var isQuiet: Bool { [.nocturne, .zen, .atelier].contains(self) }
-    var isAtmospheric: Bool { [.aurora, .prism, .nebula].contains(self) }
-    var isEnergetic: Bool { [.anime, .ember, .signal].contains(self) }
-    var preferredFontDesign: Font.Design { isEditorial ? .serif : (isEnergetic ? .rounded : .default) }
+    var usesPosterGrid: Bool { self == .cinema || self == .anime }
 }
 
 // Background is behind the main app only, never over an AVPlayer surface.
@@ -427,7 +299,7 @@ struct KinetiqExperienceBackground: View {
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
-                    if theme.isAtmospheric || theme.isEnergetic {
+                    if theme == .aurora || theme == .anime {
                         Circle()
                             .fill(theme.accent.opacity(theme == .anime ? 0.18 : 0.14))
                             .frame(width: 320, height: 320)
@@ -435,7 +307,7 @@ struct KinetiqExperienceBackground: View {
                             .offset(x: geometry.size.width * 0.35,
                                     y: -geometry.size.height * 0.27)
                     }
-                    if theme.isEditorial {
+                    if theme == .cinema {
                         LinearGradient(
                             colors: [.black.opacity(0.26), .clear, .black.opacity(0.65)],
                             startPoint: .top, endPoint: .bottom
