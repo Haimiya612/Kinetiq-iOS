@@ -444,6 +444,13 @@ struct HomeView: View {
                 }
                 librarySection.entrance(appeared, delay: 0.16)
                 heroCard.entrance(appeared, delay: 0.22)
+            case .studio, .prism, .atelier, .signal, .ember, .vault, .zen, .nebula:
+                introduction.entrance(appeared, delay: 0.04)
+                heroCard.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                librarySection.entrance(appeared, delay: 0.22)
             }
         }
     }
