@@ -3233,6 +3233,12 @@ struct ModuleBrowserView: View {
 
     let source: ModuleSourceOption
 
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
+
     @StateObject private var packageStore =
         ModulePackageStore.shared
     @StateObject private var repositoryTrustStore =
@@ -3329,6 +3335,7 @@ struct ModuleBrowserView: View {
                 animeCatalogue
             }
         }
+        .background(KinetiqExperienceBackground())
         .task(id: runtimeIdentity) {
             catalogueSection = ModuleBrowserPreferences.section(for: source.id)
             await prepareRuntime()
@@ -3497,7 +3504,8 @@ struct ModuleBrowserView: View {
     // MARK: Anime Catalogue
 
     private var animeCatalogue: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: theme == .cinema ? 8 : 0) {
+            catalogueExperienceHeader
             Picker("Anime collection", selection: $catalogueSection) {
                 ForEach(ModuleCatalogueSection.allCases) { section in
                     Text(section.rawValue).tag(section)
@@ -3599,19 +3607,51 @@ struct ModuleBrowserView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var catalogueExperienceHeader: some View {
+        HStack(spacing: 12) {
+            Image(systemName: theme.heroSymbol)
+                .font(.system(size: theme == .anime ? 27 : 20, weight: .semibold))
+                .foregroundStyle(KinetiqPalette.accent)
+                .frame(width: 48, height: 48)
+                .background(theme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(theme == .cinema ? "SCREENING ROOM" :
+                     theme == .anime ? "ANIME DISCOVERY" :
+                     theme == .aurora ? "EXPLORE THE UNEXPECTED" :
+                     theme == .nocturne ? "YOUR QUIET CORNER" : "YOUR SOURCE")
+                    .font(.system(size: 10, weight: .heavy)).tracking(1.7)
+                    .foregroundStyle(KinetiqPalette.accent)
+                Text(source.title)
+                    .font(.system(size: theme == .cinema ? 22 : 19,
+                                  weight: .semibold,
+                                  design: theme == .cinema ? .serif : .rounded))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 1)
+        }
+        .padding(13)
+        .background(theme.cardBackground,
+                    in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+    }
+
     // Compatible modules can provide genuine, source-owned Home shelves.
     // Older modules retain saved entries and explicitly labeled search
     // shortcuts; Kinetiq never invents trending or rating data.
     private var exploreContent: some View {
         VStack(alignment: .leading, spacing: 21) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("DISCOVER ON YOUR SOURCE")
+                Text(theme == .cinema ? "CURATED FOR YOUR SCREEN" :
+                     theme == .anime ? "ANIME PULSE" : "DISCOVER ON YOUR SOURCE")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
                     .foregroundStyle(KinetiqPalette.accent)
 
-                Text("Explore anime")
-                    .font(.system(size: 27, weight: .bold))
+                Text(theme == .cinema ? "Explore the catalogue" : "Explore anime")
+                    .font(.system(size: theme == .cinema ? 32 : 27,
+                                  weight: .bold, design: theme == .cinema ? .serif : .rounded))
 
                 Text("Search results come directly from \(source.title). Choose a topic or search for a title.")
                     .font(.subheadline)
@@ -4016,8 +4056,8 @@ struct ModuleBrowserView: View {
         .padding(.horizontal, 15)
         .padding(.vertical, 13)
         .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 16)
+            theme.cardBackground,
+            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius)
         )
         .padding(.horizontal, 16)
         .padding(.top, 14)
