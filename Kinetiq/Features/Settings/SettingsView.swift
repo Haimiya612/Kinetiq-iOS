@@ -221,6 +221,9 @@ struct SettingsView: View {
 
     @StateObject private var whatsNewStore = WhatsNewStore()
     @State private var showingWhatsNew = false
+    @State private var showingThemeGallery = false
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
@@ -240,11 +243,39 @@ struct SettingsView: View {
                 // MARK: Appearance
 
                 Section("Appearance") {
+                    Button {
+                        showingThemeGallery = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "paintpalette.fill")
+                                .font(.title3)
+                                .foregroundStyle(KinetiqPalette.accent)
+                                .frame(width: 38, height: 38)
+                                .background(KinetiqPalette.accent.opacity(0.14),
+                                            in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Themes")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(KinetiqVisualTheme(rawValue: visualThemeRawValue)?.name ?? "Signature")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Choose an app-wide experience and motion intensity")
+
                     VStack(alignment: .leading, spacing: 9) {
-                        Text("Theme")
+                        Text("System appearance")
                             .font(.subheadline.weight(.semibold))
 
-                        Picker("Theme", selection: $appearanceRawValue) {
+                        Picker("System appearance", selection: $appearanceRawValue) {
                             ForEach(AppAppearance.allCases) { appearance in
                                 Text(appearance.title)
                                     .tag(appearance.rawValue)
@@ -397,11 +428,18 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .scrollContentBackground(.hidden)
+            .background(KinetiqExperienceBackground())
             .task {
                 await whatsNewStore.load()
             }
             .sheet(isPresented: $showingWhatsNew) {
                 WhatsNewView(releases: whatsNewStore.eligibleReleases)
+            }
+            .sheet(isPresented: $showingThemeGallery) {
+                KinetiqThemeGallery()
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -767,5 +805,164 @@ struct WhatsNewView: View {
             }
         }
         .padding(.bottom, 10)
+    }
+}
+
+// MARK: - Batch 06C: Theme gallery and motion preferences
+// Only accessed through Settings → Appearance → Themes.
+@MainActor
+private struct KinetiqThemeGallery: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var chosenTheme = KinetiqVisualTheme.signature.rawValue
+    @AppStorage(KinetiqMotionMode.storageKey)
+    private var chosenMotion = KinetiqMotionMode.balanced.rawValue
+
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: chosenTheme) ?? .signature
+    }
+    private var motion: KinetiqMotionMode {
+        KinetiqMotionMode(rawValue: chosenMotion) ?? .balanced
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 22) {
+                    hero
+                    Text("CHOOSE YOUR EXPERIENCE")
+                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                        .tracking(1.8)
+                        .foregroundStyle(.white.opacity(0.67))
+                        .padding(.top, 4)
+                    ForEach(KinetiqVisualTheme.allCases) { choice in
+                        themeCard(choice)
+                    }
+                    motionSection
+                    Text("Theme presets redesign the app layout, color family and supported player surfaces without changing saved media, modules or account data. iOS Reduce Motion takes precedence.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .padding(.bottom, 20)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            }
+            .background(theme.backdrop.ignoresSafeArea())
+            .navigationTitle("Themes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                        .tint(theme.accent)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var hero: some View {
+        ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: 28)
+                .fill(LinearGradient(colors: [theme.highlight.opacity(0.69), theme.accent.opacity(0.44), theme.backdrop],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            HStack {
+                Spacer()
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.system(size: 92))
+                    .rotationEffect(.degrees(-14))
+                    .foregroundStyle(.white.opacity(0.20))
+                    .padding(18)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("MAKE IT YOURS")
+                    .font(.system(size: 10, weight: .heavy)).tracking(2.2)
+                Text("A new look for every mood.")
+                    .font(.system(size: 27, weight: .bold, design: .rounded))
+                Text("Curated colors. Native controls. Your library.")
+                    .font(.subheadline).foregroundStyle(.white.opacity(0.85))
+            }
+            .foregroundStyle(.white)
+            .padding(22)
+        }
+        .frame(height: 182)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func themeCard(_ option: KinetiqVisualTheme) -> some View {
+        let isCurrent = option == theme
+        return Button {
+            withAnimation(reduceMotion ? nil : motion.animation) {
+                chosenTheme = option.rawValue
+            }
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 15)
+                        .fill(LinearGradient(colors: [option.highlight, option.accent, option.backdrop],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: option.symbol)
+                        .font(.system(size: 25, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 63, height: 64)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(option.name)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(option.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.65))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: isCurrent ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isCurrent ? option.accent : .white.opacity(0.30))
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(option.cardSurface, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20)
+                .stroke(isCurrent ? option.accent.opacity(0.8) : .white.opacity(0.08), lineWidth: isCurrent ? 1.5 : 1))
+            .scaleEffect(isCurrent && !reduceMotion && motion == .expressive ? 1.005 : 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(option.name) theme")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    private var motionSection: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Label("Motion intensity", systemImage: "waveform.path")
+                .font(.headline)
+                .foregroundStyle(.white)
+            HStack(spacing: 7) {
+                ForEach(KinetiqMotionMode.allCases) { choice in
+                    Button {
+                        withAnimation(reduceMotion ? nil : choice.animation) {
+                            chosenMotion = choice.rawValue
+                        }
+                    } label: {
+                        Text(choice.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(chosenMotion == choice.rawValue ? .black : .white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(chosenMotion == choice.rawValue ? theme.accent : .white.opacity(0.09),
+                                        in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if reduceMotion {
+                Text("Reduce Motion is enabled in iOS Accessibility. Kinetiq will keep animations minimal.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.62))
+            }
+        }
+        .padding(16)
+        .background(theme.cardSurface, in: RoundedRectangle(cornerRadius: 20))
     }
 }
