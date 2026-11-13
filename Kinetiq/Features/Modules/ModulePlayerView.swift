@@ -4068,6 +4068,25 @@ private struct KinetiqModuleLoadingScene: View {
         return 2
     }
 
+    // When the module player first appears, its video view ignores the safe
+    // area but the iPhone clock and Dynamic Island are still visible.
+    // Measure the actual window inset, not a hard-coded device model.
+    private var windowSafeInsets: UIEdgeInsets {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        return windows.first(where: { $0.isKeyWindow })?.safeAreaInsets
+            ?? windows.first?.safeAreaInsets
+            ?? .zero
+    }
+
+    private func safeLoadingTop(_ geometry: GeometryProxy) -> CGFloat {
+        let inset = max(geometry.safeAreaInsets.top, windowSafeInsets.top)
+        let safe = inset > 0 ? inset :
+            (UIDevice.current.userInterfaceIdiom == .phone ? 59 : 24)
+        return safe + 18
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -4085,7 +4104,11 @@ private struct KinetiqModuleLoadingScene: View {
                         VStack(spacing: 22) {
                             loadingEmblem
                             VStack(spacing: 8) {
-                                Text("GETTING YOUR STREAM READY")
+                                Text(theme == .cinema ? "PREPARING YOUR SCREENING" :
+                                     theme == .anime ? "YOUR NEXT EPISODE AWAITS" :
+                                     theme == .aurora ? "PREPARING YOUR EXPERIENCE" :
+                                     theme == .nocturne ? "FOCUSING ON YOUR STORY" :
+                                     "GETTING YOUR STREAM READY")
                                     .font(.system(size: 10, weight: .heavy, design: .rounded))
                                     .tracking(2.3)
                                     .foregroundStyle(theme.accent)
@@ -4124,6 +4147,8 @@ private struct KinetiqModuleLoadingScene: View {
                     Spacer(minLength: 4)
                     footer
                 }
+                .padding(.top, safeLoadingTop(geometry))
+                .padding(.bottom, max(geometry.safeAreaInsets.bottom, windowSafeInsets.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -4157,7 +4182,6 @@ private struct KinetiqModuleLoadingScene: View {
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 23)
-        .padding(.top, 22)
     }
 
     private var loadingEmblem: some View {

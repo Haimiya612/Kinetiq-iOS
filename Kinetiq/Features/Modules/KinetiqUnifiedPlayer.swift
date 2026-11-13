@@ -14,6 +14,14 @@ struct KinetiqUnifiedPlayerChrome: View {
         let selected: Bool
     }
 
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRaw = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
+    }
+    private var playerAccent: Color {
+        theme == .signature ? KinetiqPalette.cyan : theme.accent
+    }
     let safeAreaInsets: EdgeInsets
     let title: String
     let playing: Bool
@@ -73,13 +81,18 @@ struct KinetiqUnifiedPlayerChrome: View {
                 .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("NOW PLAYING")
+                Text(theme == .cinema ? "NOW SHOWING" :
+                     theme == .anime ? "ANIME PULSE" :
+                     theme == .aurora ? "YOUR STREAM" :
+                     theme == .nocturne ? "FOCUS MODE" : "NOW PLAYING")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .tracking(1.8)
-                    .foregroundStyle(KinetiqPalette.cyan)
+                    .foregroundStyle(playerAccent)
 
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: theme == .cinema ? 16 : 14,
+                                  weight: .semibold,
+                                  design: theme == .cinema ? .serif : .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
@@ -88,8 +101,19 @@ struct KinetiqUnifiedPlayerChrome: View {
 
             airPlayControl
                 .frame(width: 40, height: 40)
-                .background(.black.opacity(0.34), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                .background {
+                    if theme == .cinema || theme == .nocturne {
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(.black.opacity(0.68))
+                    } else {
+                        Circle().fill(.black.opacity(0.34))
+                    }
+                }
+                .overlay {
+                    if theme == .anime {
+                        Circle().strokeBorder(playerAccent.opacity(0.5), lineWidth: 1)
+                    }
+                }
                 .accessibilityLabel("AirPlay")
 
             if pictureInPictureAvailable {
@@ -118,8 +142,19 @@ struct KinetiqUnifiedPlayerChrome: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 40, height: 40)
-                .background(.black.opacity(0.34), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 1))
+                .background {
+                    if theme == .cinema || theme == .nocturne {
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(.black.opacity(0.68))
+                    } else {
+                        Circle().fill(.black.opacity(0.34))
+                    }
+                }
+                .overlay {
+                    if theme == .anime {
+                        Circle().strokeBorder(playerAccent.opacity(0.5), lineWidth: 1)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -137,10 +172,33 @@ struct KinetiqUnifiedPlayerChrome: View {
                     .font(.system(size: 25, weight: .bold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 72, height: 72)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().fill(.black.opacity(0.18)))
-                    .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
+                    .frame(width: theme == .nocturne ? 64 : 72,
+                           height: theme == .nocturne ? 64 : 72)
+                    .background {
+                        if theme == .cinema {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(.black.opacity(0.82))
+                        } else if theme == .anime {
+                            Circle().fill(LinearGradient(colors: [
+                                theme.accent.opacity(0.86),
+                                theme.highlight.opacity(0.77)
+                            ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        } else if theme == .nocturne {
+                            Circle().fill(.black.opacity(0.66))
+                        } else {
+                            Circle().fill(.ultraThinMaterial)
+                        }
+                    }
+                    .overlay {
+                        if theme == .cinema {
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(.white.opacity(0.3), lineWidth: 1)
+                        } else {
+                            Circle().strokeBorder(playerAccent.opacity(
+                                theme == .anime ? 0.85 : 0.22
+                            ), lineWidth: theme == .anime ? 2 : 1)
+                        }
+                    }
                     .shadow(color: .black.opacity(0.28), radius: 18, y: 7)
             }
             .accessibilityLabel(playing ? "Pause" : "Play")
@@ -183,7 +241,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                     in: 0...max(duration.isFinite ? duration : 1, 1),
                     onEditingChanged: onSeekEditingChanged
                 )
-                .tint(KinetiqPalette.cyan)
+                .tint(playerAccent)
                 .accessibilityLabel("Playback position")
 
                 HStack {
@@ -215,8 +273,8 @@ struct KinetiqUnifiedPlayerChrome: View {
                     }
                     .foregroundStyle(
                         panel.selected
-                            ? KinetiqPalette.cyan
-                            : .white.opacity(0.92)
+                            ? playerAccent
+                            : .white.opacity(theme == .nocturne ? 0.72 : 0.92)
                     )
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
@@ -228,10 +286,28 @@ struct KinetiqUnifiedPlayerChrome: View {
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .background(Capsule().fill(.black.opacity(0.27)))
-        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+        .background {
+            if theme == .cinema || theme == .nocturne {
+                RoundedRectangle(cornerRadius: theme == .cinema ? 8 : 14)
+                    .fill(.black.opacity(theme == .nocturne ? 0.87 : 0.77))
+            } else if theme == .anime {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(playerAccent.opacity(0.44), lineWidth: 1)
+                    }
+            } else {
+                Capsule().fill(.ultraThinMaterial)
+            }
+        }
+        .overlay {
+            if theme == .cinema || theme == .nocturne {
+                RoundedRectangle(cornerRadius: theme == .cinema ? 8 : 14)
+                    .strokeBorder(.white.opacity(theme == .cinema ? 0.24 : 0.08), lineWidth: 1)
+            }
+        }
+        .shadow(color: .black.opacity(0.22), radius: theme == .nocturne ? 5 : 16, y: 6)
     }
 }
 

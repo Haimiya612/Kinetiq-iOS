@@ -3648,66 +3648,105 @@ struct ModuleBrowserView: View {
     private var featuredModuleHero: some View {
         Group {
             if let entry = featuredEntry {
-                Button {
-                    selectedItem = entry.anime
-                } label: {
-                    ZStack(alignment: .bottomLeading) {
-                        ModuleAnimeArtworkView(url: entry.anime.imageURL)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: theme == .cinema ? 300 : theme == .anime ? 272 : theme == .nocturne ? 218 : 255)
-                            .clipped()
-                        LinearGradient(
-                            colors: [.black.opacity(0.03), .black.opacity(0.24), .black.opacity(0.94)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label(entry.playbackFraction > 0 && !entry.isCompleted
-                                  ? "PICK UP WHERE YOU LEFT OFF" : "FROM YOUR COLLECTION",
-                                  systemImage: "play.circle.fill")
-                                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                                .tracking(1.5)
-                                .foregroundStyle(theme.accent)
-                            Text(entry.title)
-                                .font(.system(size: theme == .cinema ? 28 : 25, weight: .bold,
-                                              design: theme == .cinema ? .serif : .rounded))
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                            HStack(spacing: 8) {
-                                Image(systemName: "play.fill")
-                                Text(entry.playbackFraction > 0 && !entry.isCompleted ? "Continue watching" : "View episodes")
+                Button { selectedItem = entry.anime } label: {
+                    Group {
+                        if theme == .nocturne || theme == .aurora {
+                            HStack(spacing: 15) {
+                                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                                    .frame(width: theme == .nocturne ? 94 : 116,
+                                           height: theme == .nocturne ? 119 : 150)
+                                    .clipShape(RoundedRectangle(cornerRadius: theme == .nocturne ? 5 : 19))
+                                VStack(alignment: .leading, spacing: 9) {
+                                    Text(theme == .nocturne ? "PICK UP YOUR STORY" : "CONTINUE YOUR JOURNEY")
+                                        .font(.system(size: 9, weight: .heavy, design: .rounded))
+                                        .tracking(1.5)
+                                        .foregroundStyle(theme.accent)
+                                    Text(entry.title)
+                                        .font(.system(size: theme == .nocturne ? 19 : 21, weight: .bold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(3)
+                                        .multilineTextAlignment(.leading)
+                                    Label(entry.playbackFraction > 0 && !entry.isCompleted
+                                          ? "Continue watching" : "View episodes", systemImage: "play.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(theme.accent)
+                                    if entry.playbackFraction > 0 && !entry.isCompleted {
+                                        ProgressView(value: entry.playbackFraction).tint(theme.accent)
+                                    }
+                                }
+                                Spacer(minLength: 0)
                             }
-                            .font(.system(size: 13, weight: .bold))
-                            .padding(.horizontal, 15)
-                            .padding(.vertical, 11)
-                            .background(theme.accent, in: Capsule())
-                            .foregroundStyle(.black)
-                            if entry.playbackFraction > 0 && !entry.isCompleted {
-                                ProgressView(value: entry.playbackFraction)
-                                    .tint(theme.accent)
-                                    .padding(.top, 3)
+                            .padding(theme == .aurora ? 12 : 5)
+                            .background {
+                                if theme == .aurora {
+                                    RoundedRectangle(cornerRadius: 28)
+                                        .fill(LinearGradient(colors: [
+                                            theme.accent.opacity(0.24),
+                                            theme.highlight.opacity(0.12),
+                                            theme.cardBackground
+                                        ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                }
+                            }
+                            .overlay(alignment: .bottom) {
+                                if theme == .nocturne {
+                                    Rectangle().fill(theme.accent.opacity(0.18)).frame(height: 1)
+                                }
+                            }
+                        } else {
+                            ZStack(alignment: .bottomLeading) {
+                                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                                    .frame(height: theme == .cinema ? 340 : theme == .anime ? 288 : 258)
+                                    .frame(maxWidth: .infinity)
+                                    .clipped()
+                                LinearGradient(colors: [.clear, .black.opacity(0.28), .black.opacity(0.94)],
+                                               startPoint: .top, endPoint: .bottom)
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Label(entry.playbackFraction > 0 && !entry.isCompleted
+                                          ? "CONTINUE WATCHING" : "FROM YOUR WATCHLIST",
+                                          systemImage: theme == .anime ? "sparkles.tv.fill" : "film")
+                                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                        .tracking(1.7)
+                                        .foregroundStyle(theme.accent)
+                                    Text(entry.title)
+                                        .font(.system(size: theme == .cinema ? 32 : 25, weight: .bold,
+                                                      design: theme == .cinema ? .serif : .rounded))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                    Label(entry.playbackFraction > 0 && !entry.isCompleted
+                                          ? "Continue watching" : "View episodes", systemImage: "play.fill")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(theme == .cinema ? Color.black : .white)
+                                        .padding(.horizontal, 15)
+                                        .padding(.vertical, 11)
+                                        .background(theme == .cinema ? Color.white : theme.accent,
+                                                    in: RoundedRectangle(cornerRadius: theme == .cinema ? 6 : 16))
+                                    if entry.playbackFraction > 0 && !entry.isCompleted {
+                                        ProgressView(value: entry.playbackFraction).tint(theme.accent)
+                                    }
+                                }
+                                .padding(20)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                                    .strokeBorder(theme.accent.opacity(theme == .anime ? 0.48 : 0.13), lineWidth: 1)
                             }
                         }
-                        .foregroundStyle(.white)
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: theme.cardCornerRadius)
-                            .strokeBorder(theme.accent.opacity(theme == .anime ? 0.42 : 0.14), lineWidth: 1)
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open \(entry.title), \(entry.playbackFraction > 0 ? "continue watching" : "view episodes")")
+                .accessibilityLabel("Open \(entry.title)")
             } else {
                 HStack(spacing: 13) {
                     Image(systemName: theme.heroSymbol)
                         .font(.system(size: 27, weight: .medium))
                         .foregroundStyle(theme.accent)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(theme == .cinema ? "Now showing" :
+                        Text(theme == .cinema ? "Your screening room" :
                              theme == .anime ? "Your anime universe" :
-                             theme == .nocturne ? "Find your next story" :
+                             theme == .nocturne ? "Just you and the story" :
                              theme == .aurora ? "Explore without limits" : "Discover your favorites")
                             .font(.system(size: 22, weight: .bold,
                                           design: theme == .cinema ? .serif : .rounded))
@@ -3718,11 +3757,11 @@ struct ModuleBrowserView: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, theme == .nocturne ? 14 : 21)
+                .padding(.vertical, theme == .nocturne ? 11 : 22)
             }
         }
         .padding(.horizontal, embeddedInHome ? 0 : 14)
-        .padding(.top, 10)
+        .padding(.top, theme == .nocturne ? 3 : 10)
     }
 
     private var catalogueExperienceHeader: some View {
@@ -3793,33 +3832,7 @@ struct ModuleBrowserView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
-                    spacing: 10
-                ) {
-                    ForEach(["Romance", "Action", "Fantasy", "Comedy", "Mystery", "Adventure"], id: \.self) { term in
-                        Button {
-                            startSuggestedSearch(term)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 12, weight: .bold))
-                                Text(term)
-                                    .font(.system(size: 13, weight: .semibold))
-                                Spacer(minLength: 0)
-                            }
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 12)
-                            .frame(height: 51)
-                            .background(
-                                theme.cardBackground,
-                                in: RoundedRectangle(cornerRadius: theme == .cinema ? 6 : theme.cardCornerRadius)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Search \(term) on \(source.title)")
-                    }
-                }
+                genreSuggestions
             }
 
             let inProgress = animeCollection.continueWatching.filter {
@@ -3854,6 +3867,51 @@ struct ModuleBrowserView: View {
         }
         .padding(.horizontal, embeddedInHome ? 0 : 16)
         .padding(.vertical, embeddedInHome ? 15 : 22)
+    }
+
+    private var genreSuggestions: some View {
+        let genres = ["Romance", "Action", "Fantasy", "Comedy", "Mystery", "Adventure"]
+        return Group {
+            if theme == .cinema || theme == .nocturne {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(genres, id: \.self) { genre in genreButton(genre) }
+                    }
+                    .padding(.vertical, 2)
+                }
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                          spacing: theme == .anime ? 13 : 10) {
+                    ForEach(genres, id: \.self) { genre in genreButton(genre) }
+                }
+            }
+        }
+    }
+
+    private func genreButton(_ genre: String) -> some View {
+        Button { startSuggestedSearch(genre) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: theme == .anime ? "sparkles" : "magnifyingglass")
+                    .foregroundStyle(theme.accent)
+                Text(genre).fixedSize(horizontal: true, vertical: false)
+                if theme != .cinema && theme != .nocturne { Spacer(minLength: 0) }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 15)
+            .frame(height: theme == .nocturne ? 42 : theme == .cinema ? 44 : 53)
+            .background(theme.cardBackground, in: RoundedRectangle(
+                cornerRadius: theme == .cinema ? 5 : theme.cardCornerRadius
+            ))
+            .overlay {
+                if theme == .anime {
+                    RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                        .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Search \(genre) on \(source.title)")
     }
 
     private func exploreShelf(
@@ -4275,6 +4333,7 @@ struct ModuleAnimeDetailsView: View {
     @State private var episodes: [ModuleAnimeEpisode] = []
     @State private var episodeSearch = ""
     @State private var episodeFilter: ModuleEpisodeFilter = .all
+    @State private var synopsisExpanded = false
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
     @State private var activeLaunch: ModuleEpisodeLaunch?
@@ -4445,13 +4504,39 @@ struct ModuleAnimeDetailsView: View {
         VStack(alignment: .leading, spacing: 12) {
             ModuleAnimeArtworkView(url: details?.imageURL ?? item.imageURL)
                 .frame(maxWidth: .infinity)
-                .frame(height: detailTheme == .cinema ? 305 : detailTheme == .anime ? 270 : 246)
+                .frame(height: detailTheme == .cinema ? 318 : detailTheme == .anime ? 280 :
+                        detailTheme == .nocturne ? 208 : 246)
                 .clipShape(RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
+                .overlay(alignment: .bottomLeading) {
+                    if detailTheme == .cinema || detailTheme == .anime {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(sourceName.uppercased())
+                                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                .tracking(1.6)
+                                .foregroundStyle(detailTheme.accent)
+                                .lineLimit(1)
+                            Text(details?.title ?? item.title)
+                                .font(.system(size: detailTheme == .cinema ? 29 : 25, weight: .bold,
+                                              design: detailTheme == .cinema ? .serif : .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(3)
+                            Text("\(episodes.count) available episodes")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(19)
+                        .background(LinearGradient(colors: [.black.opacity(0), .black.opacity(0.90)],
+                                                   startPoint: .top, endPoint: .bottom))
+                    }
+                }
 
-            Text(details?.title ?? item.title)
-                .font(.system(size: detailTheme == .cinema ? 28 : 24,
-                              weight: .bold, design: detailTheme == .cinema ? .serif : .rounded))
-                .fixedSize(horizontal: false, vertical: true)
+            if detailTheme != .cinema && detailTheme != .anime {
+                Text(details?.title ?? item.title)
+                    .font(.system(size: detailTheme == .nocturne ? 23 : 27,
+                                  weight: .bold, design: .rounded))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let continuation {
                 Button {
@@ -4478,12 +4563,22 @@ struct ModuleAnimeDetailsView: View {
             if let synopsis = details?.synopsis ?? item.synopsis,
                !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("Synopsis")
-                        .font(.system(size: 16, weight: .bold))
+                    HStack {
+                        Text("Synopsis").font(.system(size: 16, weight: .bold))
+                        Spacer()
+                        if synopsis.count > 300 {
+                            Button(synopsisExpanded ? "Show less" : "Read more") {
+                                synopsisExpanded.toggle()
+                            }
+                            .font(.caption.weight(.semibold))
+                            .tint(detailTheme.accent)
+                        }
+                    }
                     Text(synopsis)
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineSpacing(3)
+                        .lineLimit(synopsisExpanded ? nil : 5)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

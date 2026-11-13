@@ -580,41 +580,7 @@ private struct KinetiqPlaceholderView: View {
                         )
                 }
 
-                ZStack {
-                    RoundedRectangle(
-                        cornerRadius: theme.cardCornerRadius,
-                        style: .continuous
-                    )
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                accent.opacity(0.25),
-                                accent.opacity(0.06),
-                                theme.cardBackground
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                    Circle()
-                        .fill(accent.opacity(0.12))
-                        .frame(width: 190, height: 190)
-                        .blur(radius: 2)
-                        .offset(x: 100, y: -55)
-
-                    Image(systemName: symbol)
-                        .font(.system(size: 65, weight: .light))
-                        .foregroundStyle(accent)
-                        .scaleEffect(appeared ? 1 : 0.85)
-                }
-                .frame(height: 220)
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: theme.cardCornerRadius,
-                        style: .continuous
-                    )
-                )
+                offlineHero
 
                 Text("OFFLINE MEDIA MANAGEMENT IS IN DEVELOPMENT")
                     .font(
@@ -640,6 +606,87 @@ private struct KinetiqPlaceholderView: View {
             ) {
                 appeared = true
             }
+        }
+    }
+
+    // No mock downloads; each theme changes layout while accurately
+    // explaining that offline management is a roadmap feature.
+    @ViewBuilder
+    private var offlineHero: some View {
+        if theme == .nocturne {
+            HStack(spacing: 20) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 43, weight: .ultraLight))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 62)
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Offline. Without distractions.")
+                        .font(.system(size: 20, weight: .medium))
+                    Text("Downloaded media will appear here when offline support is implemented.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 52)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(theme.accent.opacity(0.18)).frame(height: 1)
+            }
+        } else if theme == .cinema {
+            ZStack(alignment: .bottomLeading) {
+                LinearGradient(colors: theme.stageColors,
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: "film.stack")
+                    .font(.system(size: 119, weight: .ultraLight))
+                    .foregroundStyle(.white.opacity(0.12))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: .topTrailing)
+                    .padding(15)
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("OFFLINE SCREENING ROOM")
+                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                        .tracking(2)
+                        .foregroundStyle(theme.accent)
+                    Text("Your collection, wherever you go.")
+                        .font(.system(size: 29, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                    Text("Downloads are not available in this build.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.77))
+                }
+                .padding(22)
+            }
+            .frame(height: 248)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                    .fill(LinearGradient(colors: [
+                        accent.opacity(theme == .anime ? 0.33 : 0.23),
+                        theme.highlight.opacity(0.14),
+                        theme.cardBackground
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Circle().fill(accent.opacity(0.14))
+                    .frame(width: 200, height: 200)
+                    .blur(radius: theme == .aurora ? 35 : 8)
+                    .offset(x: 100, y: -55)
+                VStack(spacing: 13) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 62, weight: .light))
+                        .foregroundStyle(accent)
+                        .scaleEffect(appeared ? 1 : 0.85)
+                    if theme == .anime {
+                        Text("OFFLINE ADVENTURES")
+                            .font(.caption.weight(.heavy))
+                            .tracking(2)
+                    } else if theme == .aurora {
+                        Text("Your media, on your terms.")
+                            .font(.headline)
+                    }
+                }
+            }
+            .frame(height: theme == .anime ? 250 : 220)
+            .clipShape(RoundedRectangle(cornerRadius: theme.cardCornerRadius))
         }
     }
 
@@ -1199,12 +1246,16 @@ struct ModuleGlobalFavoritesView: View {
         KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
     }
     @State private var search = ""
+    @State private var inProgressOnly = false
     @State private var selectedEntry: ModuleAnimeCollectionEntry?
 
     private var filtered: [ModuleAnimeCollectionEntry] {
         let value = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return collection.favorites }
-        return collection.favorites.filter {
+        let entries = inProgressOnly
+            ? collection.favorites.filter { $0.playbackFraction > 0 && !$0.isCompleted }
+            : collection.favorites
+        guard !value.isEmpty else { return entries }
+        return entries.filter {
             $0.title.localizedCaseInsensitiveContains(value) ||
             $0.sourceName.localizedCaseInsensitiveContains(value)
         }
@@ -1241,9 +1292,39 @@ struct ModuleGlobalFavoritesView: View {
                                     in: RoundedRectangle(cornerRadius: 15))
                     }
 
+                    if !collection.favorites.isEmpty {
+                        HStack(spacing: 9) {
+                            Button { inProgressOnly = false } label: {
+                                Label("All titles", systemImage: "square.grid.2x2")
+                                    .foregroundStyle(inProgressOnly ? Color.primary : theme.backdrop)
+                                    .padding(.horizontal, 12).padding(.vertical, 10)
+                                    .background(inProgressOnly ? theme.cardBackground : theme.accent, in: Capsule())
+                            }
+                            Button { inProgressOnly = true } label: {
+                                Label("Watching", systemImage: "play.circle")
+                                    .foregroundStyle(inProgressOnly ? theme.backdrop : Color.primary)
+                                    .padding(.horizontal, 12).padding(.vertical, 10)
+                                    .background(inProgressOnly ? theme.accent : theme.cardBackground, in: Capsule())
+                            }
+                            Spacer(minLength: 0)
+                            Text("\(filtered.count)")
+                                .font(.caption.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .buttonStyle(.plain)
+                    }
+
+                    if !inProgressOnly && search.isEmpty &&
+                       (theme == .cinema || theme == .anime),
+                       let spotlight = filtered.first {
+                        favoriteSpotlight(spotlight)
+                    }
+
                     if filtered.isEmpty {
                         ContentUnavailableView(
-                            collection.favorites.isEmpty ? "No Favorites Yet" : "No Matches",
+                            collection.favorites.isEmpty ? "No Favorites Yet" :
+                                inProgressOnly ? "Nothing In Progress" : "No Matches",
                             systemImage: "heart",
                             description: Text(
                                 collection.favorites.isEmpty
@@ -1311,8 +1392,20 @@ struct ModuleGlobalFavoritesView: View {
                                     .accessibilityLabel("Remove \(entry.title) from favorites")
                                 }
                                 .padding(12)
-                                .background(theme.cardBackground,
-                                            in: RoundedRectangle(cornerRadius: 19))
+                                .background {
+                                    if theme == .aurora {
+                                        RoundedRectangle(cornerRadius: 27)
+                                            .fill(.ultraThinMaterial)
+                                    } else if theme != .nocturne {
+                                        RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                                            .fill(theme.cardBackground)
+                                    }
+                                }
+                                .overlay(alignment: .bottom) {
+                                    if theme == .nocturne {
+                                        Rectangle().fill(theme.accent.opacity(0.17)).frame(height: 1)
+                                    }
+                                }
                             }
                         }
                         }
@@ -1327,6 +1420,49 @@ struct ModuleGlobalFavoritesView: View {
         .sheet(item: $selectedEntry) { entry in
             ModuleSavedAnimeDetailsHost(entry: entry)
         }
+    }
+
+    private func favoriteSpotlight(_ entry: ModuleAnimeCollectionEntry) -> some View {
+        Button { selectedEntry = entry } label: {
+            ZStack(alignment: .bottomLeading) {
+                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: theme == .cinema ? 264 : 228)
+                    .clipped()
+                LinearGradient(colors: [.clear, .black.opacity(0.38), .black.opacity(0.94)],
+                               startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 9) {
+                    Text(theme == .cinema ? "FEATURED FROM YOUR WATCHLIST" : "ANIME PULSE · FAVORITES")
+                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                        .tracking(1.4)
+                        .foregroundStyle(theme.accent)
+                    Text(entry.title)
+                        .font(.system(size: theme == .cinema ? 27 : 23, weight: .bold,
+                                      design: theme == .cinema ? .serif : .rounded))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                    Label(entry.playbackFraction > 0 && !entry.isCompleted
+                          ? "Continue watching" : "View episodes", systemImage: "play.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                    if entry.playbackFraction > 0 && !entry.isCompleted {
+                        ProgressView(value: entry.playbackFraction).tint(theme.accent)
+                    }
+                }
+                .padding(19)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: theme == .cinema ? 7 : 24))
+            .overlay {
+                if theme == .anime {
+                    RoundedRectangle(cornerRadius: 24)
+                        .strokeBorder(theme.accent.opacity(0.44), lineWidth: 1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(entry.title)")
     }
 
     private var posterGrid: some View {
