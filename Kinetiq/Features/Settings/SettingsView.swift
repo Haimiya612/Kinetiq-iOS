@@ -320,7 +320,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Episode Notifications") {
+                Section {
                     Toggle("iPhone episode notifications", isOn: $episodeAlertsEnabled)
                         .onChange(of: episodeAlertsEnabled) { _, enabled in
                             guard enabled else {
@@ -356,6 +356,8 @@ struct SettingsView: View {
                     if let episodeAlertStatus {
                         Text(episodeAlertStatus).font(.caption).foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Episode Notifications")
                 } footer: {
                     Text("Test alerts are labeled. Real release alerts need verified calendar data; remote push needs signed APNs.")
                 }

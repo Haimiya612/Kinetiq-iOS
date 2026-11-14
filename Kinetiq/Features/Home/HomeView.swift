@@ -276,7 +276,13 @@ struct HomeView: View {
     }
 
     // Search is a distinct destination; Explore is in the Home feed.
-    private func openSourceSearch() { onDiscover() }
+    private func openSourceSearch() {
+        if moduleSourceStore.isLocalLibrarySelected {
+            onOpenLibrary()
+        } else {
+            onDiscover()
+        }
+    }
 
     private func openSourceBrowser(_ source: ModuleSourceOption, search: Bool = false) {
         browseSourceInSearch = search
@@ -471,7 +477,6 @@ struct HomeView: View {
                 librarySection.entrance(appeared, delay: 0.22)
             case .anime:
                 introduction.entrance(appeared, delay: 0.04)
-                animeSpotlight.entrance(appeared, delay: 0.10)
                 if !continueWatching.isEmpty {
                     continueWatchingSection.entrance(appeared, delay: 0.16)
                 }
@@ -514,7 +519,6 @@ struct HomeView: View {
                 librarySection.entrance(appeared, delay: 0.22)
             case .ember:
                 introduction.entrance(appeared, delay: 0.04)
-                animeSpotlight.entrance(appeared, delay: 0.10)
                 if !continueWatching.isEmpty {
                     continueWatchingSection.entrance(appeared, delay: 0.16)
                 }
@@ -717,7 +721,7 @@ struct HomeView: View {
 
                 Button(action: openSourceSearch) {
                     HStack(spacing: 9) {
-                        Text("Explore Kinetiq")
+                        Text(moduleSourceStore.isLocalLibrarySelected ? "Import & browse videos" : "Explore Kinetiq")
                         Image(systemName: "arrow.right")
                     }
                     .font(.system(size: 12, weight: .bold))

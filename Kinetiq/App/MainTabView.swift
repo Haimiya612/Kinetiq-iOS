@@ -210,13 +210,6 @@ struct MainTabView: View {
                 onContinueWatching: openContinueWatching,
                 onOpenLibrary: openLibrary
             )
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                // Keep remote progress visible in local Home without
-                // covering the module browser and its search controls.
-                if moduleSourceStore.isLocalLibrarySelected {
-                    ModuleRemoteContinueWatchingShelf()
-                }
-            }
         }
     }
 
