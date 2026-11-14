@@ -77,6 +77,7 @@ struct MainTabView: View {
     @State private var requestedMediaID: String?
     @State private var showingLibrary = false
     @State private var activeSheet: HomeSheet?
+    @State private var notificationTitle: ModuleAnimeCollectionEntry?
 
     @State private var draggedTabPosition: CGFloat?
     @State private var dragStartPosition: CGFloat?
@@ -88,6 +89,24 @@ struct MainTabView: View {
 
     var body: some View {
         mainLayout
+            .onAppear(perform: openEpisodeNotification)
+            .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenEpisode)) { _ in
+                openEpisodeNotification()
+            }
+            .sheet(item: $notificationTitle) { entry in
+                ModuleSavedAnimeDetailsHost(entry: entry)
+            }
+    }
+
+    private func openEpisodeNotification() {
+        guard let route = KinetiqEpisodeAlerts.takePendingRoute() else { return }
+        if let entry = ModuleAnimeCollectionStore.shared.favorites.first(where: {
+            $0.sourceID == route.sourceID && $0.animeID == route.animeID
+        }) {
+            notificationTitle = entry
+        } else {
+            selectedTab = .favorites
+        }
     }
 
     // MARK: Main Layout
@@ -1298,13 +1317,17 @@ struct ModuleGlobalFavoritesView: View {
                                 Label("All titles", systemImage: "square.grid.2x2")
                                     .foregroundStyle(inProgressOnly ? Color.primary : theme.backdrop)
                                     .padding(.horizontal, 12).padding(.vertical, 10)
+                                    .frame(minHeight: 44)
                                     .background(inProgressOnly ? theme.cardBackground : theme.accent, in: Capsule())
+                                    .contentShape(Capsule())
                             }
                             Button { inProgressOnly = true } label: {
                                 Label("Watching", systemImage: "play.circle")
                                     .foregroundStyle(inProgressOnly ? theme.backdrop : Color.primary)
                                     .padding(.horizontal, 12).padding(.vertical, 10)
+                                    .frame(minHeight: 44)
                                     .background(inProgressOnly ? theme.accent : theme.cardBackground, in: Capsule())
+                                    .contentShape(Capsule())
                             }
                             Spacer(minLength: 0)
                             Text("\(filtered.count)")
@@ -1313,6 +1336,8 @@ struct ModuleGlobalFavoritesView: View {
                         }
                         .font(.system(size: 12, weight: .semibold))
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .zIndex(10)
                     }
 
                     if !inProgressOnly && search.isEmpty &&
@@ -1453,14 +1478,19 @@ struct ModuleGlobalFavoritesView: View {
                 .padding(19)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: theme == .cinema ? 264 : 228)
             .clipShape(RoundedRectangle(cornerRadius: theme == .cinema ? 7 : 24))
             .overlay {
                 if theme == .anime {
                     RoundedRectangle(cornerRadius: 24)
                         .strokeBorder(theme.accent.opacity(0.44), lineWidth: 1)
+                        .allowsHitTesting(false)
                 }
             }
+            .contentShape(RoundedRectangle(cornerRadius: theme == .cinema ? 7 : 24))
         }
+        .frame(height: theme == .cinema ? 264 : 228)
+        .contentShape(RoundedRectangle(cornerRadius: theme == .cinema ? 7 : 24))
         .buttonStyle(.plain)
         .accessibilityLabel("Open \(entry.title)")
     }

@@ -1489,6 +1489,15 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 for: KinetiqSubtitleSettings.shared.appearance, inPiP: true
             )
         }
+        if case .embedded(let choice) = captionChoice,
+           let item = player.currentItem,
+           item === subtitleOptionsItem,
+           let subtitleGroup,
+           let selected = subtitleOptions.first(where: { KinetiqCaptionLanguage($0) == choice }) {
+            player.appliesMediaSelectionCriteriaAutomatically = false
+            item.select(selected, in: subtitleGroup)
+            selectedSubtitle = item.currentMediaSelection.selectedMediaOption(in: subtitleGroup)
+        }
         guard pipCaptionRestore == nil,
               captionChoice != .off,
               let item = player.currentItem,
@@ -2384,25 +2393,26 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     // MARK: Stream Tracks and Metadata
 
     private func loadMediaOptions(for item: AVPlayerItem) async {
-        // Missing audio metadata must not prevent subtitle detection (or
-        // leave native subtitles enabled under an external subtitle overlay).
-        let audio: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(
-            for: .audible
-        )
-        let subtitles: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(
-            for: .legible
-        )
-
-        guard player.currentItem === item else { return }
+        // Late HLS renditions: retry native legible group after ready.
+        let audio: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(for: .audible)
+        var subtitles: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(for: .legible)
+        if subtitles?.options.isEmpty != false {
+            for delay in [420, 900] {
+                do { try await Task.sleep(for: .milliseconds(delay)) }
+                catch { return }
+                guard !Task.isCancelled, player.currentItem === item else { return }
+                let retry: AVMediaSelectionGroup? = try? await item.asset.loadMediaSelectionGroup(for: .legible)
+                if let retry, !retry.options.isEmpty { subtitles = retry; break }
+            }
+        }
+        guard !Task.isCancelled, player.currentItem === item else { return }
         audioGroup = audio
         subtitleGroup = subtitles
         audioOptions = audio?.options ?? []
         subtitleOptions = subtitles?.options ?? []
-
-        if let audio {
-            selectedAudio = item.currentMediaSelection.selectedMediaOption(in: audio)
-        }
+        selectedAudio = audio.flatMap { item.currentMediaSelection.selectedMediaOption(in: $0) }
         subtitleOptionsItem = item
+        if !subtitleOptions.isEmpty { note("Native subtitle tracks: \(subtitleOptions.count)") }
         refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
     }
 

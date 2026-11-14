@@ -1,5 +1,7 @@
 import SwiftUI
 import Foundation
+import UserNotifications
+import CryptoKit
 
 // MARK: - Release Notes Models
 
@@ -219,6 +221,11 @@ struct SettingsView: View {
     @StateObject private var whatsNewStore = WhatsNewStore()
     @State private var showingWhatsNew = false
     @State private var showingThemeGallery = false
+    @AppStorage(KinetiqEpisodeAlerts.enabledKey)
+    private var episodeAlertsEnabled = false
+    @AppStorage(KinetiqEpisodeAlerts.favoritesOnlyKey)
+    private var episodeAlertsFavoritesOnly = true
+    @State private var episodeAlertStatus: String?
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
 
@@ -311,6 +318,46 @@ struct SettingsView: View {
                     } label: {
                         Label("Subtitles", systemImage: "captions.bubble")
                     }
+                }
+
+                Section("Episode Notifications") {
+                    Toggle("iPhone episode notifications", isOn: $episodeAlertsEnabled)
+                        .onChange(of: episodeAlertsEnabled) { _, enabled in
+                            guard enabled else {
+                                episodeAlertStatus = "Episode notifications paused."
+                                return
+                            }
+                            Task {
+                                do {
+                                    let granted = try await KinetiqEpisodeAlerts.requestPermission()
+                                    if !granted { episodeAlertsEnabled = false }
+                                    episodeAlertStatus = granted
+                                        ? "Allowed: verified releases can be scheduled."
+                                        : "Permission denied. Check iOS Settings."
+                                } catch {
+                                    episodeAlertsEnabled = false
+                                    episodeAlertStatus = "Unable to request permission."
+                                }
+                            }
+                        }
+                    Toggle("Only titles in Favorites", isOn: $episodeAlertsFavoritesOnly)
+                        .disabled(!episodeAlertsEnabled)
+                    Button("Send test alert in 10 seconds", systemImage: "bell.badge") {
+                        Task {
+                            do {
+                                try await KinetiqEpisodeAlerts.schedulePreview()
+                                episodeAlertStatus = "Test scheduled. Lock the screen or switch apps."
+                            } catch {
+                                episodeAlertStatus = "Unable to schedule. Check permission."
+                            }
+                        }
+                    }
+                    .disabled(!episodeAlertsEnabled)
+                    if let episodeAlertStatus {
+                        Text(episodeAlertStatus).font(.caption).foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("Test alerts are labeled. Real release alerts need verified calendar data; remote push needs signed APNs.")
                 }
 
                 // MARK: Modules & Sources
@@ -1059,5 +1106,95 @@ private struct KinetiqThemeGallery: View {
         }
         .padding(16)
         .background(theme.cardSurface, in: RoundedRectangle(cornerRadius: 20))
+    }
+}
+// MARK: - Real iPhone Episode Notifications (06K.6B)
+
+@MainActor
+enum KinetiqEpisodeAlerts {
+    static let enabledKey = "kinetiq.episodeAlerts.enabled"
+    static let favoritesOnlyKey = "kinetiq.episodeAlerts.favoritesOnly"
+    static let didOpenEpisode = Notification.Name("kinetiq.episodeAlerts.openEpisode")
+    struct Route {
+        let sourceID: String
+        let animeID: String
+    }
+    private static var pendingRoute: Route?
+    static func takePendingRoute() -> Route? {
+        defer { pendingRoute = nil }
+        return pendingRoute
+    }
+    static func receiveResponse(userInfo: [AnyHashable: Any]) {
+        guard let sourceID = userInfo["sourceID"] as? String,
+              let animeID = userInfo["animeID"] as? String,
+              !sourceID.isEmpty, !animeID.isEmpty else { return }
+        pendingRoute = Route(sourceID: sourceID, animeID: animeID)
+        NotificationCenter.default.post(name: didOpenEpisode, object: nil)
+    }
+    static func requestPermission() async throws -> Bool {
+        try await UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound, .badge]
+        )
+    }
+
+    /// Only schedule verified dates; never invent episode release times.
+    @discardableResult
+    static func scheduleVerifiedEpisode(
+        animeTitle: String, episodeNumber: String?, episodeName: String?,
+        sourceID: String, animeID: String, releaseDate: Date
+    ) async throws -> Bool {
+        guard UserDefaults.standard.bool(forKey: enabledKey),
+              releaseDate > Date().addingTimeInterval(5),
+              !animeTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !sourceID.isEmpty, !animeID.isEmpty else { return false }
+        if UserDefaults.standard.object(forKey: favoritesOnlyKey) as? Bool != false {
+            guard ModuleAnimeCollectionStore.shared.favorites.contains(where: {
+                $0.sourceID == sourceID && $0.animeID == animeID
+            }) else { return false }
+        }
+        let number = episodeNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = episodeName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = [sourceID, animeID, number ?? "", name ?? ""].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(key.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let content = UNMutableNotificationContent()
+        content.title = String(animeTitle.prefix(110))
+        let label = number.flatMap { $0.isEmpty ? nil : "Episode \($0)" } ?? "New episode"
+        content.subtitle = name.flatMap { $0.isEmpty ? nil : "\(label) · \($0)" } ?? label
+        content.body = "New episode available. Tap to open Kinetiq."
+        content.sound = .default
+        content.threadIdentifier = "kinetiq.episodes"
+        content.userInfo = ["sourceID": sourceID, "animeID": animeID]
+        let components = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: releaseDate
+        )
+        try await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(
+                identifier: "kinetiq.episode.\(digest)",
+                content: content,
+                trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            )
+        )
+        return true
+    }
+
+    static func schedulePreview() async throws {
+        guard UserDefaults.standard.bool(forKey: enabledKey) else {
+            throw NSError(domain: "KinetiqEpisodeAlerts", code: 1)
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Kinetiq · Test notification"
+        content.subtitle = "Episode 1 — Sample episode"
+        content.body = "Preview only. No new episode was detected."
+        content.sound = .default
+        content.threadIdentifier = "kinetiq.episodes"
+        try await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(
+                identifier: "kinetiq.episode.preview",
+                content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)
+            )
+        )
     }
 }

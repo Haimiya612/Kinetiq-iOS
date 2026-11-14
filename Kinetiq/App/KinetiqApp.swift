@@ -3,6 +3,7 @@ import AVFoundation
 import UIKit
 import Foundation
 import CryptoKit
+import UserNotifications
 
 /// App-owned orientation decision. Each full-screen player takes one lease.
 /// iOS 16+ scene geometry requests rotate the full UI instead of faking the
@@ -69,7 +70,27 @@ enum KinetiqPlaybackPresentation {
 }
 
 @MainActor
-final class KinetiqPlaybackAppDelegate: UIResponder, UIApplicationDelegate {
+final class KinetiqPlaybackAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let data = response.notification.request.content.userInfo
+        Task { @MainActor in
+            KinetiqEpisodeAlerts.receiveResponse(userInfo: data)
+            completionHandler()
+        }
+    }
+
     func application(
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?

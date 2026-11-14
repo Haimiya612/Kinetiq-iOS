@@ -29,7 +29,7 @@ struct KinetiqSubtitleAppearance: Equatable {
 
     var textColor: Color { Color(red: rgb.red, green: rgb.green, blue: rgb.blue) }
     var opacity: Double {
-        switch background { case .standard: 0.78; case .clear: 0; case .solid: 1 }
+        switch background { case .standard: 0.24; case .clear: 0; case .solid: 0.90 }
     }
 
     /// AVPlayer applies these rules to native WebVTT. Omit default attributes
@@ -204,14 +204,18 @@ struct KinetiqCaptionText: View {
     var body: some View {
         let style = settings.appearance
         Text(verbatim: text)
-            .font(.system(size: style.points, weight: .semibold, design: .rounded))
+            .font(.system(size: style.points, weight: .bold, design: .rounded))
             .foregroundStyle(style.textColor)
             .multilineTextAlignment(.center)
-            .lineLimit(8)
+            .lineSpacing(2)
+            .lineLimit(6)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 17)
-            .padding(.vertical, 10)
-            .background(Color.black.opacity(style.opacity), in: RoundedRectangle(cornerRadius: 9))
+            .shadow(color: .black.opacity(0.92), radius: 1.6, x: 0, y: 2)
+            .shadow(color: .black.opacity(0.72), radius: 5, x: 0, y: 0)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .background(Color.black.opacity(style.opacity),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -1023,63 +1027,23 @@ struct ExternalSubtitleImportButton: View {
 // MARK: - Subtitle Overlay
 
 struct ExternalSubtitleOverlay: View {
-
     let cue: ExternalSubtitleCue?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-
-        Group {
+        VStack {
+            Spacer()
             if let cue {
-
-                Text(cue.text)
-                    .font(
-                        .system(
-                            size: 19,
-                            weight: .semibold,
-                            design: .rounded
-                        )
-                    )
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(
-                        horizontal: false,
-                        vertical: true
-                    )
-                    .padding(.horizontal, 17)
-                    .padding(.vertical, 10)
-                    .background(
-                        Color.black.opacity(0.78),
-                        in: RoundedRectangle(
-                            cornerRadius: 9,
-                            style: .continuous
-                        )
-                    )
-                    .overlay(
-                        RoundedRectangle(
-                            cornerRadius: 9,
-                            style: .continuous
-                        )
-                        .stroke(
-                            .white.opacity(0.12),
-                            lineWidth: 1
-                        )
-                    )
-                    .padding(.horizontal, 24)
+                KinetiqCaptionText(text: cue.text)
+                    .padding(.horizontal, 20)
                     .padding(.bottom, 105)
-                    .transition(
-                        .opacity.combined(
-                            with: .move(edge: .bottom)
-                        )
-                    )
-
+                    .transition(.opacity)
+                    .id(cue.id)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
-        .animation(
-            .easeInOut(duration: 0.12),
-            value: cue?.id
-        )
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: cue?.id)
     }
 }
 
