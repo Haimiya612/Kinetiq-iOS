@@ -144,6 +144,11 @@ struct HomeView: View {
                 mediaModeSwitcher
             }
 
+            if selectedMode == .video && moduleSourceStore.isLocalLibrarySelected {
+                // Real imported video collection and its own playback history.
+                LibraryView()
+                    .id("kinetiq.personal.video.library")
+            } else {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: remoteStreamingEnabled ? 17 : 27) {
                     if !remoteStreamingEnabled { header }
@@ -169,6 +174,7 @@ struct HomeView: View {
                 .padding(.horizontal, remoteStreamingEnabled ? 16 : 21)
                 .padding(.top, remoteStreamingEnabled ? 6 : (theme == .nocturne ? 4 : 12))
                 .padding(.bottom, 40)
+            }
             }
         }
         .padding(.top, remoteStreamingEnabled ? 3 : 10)
@@ -1721,6 +1727,7 @@ private struct KinetiqStreamingHome: View {
     @FocusState private var genreFilterFocused: Bool
     @State private var genreResults: [ModuleAnimeItem] = []
     @State private var genreCache: [String: [ModuleAnimeItem]] = [:]
+    @State private var genreOffsets: [String: Int] = [:]
     @State private var genreLoading = false
     @State private var genreFailure: String?
     @State private var genreRequest: UUID?
@@ -2126,7 +2133,7 @@ private struct KinetiqStreamingHome: View {
     }
 
     private func selectedGenreContent(_ genre: KinetiqExploreGenre) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        LazyVStack(alignment: .leading, spacing: 14) {
             if !genreShelves.isEmpty {
                 Text("Genre collections from \(source.title)")
                     .font(.headline)
@@ -2160,9 +2167,28 @@ private struct KinetiqStreamingHome: View {
                             poster(anime, badge: nil, progress: nil)
                         }
                     }
-                } else if !genreLoading {
+                } else if !genreLoading &&
+                          genreOffsets[genre.id, default: 0] >= genreSearchTerms(genre).count {
                     ContentUnavailableView("No titles found", systemImage: "rectangle.stack",
                         description: Text("\(source.title) didn't return matching example titles. You can still browse its catalogue."))
+                }
+                if genreOffsets[genre.id, default: 0] < genreSearchTerms(genre).count &&
+                   !genreLoading {
+                    HStack(spacing: 9) {
+                        Image(systemName: "arrow.down.circle")
+                        Text("Find more \(genre.title) titles")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .onAppear {
+                        Task { await findGenreTitles(genre) }
+                    }
+                } else if !genreResults.isEmpty && !genreLoading {
+                    Text("End of available searches on \(source.title).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let genreFailure, !genreLoading {
                     Text(genreFailure)
@@ -2170,6 +2196,8 @@ private struct KinetiqStreamingHome: View {
                         .foregroundStyle(.secondary)
                     Button("Retry this category") {
                         genreCache.removeValue(forKey: genre.id)
+                        genreOffsets.removeValue(forKey: genre.id)
+                        genreLoading = false
                         Task { await findGenreTitles(genre) }
                     }
                     .font(.subheadline.weight(.semibold))
@@ -2217,11 +2245,21 @@ private struct KinetiqStreamingHome: View {
         }
     }
 
+    private func genreSearchTerms(_ genre: KinetiqExploreGenre) -> [String] {
+        var seen = Set<String>()
+        return (genre.searchExamples + genre.feedTerms + [genre.title])
+            .filter {
+                let key = $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                return !key.isEmpty && seen.insert(key).inserted
+            }
+    }
+
     // A source may provide genre-specific discovery feeds directly. Otherwise,
     // search distinctive real titles in that genre using the existing trusted
     // searchResults contract. Never invent cards, episodes, streams or rankings.
     private func findGenreTitles(_ genre: KinetiqExploreGenre) async {
-        guard selectedGenreID == genre.id, genreShelves.isEmpty else { return }
+        guard selectedGenreID == genre.id, genreShelves.isEmpty,
+              !genreLoading else { return }
         guard let runtime else {
             switch status {
             case .idle, .loading: genreLoading = true
@@ -2229,16 +2267,20 @@ private struct KinetiqStreamingHome: View {
             }
             return
         }
+        let terms = genreSearchTerms(genre)
+        let start = genreOffsets[genre.id, default: 0]
+        guard start < terms.count else { return }
         let token = UUID()
         genreRequest = token
         genreLoading = true
-        genreResults = []
         genreFailure = nil
-        var found: [ModuleAnimeItem] = []
-        var seen = Set<String>()
-        var seenTitles = Set<String>()
+        var found = genreCache[genre.id] ?? []
+        var seen = Set(found.map(\.id))
+        var seenTitles = Set(found.map {
+            $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        })
         var failedCount = 0
-        for term in genre.searchExamples.prefix(5) {
+        for term in terms.dropFirst(start).prefix(2) {
             guard !Task.isCancelled, genreRequest == token,
                   selectedGenreID == genre.id, self.runtime === runtime else { return }
             do {
@@ -2247,8 +2289,8 @@ private struct KinetiqStreamingHome: View {
                       selectedGenreID == genre.id, self.runtime === runtime else { return }
                 let result = ModuleRuntimeDecoder.searchResults(
                     from: response, baseURL: runtime.baseURL,
-                    maximumResults: min(8, runtime.maximumHomeResults))
-                for item in result.prefix(3) {
+                    maximumResults: min(24, runtime.maximumHomeResults))
+                for item in result.prefix(12) {
                     let titleKey = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
                         .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
                     if !titleKey.isEmpty && seen.insert(item.id).inserted &&
@@ -2257,11 +2299,13 @@ private struct KinetiqStreamingHome: View {
                     }
                 }
                 genreResults = found
+                genreCache[genre.id] = found
             } catch {
                 guard !Task.isCancelled, genreRequest == token,
                       selectedGenreID == genre.id else { return }
                 failedCount += 1
             }
+            genreOffsets[genre.id, default: 0] += 1
         }
         guard genreRequest == token, selectedGenreID == genre.id else { return }
         genreCache[genre.id] = found
@@ -2635,17 +2679,18 @@ private struct KinetiqStreamingHome: View {
         genreRequest = nil
         genreResults = []
         genreCache = [:]
+        genreOffsets = [:]
         genreLoading = false
 
         guard source.module.contentType?.lowercased() == "video" else {
-            if currentRequest == token { status = .unsupported }
+            if currentRequest == token { status = .unsupported; genreLoading = false }
             return
         }
         guard let record,
               FileManager.default.fileExists(atPath: record.entryScriptPath),
               FileManager.default.fileExists(atPath: record.manifestPath),
               authorizedSource else {
-            if currentRequest == token { status = .missingInstallation }
+            if currentRequest == token { status = .missingInstallation; genreLoading = false }
             return
         }
         do {
@@ -2657,6 +2702,7 @@ private struct KinetiqStreamingHome: View {
             shelves = ModuleDiscoveryDecoder.home(from: response, baseURL: instance.baseURL)
             status = .loaded
             if let selectedGenre, genreShelves.isEmpty {
+                genreLoading = false
                 await findGenreTitles(selectedGenre)
             }
         } catch {
@@ -2668,7 +2714,10 @@ private struct KinetiqStreamingHome: View {
                 failureSummary = ModulePlaybackDiagnostics.redact(error.localizedDescription)
             }
             // Modules without discoveryHome can still implement searchResults.
-            if let selectedGenre { await findGenreTitles(selectedGenre) }
+            if let selectedGenre {
+                genreLoading = false
+                await findGenreTitles(selectedGenre)
+            }
         }
     }
 }
@@ -2708,6 +2757,11 @@ private struct KinetiqStreamingFeedView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .onAppear {
+                            if card.id == cards.last?.id && hasMore && !loading {
+                                Task { await next() }
+                            }
+                        }
                     }
                 }
                 .padding(16)
@@ -2744,7 +2798,7 @@ private struct KinetiqStreamingFeedView: View {
     }
 
     private func next() async {
-        guard !loading && hasMore && nextPage <= 20 else { return }
+        guard !loading && hasMore && nextPage <= 50 else { return }
         loading = true
         errorText = nil
         defer { loading = false }
@@ -2758,9 +2812,10 @@ private struct KinetiqStreamingFeedView: View {
                 from: response, baseURL: runtime.baseURL, requestedPage: requestedPage
             )
             var seen = Set(cards.map(\.id))
-            cards.append(contentsOf: decoded.cards.filter { seen.insert($0.id).inserted })
+            let unique = decoded.cards.filter { seen.insert($0.id).inserted }
+            cards.append(contentsOf: unique)
             nextPage = requestedPage + 1
-            hasMore = decoded.hasMore && nextPage <= 20
+            hasMore = decoded.hasMore && !unique.isEmpty && nextPage <= 50
         } catch {
             guard !Task.isCancelled else { return }
             errorText = ModulePlaybackDiagnostics.redact(error.localizedDescription)
@@ -2810,6 +2865,8 @@ struct DiscoverView: View {
     @State private var liveMatches: [KinetiqUnifiedSearchHit] = []
     @State private var searchToken: UUID?
     @State private var searchJobs: [Task<Void, Never>] = []
+    @State private var pendingSources: [ModuleSourceOption] = []
+    @State private var batchInFlight = false
     @State private var completedSources = 0
     @State private var sourceCount = 0
     @State private var failures = 0
@@ -2825,7 +2882,7 @@ struct DiscoverView: View {
     }
     private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var hasQuery: Bool { !query.isEmpty }
-    private var searching: Bool { searchToken != nil && completedSources < sourceCount }
+    private var searching: Bool { batchInFlight }
 
     private var videoSources: [ModuleSourceOption] {
         sources.availableSources
@@ -2863,7 +2920,7 @@ struct DiscoverView: View {
             .filter { seen.insert($0.id).inserted }
             .prefix(10).map { $0 }
     }
-    private var showFiles: Bool { scope == .all || scope == .files }
+    private var showFiles: Bool { scope == .files }
     private var showOnline: Bool { scope == .all || scope == .online }
 
     var body: some View {
@@ -3053,7 +3110,7 @@ struct DiscoverView: View {
             Text("Find your next story")
                 .font(.system(size: theme.isEditorial ? 28 : 26, weight: .bold,
                               design: theme.isEditorial ? .serif : .rounded))
-            Text("Search across trusted modules, your saved titles and videos on this device. Explore real poster collections directly on Home.")
+            Text("Search your trusted streaming modules. Choose Your files to find videos imported to this iPhone.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3075,7 +3132,7 @@ struct DiscoverView: View {
         if !localMatches.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 sectionHeader("Your files", detail: "ON THIS IPHONE")
-                ForEach(localMatches.prefix(12), id: \.path) { url in
+                ForEach(localMatches, id: \.path) { url in
                     Button {
                         requestedMediaID = url.lastPathComponent
                         showingLibrary = true
@@ -3112,7 +3169,7 @@ struct DiscoverView: View {
     private var savedSection: some View {
         if !savedMatches.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                sectionHeader("From your watchlist & history", detail: "PERSONAL MEDIA")
+                sectionHeader("Saved module titles", detail: "STREAMING SOURCES")
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 12) {
                         ForEach(savedMatches) { entry in
@@ -3141,7 +3198,7 @@ struct DiscoverView: View {
     }
 
     private var onlineSection: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        LazyVStack(alignment: .leading, spacing: 13) {
             HStack {
                 sectionHeader("Online titles", detail: "LIVE MODULE SEARCH")
                 Spacer(minLength: 3)
@@ -3164,6 +3221,11 @@ struct DiscoverView: View {
                 ProgressView("Searching connected modules…")
                     .padding(.vertical, 20)
                     .frame(maxWidth: .infinity)
+            } else if liveMatches.isEmpty && !pendingSources.isEmpty {
+                ProgressView("Checking more trusted sources…")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                    .onAppear(perform: loadNextSearchBatch)
             } else if liveMatches.isEmpty {
                 ContentUnavailableView(
                     authorizedSources.isEmpty ? "No trusted modules" : "No online results",
@@ -3198,6 +3260,23 @@ struct DiscoverView: View {
                         .accessibilityLabel("Open \(hit.item.title) from \(hit.source.title)")
                     }
                 }
+            }
+            if submittedQuery == query && !pendingSources.isEmpty && !batchInFlight {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Searching more modules…")
+                        .font(.subheadline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .onAppear(perform: loadNextSearchBatch)
+            } else if submittedQuery == query && pendingSources.isEmpty &&
+                      !batchInFlight && !liveMatches.isEmpty {
+                Text("End of available module results for this search.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
             }
             if scopedSourceID != nil {
                 Text("Results limited to \(currentSourceName)")
@@ -3269,6 +3348,8 @@ struct DiscoverView: View {
         searchJobs.forEach { $0.cancel() }
         searchJobs = []
         searchToken = nil
+        pendingSources = []
+        batchInFlight = false
         completedSources = sourceCount
     }
 
@@ -3276,6 +3357,8 @@ struct DiscoverView: View {
         searchJobs.forEach { $0.cancel() }
         searchJobs = []
         searchToken = nil
+        pendingSources = []
+        batchInFlight = false
         submittedQuery = ""
         liveMatches = []
         completedSources = 0
@@ -3283,59 +3366,82 @@ struct DiscoverView: View {
         failures = 0
     }
 
-    /// A maximum of three source workers can run concurrently. No module is
-    /// automatically trusted, and each request uses the established runtime.
+    /// Modules advertise no universal searchResults pagination contract,
+    /// so reveal more trusted sources as users scroll, not invented pages.
     private func runOnlineSearch() {
         cancelSearch()
         guard hasQuery else { return }
         textFieldFocused = false
-        let term = query
-        submittedQuery = term
+        submittedQuery = query
         guard showOnline else { return }
-        let all = searchSources
-        let ordered = all.sorted { lhs, rhs in
+        pendingSources = searchSources.sorted { lhs, rhs in
             if lhs.id == sources.selectedSourceID { return true }
             if rhs.id == sources.selectedSourceID { return false }
             return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
         }
-        sourceCount = ordered.count
-        guard !ordered.isEmpty else { return }
-
-        let token = UUID()
-        searchToken = token
-        let workers = min(3, ordered.count)
-        for worker in 0..<workers {
-            let assigned = stride(from: worker, to: ordered.count, by: workers).map { ordered[$0] }
-            let job = Task { @MainActor in
-                for source in assigned {
-                    guard !Task.isCancelled, searchToken == token else { return }
-                    guard let record = packages.installedModule(for: source),
-                          ModuleRuntimeTrustStore.isTrusted(record) else {
-                        completedSources += 1
-                        continue
-                    }
-                    do {
-                        let runtime = try SynthetiqModuleRuntime(record: record)
-                        let payload = try await runtime.call(handler: "searchResults", arguments: [term])
-                        guard !Task.isCancelled, searchToken == token else { return }
-                        let decoded = ModuleRuntimeDecoder.searchResults(
-                            from: payload, baseURL: runtime.baseURL,
-                            maximumResults: min(runtime.maximumHomeResults, 24))
-                        var seen = Set(liveMatches.map(\.id))
-                        for item in decoded.prefix(18) {
-                            let hit = KinetiqUnifiedSearchHit(source: source, item: item)
-                            if seen.insert(hit.id).inserted { liveMatches.append(hit) }
-                        }
-                    } catch {
-                        guard !Task.isCancelled, searchToken == token else { return }
-                        failures += 1
-                    }
-                    completedSources += 1
-                }
-            }
-            searchJobs.append(job)
-        }
+        sourceCount = pendingSources.count
+        guard !pendingSources.isEmpty else { return }
+        searchToken = UUID()
+        loadNextSearchBatch()
     }
+
+    private func loadNextSearchBatch() {
+        guard !batchInFlight, !pendingSources.isEmpty,
+              let token = searchToken, submittedQuery == query else { return }
+        batchInFlight = true
+        let size = min(3, pendingSources.count)
+        let batch = Array(pendingSources.prefix(size))
+        pendingSources.removeFirst(size)
+        let term = submittedQuery
+        let worker = Task { @MainActor in
+            for source in batch {
+                guard !Task.isCancelled, searchToken == token,
+                      submittedQuery == term else { return }
+                guard let record = packages.installedModule(for: source),
+                      ModuleRuntimeTrustStore.isTrusted(record) else {
+                    completedSources += 1
+                    continue
+                }
+                do {
+                    let runtime = try SynthetiqModuleRuntime(record: record)
+                    let payload = try await runtime.call(
+                        handler: "searchResults", arguments: [term]
+                    )
+                    guard !Task.isCancelled, searchToken == token,
+                          submittedQuery == term else { return }
+                    let decoded = ModuleRuntimeDecoder.searchResults(
+                        from: payload, baseURL: runtime.baseURL,
+                        maximumResults: min(runtime.maximumHomeResults, 48)
+                    )
+                    var seenIDs = Set(liveMatches.map(\.id))
+                    var seenTitles = Set(liveMatches.map {
+                        $0.item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                    })
+                    for item in decoded {
+                        let titleKey = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                        let hit = KinetiqUnifiedSearchHit(source: source, item: item)
+                        if !titleKey.isEmpty && seenIDs.insert(hit.id).inserted &&
+                           seenTitles.insert(titleKey).inserted {
+                            liveMatches.append(hit)
+                        }
+                    }
+                } catch {
+                    guard !Task.isCancelled, searchToken == token else { return }
+                    failures += 1
+                }
+                completedSources += 1
+            }
+            guard !Task.isCancelled, searchToken == token else { return }
+            batchInFlight = false
+            if liveMatches.isEmpty && !pendingSources.isEmpty {
+                loadNextSearchBatch()
+            }
+        }
+        searchJobs.append(worker)
+    }
+
 }
 
 @MainActor

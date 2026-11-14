@@ -10,6 +10,7 @@ import Combine
 
 private struct LocalMedia: Identifiable {
     let url: URL
+    let folder: String
 
     var id: String { url.lastPathComponent }
     var title: String { url.deletingPathExtension().lastPathComponent }
@@ -114,6 +115,13 @@ struct LibraryView: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var errorMessage: String?
     @State private var appeared = false
+    @State private var localSearch = ""
+    @State private var activeFolder: String?
+
+    private let foldersKey = "kinetiq.library.importFolders.v1"
+    private let supportedVideoExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg"
+    ]
 
     @StateObject private var playbackHistory = PlaybackHistoryStore.shared
 
@@ -129,6 +137,19 @@ struct LibraryView: View {
             in: .userDomainMask
         )[0]
         .appendingPathComponent("KinetiqMedia", isDirectory: true)
+    }
+
+    private var folderNames: [String] {
+        Array(Set(media.map(\.folder)))
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var displayedMedia: [LocalMedia] {
+        media.filter { item in
+            (activeFolder == nil || item.folder == activeFolder) &&
+            (localSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+             item.title.localizedCaseInsensitiveContains(localSearch))
+        }
     }
 
     private var playbackQueueEntries: [PlaybackQueueEntry] {
@@ -153,7 +174,8 @@ struct LibraryView: View {
                     mediaList
                 }
             }
-            .navigationTitle("Library")
+            .navigationTitle("Local Library")
+            .searchable(text: $localSearch, prompt: "Search your imported videos")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -208,7 +230,9 @@ struct LibraryView: View {
                     .movie,
                     .video,
                     .mpeg4Movie,
-                    .quickTimeMovie
+                    .quickTimeMovie,
+                    .folder,
+                    .item
                 ],
                 allowsMultipleSelection: true,
                 onCompletion: handleImport
@@ -379,11 +403,37 @@ struct LibraryView: View {
                             )
                     }
 
-                    Spacer()
+                    Spacer(minLength: 8)
+                    Menu {
+                        Button {
+                            activeFolder = nil
+                        } label: {
+                            Label("All videos", systemImage: activeFolder == nil
+                                  ? "checkmark.circle.fill" : "rectangle.stack")
+                        }
+                        ForEach(folderNames, id: \.self) { folder in
+                            Button {
+                                activeFolder = folder
+                            } label: {
+                                Label(folder, systemImage: activeFolder == folder
+                                      ? "checkmark.circle.fill" : "folder")
+                            }
+                        }
+                    } label: {
+                        Label(activeFolder ?? "Folders", systemImage: "folder")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 11)
+                            .frame(minHeight: 44)
+                            .background(Color(uiColor: .tertiarySystemBackground), in: Capsule())
+                    }
+                    .accessibilityLabel("Filter local media by folder")
                 }
                 .padding(.bottom, 8)
-
-                ForEach(media) { item in
+                if displayedMedia.isEmpty {
+                    ContentUnavailableView("No videos in this view", systemImage: "folder",
+                        description: Text("Try another folder or change your local video search."))
+                }
+                ForEach(displayedMedia) { item in
                     Button {
                         selectedMedia = item
                     } label: {
@@ -424,16 +474,13 @@ struct LibraryView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                Text(item.url.pathExtension.uppercased())
-                    .font(
-                        .system(
-                            size: 10,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(1)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(item.url.pathExtension.uppercased())
+                    Text("·")
+                    Text(item.folder).lineLimit(1)
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary)
 
                 if let entry = playbackHistory.entry(for: item.id) {
                     VStack(alignment: .leading, spacing: 5) {
@@ -470,55 +517,83 @@ struct LibraryView: View {
         )
     }
 
-    // MARK: File Import
+    // MARK: - Files, Photos and folders, strictly separate from modules
 
     private func handleImport(_ result: Result<[URL], Error>) {
         switch result {
-        case .success(let urls):
-            importFiles(urls)
-
-        case .failure(let error):
-            errorMessage = error.localizedDescription
+        case .success(let urls): importFiles(urls)
+        case .failure(let error): errorMessage = error.localizedDescription
         }
     }
 
-    private func importFiles(_ urls: [URL]) {
+    private func importFiles(_ urls: [URL], intoCategory defaultFolder: String = "Files") {
         do {
-            try FileManager.default.createDirectory(
-                at: mediaDirectory,
-                withIntermediateDirectories: true
-            )
-
-            for sourceURL in urls {
-                let hasAccess = sourceURL.startAccessingSecurityScopedResource()
-
-                defer {
-                    if hasAccess {
-                        sourceURL.stopAccessingSecurityScopedResource()
-                    }
-                }
-
-                let fileExtension = sourceURL.pathExtension.isEmpty
-                    ? "mp4"
-                    : sourceURL.pathExtension
-
-                let filename = UUID().uuidString + "." + fileExtension
-                let destinationURL = mediaDirectory
-                    .appendingPathComponent(filename)
-
-                try FileManager.default.copyItem(
-                    at: sourceURL,
-                    to: destinationURL
-                )
-            }
-
-            loadMedia()
+            try FileManager.default.createDirectory(at: mediaDirectory,
+                                                    withIntermediateDirectories: true)
         } catch {
             errorMessage = error.localizedDescription
+            return
+        }
+        var folders = UserDefaults.standard.dictionary(forKey: foldersKey)
+            as? [String: String] ?? [:]
+        var copied = 0
+        var failed = 0
+        for sourceURL in urls {
+            let scoped = sourceURL.startAccessingSecurityScopedResource()
+            defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
+            let isFolder = (try? sourceURL.resourceValues(
+                forKeys: [.isDirectoryKey]).isDirectory) == true
+            let candidates: [URL]
+            if isFolder {
+                let enumerator = FileManager.default.enumerator(
+                    at: sourceURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+                candidates = (enumerator?.allObjects as? [URL]) ?? []
+            } else {
+                candidates = [sourceURL]
+            }
+            for file in candidates {
+                let ext = file.pathExtension.lowercased()
+                guard supportedVideoExtensions.contains(ext) else { continue }
+                let folder = isFolder ? sourceURL.lastPathComponent : defaultFolder
+                let basename = file.deletingPathExtension().lastPathComponent
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let readableName = defaultFolder == "Photos" && !isFolder
+                    ? "Photo Video \(Int(Date().timeIntervalSince1970))"
+                    : (basename.isEmpty ? "Untitled Video" : basename)
+                let safeName = String(readableName.prefix(120))
+                    .replacingOccurrences(of: "/", with: "-")
+                var filename = "\(safeName).\(ext)"
+                var suffix = 2
+                while FileManager.default.fileExists(
+                    atPath: mediaDirectory.appendingPathComponent(filename).path
+                ) {
+                    filename = "\(safeName) (\(suffix)).\(ext)"
+                    suffix += 1
+                }
+                do {
+                    try FileManager.default.copyItem(
+                        at: file, to: mediaDirectory.appendingPathComponent(filename)
+                    )
+                    folders[filename] = folder
+                    copied += 1
+                } catch {
+                    failed += 1
+                }
+            }
+        }
+        UserDefaults.standard.set(folders, forKey: foldersKey)
+        loadMedia()
+        if failed > 0 {
+            errorMessage = "Imported \(copied) video(s), but \(failed) could not be copied."
+        } else if copied == 0 && !urls.isEmpty {
+            errorMessage = "No supported video files found. Try MP4, MOV, M4V, MKV or WEBM."
         }
     }
 
-    // MARK: Photo Library Import
+    // MARK: - Photos picker
 
     @MainActor
     private func importPhotos(_ items: [PhotosPickerItem]) async {
@@ -526,42 +601,45 @@ struct LibraryView: View {
             do {
                 guard let movie = try await item.loadTransferable(
                     type: PickedMovie.self
-                ) else {
-                    continue
-                }
-
-                importFiles([movie.url])
+                ) else { continue }
+                importFiles([movie.url], intoCategory: "Photos")
                 try? FileManager.default.removeItem(at: movie.url)
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
-
         selectedPhotoItems = []
     }
 
-    // MARK: Storage
+    // MARK: - Local-only storage and playback history
 
     private func loadMedia() {
         do {
-            try FileManager.default.createDirectory(
-                at: mediaDirectory,
-                withIntermediateDirectories: true
-            )
-
+            try FileManager.default.createDirectory(at: mediaDirectory,
+                                                    withIntermediateDirectories: true)
+            let folders = UserDefaults.standard.dictionary(forKey: foldersKey)
+                as? [String: String] ?? [:]
             let files = try FileManager.default.contentsOfDirectory(
-                at: mediaDirectory,
-                includingPropertiesForKeys: nil
+                at: mediaDirectory, includingPropertiesForKeys: [.isRegularFileKey]
             )
-
             media = files
-                .filter { !$0.lastPathComponent.hasPrefix(".") }
+                .filter {
+                    !$0.lastPathComponent.hasPrefix(".") &&
+                    supportedVideoExtensions.contains($0.pathExtension.lowercased()) &&
+                    (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                }
                 .sorted {
-                    $0.lastPathComponent.localizedStandardCompare(
-                        $1.lastPathComponent
+                    $0.deletingPathExtension().lastPathComponent.localizedStandardCompare(
+                        $1.deletingPathExtension().lastPathComponent
                     ) == .orderedAscending
                 }
-                .map { LocalMedia(url: $0) }
+                .map {
+                    LocalMedia(url: $0,
+                               folder: folders[$0.lastPathComponent] ?? "Imported videos")
+                }
+            if let activeFolder, !media.contains(where: { $0.folder == activeFolder }) {
+                self.activeFolder = nil
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -570,15 +648,18 @@ struct LibraryView: View {
     private func deleteMedia(_ item: LocalMedia) {
         do {
             try FileManager.default.removeItem(at: item.url)
-
             LocalMediaThumbnailCache.shared.invalidate(mediaID: item.id)
             playbackHistory.remove(mediaID: item.id)
-
+            var folders = UserDefaults.standard.dictionary(forKey: foldersKey)
+                as? [String: String] ?? [:]
+            folders.removeValue(forKey: item.id)
+            UserDefaults.standard.set(folders, forKey: foldersKey)
             loadMedia()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
+
 }
 
 // MARK: - Player Panel Types
