@@ -212,9 +212,6 @@ struct SettingsView: View {
     @AppStorage(AppStorageKey.appearance)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
-    @AppStorage(AppStorageKey.accentColor)
-    private var accentColorRawValue = AppAccentColor.kinetiq.rawValue
-
     // Retained to preserve existing user preferences.
     @AppStorage("kinetiq.appearance.liquidGlassButtons")
     private var useLiquidGlassDock = false
@@ -284,31 +281,6 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                     }
                     .padding(.vertical, 4)
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Accent colour")
-                            .font(.subheadline.weight(.semibold))
-
-                        LazyVGrid(
-                            columns: Array(
-                                repeating: GridItem(
-                                    .flexible(),
-                                    spacing: 12
-                                ),
-                                count: 3
-                            ),
-                            spacing: 14
-                        ) {
-                            ForEach(AppAccentColor.allCases) { accent in
-                                accentOption(accent)
-                            }
-                        }
-
-                        Text("Choose the original accent fallback. Custom RGB Studio colors, when enabled, take priority and are managed inside Themes.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 6)
 
                     Toggle(isOn: $useLiquidGlassDock) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -444,55 +416,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Accent Colour Option
 
-    private func accentOption(_ accent: AppAccentColor) -> some View {
-        let isSelected = accentColorRawValue == accent.rawValue
-
-        return Button {
-            accentColorRawValue = accent.rawValue
-        } label: {
-            VStack(spacing: 8) {
-                Circle()
-                    .fill(accent.accent)
-                    .frame(width: 34, height: 34)
-                    .overlay {
-                        if isSelected {
-                            Image(systemName: "checkmark")
-                                .font(
-                                    .system(
-                                        size: 12,
-                                        weight: .bold
-                                    )
-                                )
-                                .foregroundStyle(.white)
-                        }
-                    }
-                    .overlay {
-                        Circle()
-                            .strokeBorder(
-                                isSelected
-                                    ? Color.primary.opacity(0.45)
-                                    : Color.primary.opacity(0.10),
-                                lineWidth: isSelected ? 2 : 1
-                            )
-                    }
-
-                Text(accent.title)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(accent.title) accent colour")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
 }
 
 // MARK: - Subtitle Settings
@@ -818,6 +742,9 @@ private struct KinetiqThemeGallery: View {
     private var chosenTheme = KinetiqVisualTheme.signature.rawValue
     @AppStorage(KinetiqMotionMode.storageKey)
     private var chosenMotion = KinetiqMotionMode.balanced.rawValue
+    @AppStorage(KinetiqRGBPalette.enabledKey)
+    private var rgbStudioEnabled = false
+    @State private var showingRGBOverrideDecision = false
 
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: chosenTheme) ?? .signature
@@ -852,6 +779,20 @@ private struct KinetiqThemeGallery: View {
                 .padding(.top, 16)
             }
             .background(theme.backdrop.ignoresSafeArea())
+            .overlay(alignment: .top) {
+                if showingRGBOverrideDecision {
+                    rgbOverrideDecisionBanner
+                        .transition(reduceMotion ? .opacity :
+                            .move(edge: .top).combined(with: .opacity))
+                        .padding(.horizontal, 14)
+                        .padding(.top, 7)
+                } else {
+                    KinetiqNoticeBannerHost()
+                }
+            }
+            .animation(reduceMotion ? .easeOut(duration: 0.12) :
+                .spring(response: 0.43, dampingFraction: 0.84),
+                value: showingRGBOverrideDecision)
             .navigationTitle("Themes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -908,6 +849,12 @@ private struct KinetiqThemeGallery: View {
             withAnimation(reduceMotion ? nil : motion.animation) {
                 chosenTheme = option.rawValue
             }
+            // Selecting a theme never silently disables RGB Studio or blocks navigation.
+            if rgbStudioEnabled {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.43, dampingFraction: 0.84)) {
+                    showingRGBOverrideDecision = true
+                }
+            }
         } label: {
             HStack(spacing: 14) {
                 themeMiniature(option)
@@ -940,6 +887,73 @@ private struct KinetiqThemeGallery: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(option.name) theme")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    /// Stays visible until the user chooses. A normal auto-dismiss notification
+    /// would be inappropriate because it contains a configuration decision.
+    private var rgbOverrideDecisionBanner: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: "paintpalette.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 29)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("RGB Studio is still enabled")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Your new theme is selected, but custom RGB colors still override its accent, background and surface. Turn off RGB Studio to see the theme's original colors?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    rgbStudioEnabled = false
+                    showingRGBOverrideDecision = false
+                    KinetiqNoticeCenter.shared.post(
+                        .success, title: "RGB Studio disabled",
+                        message: "Your selected theme now uses its own colors. Your custom palette is saved for later.",
+                        groupKey: "kinetiq.rgb.themeChoice.disabled"
+                    )
+                } label: {
+                    Label("Yes", systemImage: "checkmark")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(.green)
+                        .background(Color.green.opacity(0.16),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                }
+                .accessibilityLabel("Yes, disable RGB Studio")
+                Button {
+                    showingRGBOverrideDecision = false
+                    KinetiqNoticeCenter.shared.post(
+                        .information, title: "RGB Studio kept enabled",
+                        message: "The theme changed, but your RGB custom colors remain active.",
+                        groupKey: "kinetiq.rgb.themeChoice.kept"
+                    )
+                } label: {
+                    Label("No", systemImage: "xmark")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(.red)
+                        .background(Color.red.opacity(0.16),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                }
+                .accessibilityLabel("No, keep RGB Studio enabled")
+            }
+            .font(.caption.weight(.bold))
+            .buttonStyle(.plain)
+        }
+        .padding(15)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 19))
+        .overlay(RoundedRectangle(cornerRadius: 19)
+            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8))
+        .shadow(color: .black.opacity(0.24), radius: 18, x: 0, y: 8)
+        .frame(maxWidth: 560)
+        .accessibilityElement(children: .contain)
     }
 
     // Live miniature of each preset's navigation and artwork geometry.

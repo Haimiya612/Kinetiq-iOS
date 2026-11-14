@@ -122,7 +122,9 @@ struct HomeView: View {
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
     }
-    @State private var showingSourceSearch = false
+    @State private var selectedSourceToBrowse: ModuleSourceOption?
+    @State private var browseSourceInSearch = false
+    @StateObject private var moduleCollection = ModuleAnimeCollectionStore.shared
     @State private var showingSourcePicker = false
     @State private var openManageModulesAfterDismiss = false
 
@@ -154,8 +156,8 @@ struct HomeView: View {
                         videoContent
                     case .remoteVideo:
                         if let activeSource = moduleSourceStore.activeSource {
-                            ModuleBrowserView(source: activeSource, embeddedInHome: true)
-                                .id(activeSource.id) // Prevent state crossing between module identities.
+                            remoteSourceHome(activeSource)
+                                .id(activeSource.id) // Source data cannot leak across identities.
                         }
                     case .unavailableSource:
                         selectedModulePlaceholder
@@ -185,23 +187,19 @@ struct HomeView: View {
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(30)
         }
-        .sheet(isPresented: $showingSourceSearch) {
-            if let source = moduleSourceStore.activeSource {
-                NavigationStack {
-                    ModuleBrowserView(source: source, startInSearch: true)
-                        .navigationTitle("Search \(source.title)")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Done") { showingSourceSearch = false }
-                                    .fontWeight(.semibold)
-                            }
+        .sheet(item: $selectedSourceToBrowse) { source in
+            NavigationStack {
+                ModuleBrowserView(source: source, startInSearch: browseSourceInSearch)
+                    .navigationTitle(source.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { selectedSourceToBrowse = nil }
+                                .fontWeight(.semibold)
                         }
-                }
-                .tint(KinetiqPalette.accent)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+                    }
             }
+            .tint(KinetiqPalette.accent)
         }
         .task {
             await moduleSourceStore.loadSavedRepositoriesIfNeeded()
@@ -225,15 +223,12 @@ struct HomeView: View {
         }
     }
 
-    // Real source-aware search, never the empty Discover placeholder.
-    private func openSourceSearch() {
-        if selectedMode == .video, moduleSourceStore.activeSource != nil {
-            showingSourceSearch = true
-        } else if selectedMode == .video, moduleSourceStore.isLocalLibrarySelected {
-            onOpenLibrary()
-        } else {
-            onDiscover()
-        }
+    // All search entry points open one real, source-aware Discover experience.
+    private func openSourceSearch() { onDiscover() }
+
+    private func openSourceBrowser(_ source: ModuleSourceOption, search: Bool = false) {
+        browseSourceInSearch = search
+        selectedSourceToBrowse = source
     }
 
     // MARK: Local Media Resolution
@@ -444,13 +439,174 @@ struct HomeView: View {
                 }
                 librarySection.entrance(appeared, delay: 0.16)
                 heroCard.entrance(appeared, delay: 0.22)
-            case .studio, .prism, .atelier, .signal, .ember, .vault, .zen, .nebula:
+            case .studio, .vault:
                 introduction.entrance(appeared, delay: 0.04)
-                heroCard.entrance(appeared, delay: 0.10)
+                librarySection.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                heroCard.entrance(appeared, delay: 0.22)
+            case .prism, .nebula:
+                heroCard.entrance(appeared, delay: 0.04)
+                introduction.entrance(appeared, delay: 0.10)
                 if !continueWatching.isEmpty {
                     continueWatchingSection.entrance(appeared, delay: 0.16)
                 }
                 librarySection.entrance(appeared, delay: 0.22)
+            case .signal:
+                introduction.entrance(appeared, delay: 0.04)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.10)
+                }
+                heroCard.entrance(appeared, delay: 0.16)
+                librarySection.entrance(appeared, delay: 0.22)
+            case .ember:
+                introduction.entrance(appeared, delay: 0.04)
+                animeSpotlight.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                librarySection.entrance(appeared, delay: 0.22)
+            case .atelier, .zen:
+                introduction.entrance(appeared, delay: 0.04)
+                librarySection.entrance(appeared, delay: 0.10)
+                if !continueWatching.isEmpty {
+                    continueWatchingSection.entrance(appeared, delay: 0.16)
+                }
+                heroCard.entrance(appeared, delay: 0.22)
+            }
+        }
+    }
+
+    // MARK: Remote Source Home (Batch 06K.1)
+
+    private func remoteSourceHome(_ source: ModuleSourceOption) -> some View {
+        let resumable = moduleCollection.continueWatching.filter {
+            $0.sourceID == source.id && !$0.isCompleted
+        }
+        return VStack(alignment: .leading, spacing: theme.prefersCompactThumbnails ? 14 : 23) {
+            if theme.prefersEpisodeOrganization && !resumable.isEmpty {
+                remoteContinueWatching(resumable, source: source)
+            }
+            remoteSourceHero(source)
+            remoteSourceActions(source)
+            if !theme.prefersEpisodeOrganization && !resumable.isEmpty {
+                remoteContinueWatching(resumable, source: source)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up")
+                    .foregroundStyle(KinetiqPalette.accent)
+                Text("Browse this module for its real catalogue, details and playback. Saved titles and recent activity are in Discover and Favorites.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(15)
+            .background(theme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+        }
+    }
+
+    private func remoteSourceHero(_ source: ModuleSourceOption) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: theme.cardCornerRadius)
+                .fill(LinearGradient(colors: theme.stageColors,
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            Image(systemName: theme.heroSymbol)
+                .font(.system(size: 106, weight: .ultraLight))
+                .foregroundStyle(.white.opacity(0.14))
+                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                       alignment: .topTrailing)
+                .padding(23)
+            VStack(alignment: .leading, spacing: 12) {
+                KinetiqModuleIcon(source: source, size: 60)
+                Text(theme.eyebrow.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.8)
+                    .foregroundStyle(.white.opacity(0.75))
+                Text(source.title)
+                    .font(.system(size: theme.isEditorial ? 31 : 34,
+                                  weight: .bold,
+                                  design: theme.isEditorial ? .serif : .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                Text(source.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(2)
+                Button {
+                    openSourceBrowser(source)
+                } label: {
+                    Label("Browse catalogue", systemImage: "play.rectangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 17)
+                        .padding(.vertical, 11)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.34), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(22)
+        }
+        .frame(height: max(280, theme.heroHeight))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func remoteSourceActions(_ source: ModuleSourceOption) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                openSourceBrowser(source)
+            } label: {
+                Label("Explore", systemImage: "square.grid.2x2.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityHint("Open the module's live discovery feed and catalogue")
+            Button {
+                openSourceBrowser(source, search: true)
+            } label: {
+                Label("Search titles", systemImage: "magnifyingglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityHint("Search titles from the selected module")
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.primary)
+        .padding(.vertical, 13)
+        .padding(.horizontal, 8)
+        .background(theme.cardBackground,
+                    in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+        .buttonStyle(.plain)
+    }
+
+    private func remoteContinueWatching(
+        _ entries: [ModuleAnimeCollectionEntry],
+        source: ModuleSourceOption
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeading("Continue watching", detail: "YOUR ACTUAL WATCH HISTORY")
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    ForEach(entries.prefix(12)) { entry in
+                        Button {
+                            openSourceBrowser(source)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                                    .frame(width: theme.prefersCompactThumbnails ? 105 : 120,
+                                           height: theme.prefersCompactThumbnails ? 135 : 160)
+                                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                                Text(entry.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                    .frame(width: theme.prefersCompactThumbnails ? 105 : 120,
+                                           alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Open the source to resume playback")
+                    }
+                }
             }
         }
     }
@@ -956,206 +1112,337 @@ struct HomeView: View {
 
 // MARK: - Discover Screen
 
+@MainActor
 struct DiscoverView: View {
-    private let categories = [
-        "All", "Movies", "Series", "Anime", "Manga"
-    ]
+    private enum Category: String, CaseIterable, Identifiable {
+        case browse = "Browse"
+        case favorites = "Favorites"
+        case recent = "Recent"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .browse: "square.grid.2x2.fill"
+            case .favorites: "heart.fill"
+            case .recent: "clock.arrow.circlepath"
+            }
+        }
+    }
 
-    @State private var selectedCategory = "All"
-    @State private var appeared = false
+    @StateObject private var sources = ModuleSourceStore.shared
+    @StateObject private var collection = ModuleAnimeCollectionStore.shared
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
+    @State private var category: Category = .browse
+    @State private var searchText = ""
+    @State private var selectedSource: ModuleSourceOption?
+    @State private var startInSearch = false
+    @State private var showingLocalLibrary = false
+    @State private var requestedMediaID: String?
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+    }
+
+    private var query: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var matchingSources: [ModuleSourceOption] {
+        let all = sources.availableSources.sorted {
+            $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+        guard !query.isEmpty else { return all }
+        let matched = all.filter {
+            $0.title.localizedCaseInsensitiveContains(query) ||
+            $0.subtitle.localizedCaseInsensitiveContains(query) ||
+            $0.repositoryName.localizedCaseInsensitiveContains(query) ||
+            $0.module.displayType.localizedCaseInsensitiveContains(query)
+        }
+        // An unknown title can still be searched within a connected provider.
+        return matched.isEmpty ? all : matched
+    }
+
+    private var matchingSaved: [ModuleAnimeCollectionEntry] {
+        collection.favorites.filter { entry in
+            query.isEmpty || entry.title.localizedCaseInsensitiveContains(query) ||
+            entry.sourceName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var matchingRecent: [ModuleAnimeCollectionEntry] {
+        collection.entries.filter { $0.latestEpisodeDate != nil || $0.lastPlaybackDate != nil }
+            .filter { entry in
+                query.isEmpty || entry.title.localizedCaseInsensitiveContains(query) ||
+                entry.sourceName.localizedCaseInsensitiveContains(query)
+            }
+            .sorted {
+                ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
+                ($1.lastPlaybackDate ?? $1.latestEpisodeDate ?? .distantPast)
+            }
+    }
+
+    private var matchingTitles: [ModuleAnimeCollectionEntry] {
+        var seen = Set<String>()
+        return (matchingSaved + matchingRecent).filter { seen.insert($0.id).inserted }
+    }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 27) {
-                header
-                    .entrance(appeared, delay: 0.02)
-
-                introduction
-                    .entrance(appeared, delay: 0.08)
-
-                categorySection
-                    .entrance(appeared, delay: 0.14)
-
-                discoveryPlaceholder
-                    .entrance(appeared, delay: 0.20)
+            LazyVStack(alignment: .leading, spacing: 23) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(theme.eyebrow.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .tracking(2)
+                        .foregroundStyle(KinetiqPalette.accent)
+                    Text(theme.isEditorial ? "Discover a story." : "Search & Discover")
+                        .font(.system(size: theme.isEditorial ? 35 : 32,
+                                      weight: .bold,
+                                      design: theme.isEditorial ? .serif : .rounded))
+                    Text("Browse your connected sources, search their real catalogues, or revisit saved titles and recently watched episodes.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                categorySelector
+                switch category {
+                case .browse: browseContent
+                case .favorites: savedContent
+                case .recent: recentContent
+                }
             }
-            .padding(.horizontal, 21)
-            .padding(.top, 16)
-            .padding(.bottom, 30)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 17)
         }
-        .background(Color(uiColor: .systemBackground))
-        .onAppear {
-            withAnimation(
-                reduceMotion
-                    ? .easeInOut(duration: 0.2)
-                    : .spring(response: 0.72, dampingFraction: 0.88)
-            ) {
-                appeared = true
+        .background(KinetiqExperienceBackground())
+        .searchable(text: $searchText, prompt: "Sources or saved titles")
+        .task { await sources.loadSavedRepositoriesIfNeeded() }
+        .sheet(item: $selectedSource) { source in
+            NavigationStack {
+                ModuleBrowserView(source: source, startInSearch: startInSearch)
+                    .navigationTitle(source.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { selectedSource = nil }
+                        }
+                    }
+            }
+            .tint(KinetiqPalette.accent)
+        }
+        .sheet(isPresented: $showingLocalLibrary) {
+            NavigationStack {
+                LibraryView(requestedMediaID: $requestedMediaID)
+                    .navigationTitle("Local Library")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showingLocalLibrary = false }
+                        }
+                    }
             }
         }
     }
 
-    // MARK: Header
+    private var categorySelector: some View {
+        HStack(spacing: 8) {
+            ForEach(Category.allCases) { item in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        category = item
+                    }
+                } label: {
+                    Label(item.rawValue, systemImage: item.icon)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .foregroundStyle(category == item ? Color.white : Color.primary)
+                        .background(category == item ? KinetiqPalette.accent : theme.cardBackground,
+                                    in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(category == item ? .isSelected : [])
+            }
+        }
+    }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image("KinetiqLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 50, height: 50)
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: 16,
-                        style: .continuous
-                    )
-                )
+    private var browseContent: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Button { showingLocalLibrary = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "iphone.gen3")
+                        .font(.title2)
+                        .foregroundStyle(KinetiqPalette.accent)
+                        .frame(width: 46, height: 46)
+                        .background(KinetiqPalette.accent.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 13))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local Library")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Browse and play media on your iPhone")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(13)
+                .background(theme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+            }
+            .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("KINETIQ")
-                    .font(.system(size: 15, weight: .black, design: .rounded))
-                    .tracking(2.2)
+            if !query.isEmpty && !matchingTitles.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Matches in your library")
+                        .font(.headline)
+                    ForEach(matchingTitles.prefix(6)) { entry in
+                        savedRow(entry)
+                    }
+                }
+            }
 
-                Text("SEARCH & DISCOVER")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(1.4)
+            HStack(alignment: .firstTextBaseline) {
+                Text(query.isEmpty ? "Connected sources" : "Search in a source")
+                    .font(.headline)
+                Spacer(minLength: 4)
+                Text("\(matchingSources.count) MODULES")
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
-
-            Spacer()
-        }
-    }
-
-    // MARK: Introduction
-
-    private var introduction: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("FIND YOUR NEXT FAVOURITE.")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .tracking(2.4)
-                .foregroundStyle(KinetiqPalette.accent)
-
-            Text("A universe to explore.")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .tracking(-1.25)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(
-                "Movies, series, anime and manga. Choose what you feel like exploring."
-            )
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(.secondary)
-            .lineSpacing(3)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 8)
-    }
-
-    // MARK: Categories
-
-    private var categorySection: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Explore your way")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .tracking(-0.35)
-
-                Spacer(minLength: 8)
-
-                Text("THE WHOLE UNIVERSE")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(1.2)
-                    .foregroundStyle(.tertiary)
+            if !query.isEmpty {
+                Text("Source names and saved titles filter here. To search a provider's live catalogue for \"\(query)\", open its Search page below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(categories, id: \.self) { category in
-                        Button {
-                            withAnimation(
-                                .spring(
-                                    response: 0.32,
-                                    dampingFraction: 0.78
-                                )
-                            ) {
-                                selectedCategory = category
-                            }
-                        } label: {
-                            Text(category)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(
-                                    selectedCategory == category
-                                        ? .white
-                                        : Color.primary.opacity(0.78)
-                                )
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(
-                                    selectedCategory == category
-                                        ? KinetiqPalette.accent
-                                        : Color(
-                                            uiColor: .secondarySystemGroupedBackground
-                                        ),
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(
-                            selectedCategory == category ? .isSelected : []
-                        )
+            if sources.isRefreshing && sources.availableSources.isEmpty {
+                ProgressView("Loading sources…")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else if matchingSources.isEmpty {
+                ContentUnavailableView("No sources installed", systemImage: "square.stack.3d.up",
+                    description: Text("Install and trust a video source in Settings → Modules & Sources."))
+            } else {
+                LazyVStack(spacing: theme.prefersCompactThumbnails ? 6 : 11) {
+                    ForEach(matchingSources) { source in
+                        sourceCard(source)
                     }
                 }
             }
         }
     }
 
-    // MARK: Discovery Placeholder
+    private func sourceCard(_ source: ModuleSourceOption) -> some View {
+        let supportsVideo = source.module.contentType?.lowercased() == "video"
+        return Button {
+            guard supportsVideo else { return }
+            startInSearch = !query.isEmpty
+            selectedSource = source
+        } label: {
+            HStack(spacing: 13) {
+                KinetiqModuleIcon(source: source, size: 49)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(source.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(source.repositoryName + " · " + source.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 5)
+                Image(systemName: supportsVideo ? "chevron.right" : "book.closed")
+                    .foregroundStyle(KinetiqPalette.accent)
+            }
+            .padding(13)
+            .background(theme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+        }
+        .buttonStyle(.plain)
+        .disabled(!supportsVideo)
+        .accessibilityHint(supportsVideo
+            ? "Browse source discovery, or search its live catalogue"
+            : "This source does not support video browsing in this screen")
+    }
 
-    private var discoveryPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            Image(systemName: "sparkle.magnifyingglass")
-                .font(.system(size: 31, weight: .light))
-                .foregroundStyle(KinetiqPalette.accent)
-                .frame(width: 58, height: 58)
-                .background(
-                    KinetiqPalette.accent.opacity(0.12),
-                    in: RoundedRectangle(
-                        cornerRadius: 18,
-                        style: .continuous
-                    )
-                )
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(
-                    selectedCategory == "All"
-                        ? "Your next story starts here."
-                        : "Explore \(selectedCategory.lowercased())."
-                )
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-
-                Text(
-                    "Your catalogue will appear here as Kinetiq connects to content sources."
-                )
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
+    private var savedContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Favorites")
+                    .font(.headline)
+                Spacer()
+                Text("\(matchingSaved.count) SAVED")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            if matchingSaved.isEmpty {
+                ContentUnavailableView("No matching favorites", systemImage: "heart",
+                                       description: Text("Save a title in a source, then find it here or in your Favorites tab."))
+            } else {
+                ForEach(matchingSaved) { entry in savedRow(entry) }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 23, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 23, style: .continuous)
-                .strokeBorder(
-                    Color.primary.opacity(0.045),
-                    lineWidth: 0.7
-                )
+    }
+
+    private var recentContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Recently watched")
+                    .font(.headline)
+                Spacer()
+                Text("\(matchingRecent.count) TITLES")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            if matchingRecent.isEmpty {
+                ContentUnavailableView("No recent activity", systemImage: "clock.arrow.circlepath",
+                                       description: Text("Episodes you've opened from sources will appear here."))
+            } else {
+                ForEach(matchingRecent) { entry in savedRow(entry) }
+            }
         }
+    }
+
+    private func savedRow(_ entry: ModuleAnimeCollectionEntry) -> some View {
+        let source = sources.availableSources.first { $0.id == entry.sourceID }
+        return Button {
+            if let source {
+                startInSearch = false
+                selectedSource = source
+            }
+        } label: {
+            HStack(spacing: 12) {
+                ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                    .frame(width: 62, height: 83)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Text(entry.sourceName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let episode = entry.latestEpisodeNumber {
+                        Text("Episode " + episode)
+                            .font(.caption2)
+                            .foregroundStyle(KinetiqPalette.accent)
+                    }
+                }
+                Spacer(minLength: 5)
+                Image(systemName: source == nil ? "exclamationmark.circle" : "chevron.right")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(theme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+        }
+        .buttonStyle(.plain)
+        .disabled(source == nil)
+        .accessibilityHint(source == nil ? "Source unavailable" : "Open the original source catalogue")
     }
 }
 
