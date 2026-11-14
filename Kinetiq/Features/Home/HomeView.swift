@@ -1539,7 +1539,130 @@ private struct KinetiqExploreGenre: Identifiable {
               feedTerms: ["seinen"]),
         .init(id: "magical", title: "Magical Girl", symbol: "wand.and.stars",
               searchExamples: ["Madoka Magica", "Sailor Moon", "Cardcaptor Sakura", "Precure"],
-              feedTerms: ["magical girl", "mahou shoujo"])
+              feedTerms: ["magical girl", "mahou shoujo"]),
+        .init(id: "slowburn", title: "Slow-Burn Romance", symbol: "hourglass",
+              searchExamples: ["The Angel Next Door", "Kimi ni Todoke", "Insomniacs After School", "The Dangers in My Heart"],
+              feedTerms: ["slow burn", "slow-burn"]),
+        .init(id: "wholesome", title: "Wholesome Romance", symbol: "heart.circle",
+              searchExamples: ["Tonikawa", "The Angel Next Door", "My Happy Marriage", "A Sign of Affection"],
+              feedTerms: ["wholesome romance", "sweet romance"]),
+        .init(id: "gyaru", title: "Gyaru Romance", symbol: "sparkles",
+              searchExamples: ["Hokkaido Gals", "My Dress-Up Darling", "More than a Married Couple", "You and I Are Polar Opposites"],
+              feedTerms: ["gyaru", "gal romance"]),
+        .init(id: "tsundere", title: "Tsundere Romance", symbol: "flame",
+              searchExamples: ["Toradora", "Roshidere", "Nisekoi", "Maid Sama"],
+              feedTerms: ["tsundere"]),
+        .init(id: "triangles", title: "Love Triangles", symbol: "arrow.triangle.branch",
+              searchExamples: ["The Quintessential Quintuplets", "Blue Spring Ride", "Nisekoi", "White Album 2"],
+              feedTerms: ["love triangle", "triangle romance"]),
+        .init(id: "unrequited", title: "Unrequited Love", symbol: "heart.slash",
+              searchExamples: ["Ao Haru Ride", "Honey and Clover", "Scums Wish", "Just Because"],
+              feedTerms: ["unrequited", "one-sided love"]),
+        .init(id: "teasing", title: "Playful Romance", symbol: "face.smiling",
+              searchExamples: ["Teasing Master Takagi-san", "Nagatoro", "Kubo Wont Let Me Be Invisible", "Uzaki-chan Wants to Hang Out"],
+              feedTerms: ["teasing romance", "playful romance"]),
+        .init(id: "harem", title: "Harem", symbol: "person.3.fill",
+              searchExamples: ["The Quintessential Quintuplets", "We Never Learn", "Date A Live", "Nisekoi"],
+              feedTerms: ["harem"]),
+        .init(id: "reverse-harem", title: "Reverse Harem", symbol: "person.2.fill",
+              searchExamples: ["Ouran High School Host Club", "Kiss Him Not Me", "Yona of the Dawn", "Fruits Basket"],
+              feedTerms: ["reverse harem"]),
+        .init(id: "josei", title: "Josei", symbol: "person.crop.circle",
+              searchExamples: ["Nana", "Wotakoi", "Chihayafuru", "Paradise Kiss"],
+              feedTerms: ["josei"]),
+        .init(id: "iyashikei", title: "Cozy & Healing", symbol: "leaf.fill",
+              searchExamples: ["Yuru Camp", "Aria the Animation", "Non Non Biyori", "Flying Witch"],
+              feedTerms: ["iyashikei", "healing"]),
+        .init(id: "comingofage", title: "Coming of Age", symbol: "figure.walk",
+              searchExamples: ["A Silent Voice", "March Comes in Like a Lion", "Blue Period", "Orange"],
+              feedTerms: ["coming of age"]),
+        .init(id: "workplace", title: "Workplace", symbol: "briefcase.fill",
+              searchExamples: ["Wotakoi", "New Game", "Shirobako", "The Masterful Cat Is Depressed Again Today"],
+              feedTerms: ["workplace", "office"]),
+        .init(id: "food", title: "Food & Cooking", symbol: "fork.knife",
+              searchExamples: ["Food Wars", "Sweetness and Lightning", "Delicious in Dungeon", "Campfire Cooking in Another World"],
+              feedTerms: ["food", "cooking"]),
+        .init(id: "travel", title: "Travel", symbol: "airplane",
+              searchExamples: ["A Place Further than the Universe", "Kino Journey", "Wandering Witch", "Yuru Camp"],
+              feedTerms: ["travel", "journey"]),
+        .init(id: "darkfantasy", title: "Dark Fantasy", symbol: "moon.fill",
+              searchExamples: ["Berserk", "Made in Abyss", "Claymore", "The Ancient Magus Bride"],
+              feedTerms: ["dark fantasy"]),
+        .init(id: "highfantasy", title: "High Fantasy", symbol: "mountain.2.fill",
+              searchExamples: ["Frieren", "Record of Lodoss War", "Delicious in Dungeon", "Ranking of Kings"],
+              feedTerms: ["high fantasy"]),
+        .init(id: "reincarnation", title: "Reincarnation", symbol: "arrow.triangle.2.circlepath",
+              searchExamples: ["Mushoku Tensei", "That Time I Got Reincarnated as a Slime", "Oshi no Ko", "The Eminence in Shadow"],
+              feedTerms: ["reincarnation", "reborn"]),
+        .init(id: "magic", title: "Magic & Sorcery", symbol: "wand.and.stars",
+              searchExamples: ["Little Witch Academia", "Black Clover", "Mashle", "The Irregular at Magic High School"],
+              feedTerms: ["magic", "sorcery"]),
+        .init(id: "superpowers", title: "Superpowers", symbol: "bolt.shield.fill",
+              searchExamples: ["My Hero Academia", "Mob Psycho 100", "One Punch Man", "Charlotte"],
+              feedTerms: ["superpowers", "special powers"]),
+        .init(id: "mythology", title: "Mythology", symbol: "sun.horizon.fill",
+              searchExamples: ["Noragami", "Kamigami no Asobi", "Saint Seiya", "Fate Stay Night"],
+              feedTerms: ["mythology", "gods"]),
+        .init(id: "cyberpunk", title: "Cyberpunk", symbol: "cpu.fill",
+              searchExamples: ["Cyberpunk Edgerunners", "Ghost in the Shell", "Akudama Drive", "Psycho-Pass"],
+              feedTerms: ["cyberpunk"]),
+        .init(id: "timetravel", title: "Time Travel", symbol: "clock.arrow.circlepath",
+              searchExamples: ["Steins Gate", "Erased", "Tokyo Revengers", "Summertime Rendering"],
+              feedTerms: ["time travel"]),
+        .init(id: "detective", title: "Detective", symbol: "magnifyingglass",
+              searchExamples: ["Detective Conan", "Moriarty the Patriot", "Hyouka", "The Millionaire Detective"],
+              feedTerms: ["detective"]),
+        .init(id: "crime", title: "Crime", symbol: "lock.shield.fill",
+              searchExamples: ["91 Days", "Banana Fish", "Great Pretender", "Odd Taxi"],
+              feedTerms: ["crime"]),
+        .init(id: "survival", title: "Survival", symbol: "figure.run",
+              searchExamples: ["Dr Stone", "The Promised Neverland", "Danganronpa", "Btooom"],
+              feedTerms: ["survival"]),
+        .init(id: "postapocalyptic", title: "Post-Apocalyptic", symbol: "globe.europe.africa",
+              searchExamples: ["Girls Last Tour", "Heavenly Delusion", "Attack on Titan", "Seraph of the End"],
+              feedTerms: ["post-apocalyptic", "apocalypse"]),
+        .init(id: "military", title: "Military", symbol: "shield.fill",
+              searchExamples: ["86 Eighty Six", "Code Geass", "Saga of Tanya the Evil", "Aldnoah Zero"],
+              feedTerms: ["military", "war"]),
+        .init(id: "samurai", title: "Samurai", symbol: "figure.fencing",
+              searchExamples: ["Samurai Champloo", "Rurouni Kenshin", "Dororo", "Sword of the Stranger"],
+              feedTerms: ["samurai"]),
+        .init(id: "martialarts", title: "Martial Arts", symbol: "figure.boxing",
+              searchExamples: ["Baki", "Kengan Ashura", "Hajime no Ippo", "Kenichi"],
+              feedTerms: ["martial arts"]),
+        .init(id: "racing", title: "Racing", symbol: "car.fill",
+              searchExamples: ["Initial D", "MF Ghost", "Redline", "Overtake"],
+              feedTerms: ["racing"]),
+        .init(id: "idols", title: "Idols", symbol: "star.circle.fill",
+              searchExamples: ["Oshi no Ko", "Love Live", "Idolmaster", "Zombieland Saga"],
+              feedTerms: ["idol"]),
+        .init(id: "performing", title: "Performing Arts", symbol: "theatermasks.fill",
+              searchExamples: ["Kageki Shoujo", "Revue Starlight", "Skip Beat", "Welcome to the Ballroom"],
+              feedTerms: ["performing arts"]),
+        .init(id: "vampires", title: "Vampires", symbol: "moon.stars",
+              searchExamples: ["Call of the Night", "Vampire Knight", "Hellsing", "Seraph of the End"],
+              feedTerms: ["vampire"]),
+        .init(id: "demons", title: "Demons", symbol: "flame.circle.fill",
+              searchExamples: ["Demon Slayer", "Blue Exorcist", "The Devil Is a Part Timer", "Black Butler"],
+              feedTerms: ["demon"]),
+        .init(id: "urbanfantasy", title: "Urban Fantasy", symbol: "building.2.fill",
+              searchExamples: ["Durarara", "Bungo Stray Dogs", "Noragami", "Kekkai Sensen"],
+              feedTerms: ["urban fantasy"]),
+        .init(id: "thrillerromance", title: "Romantic Suspense", symbol: "heart.text.square",
+              searchExamples: ["Engage Kiss", "Future Diary", "Gosick", "Eden of the East"],
+              feedTerms: ["romantic suspense"]),
+        .init(id: "movies", title: "Anime Movies", symbol: "film.fill",
+              searchExamples: ["Your Name", "A Silent Voice", "Weathering with You", "Suzume"],
+              feedTerms: ["anime movies", "film"]),
+        .init(id: "shorts", title: "Short Series", symbol: "play.rectangle",
+              searchExamples: ["Tsurezure Children", "I Cant Understand What My Husband Is Saying", "Honobono Log", "Love Is Like a Cocktail"],
+              feedTerms: ["short series", "short anime"]),
+        .init(id: "classic", title: "Anime Classics", symbol: "sparkle",
+              searchExamples: ["Cowboy Bebop", "Neon Genesis Evangelion", "Sailor Moon", "Yu Yu Hakusho"],
+              feedTerms: ["classic"]),
+        .init(id: "games", title: "Video Games", symbol: "gamecontroller.fill",
+              searchExamples: ["Sword Art Online", "No Game No Life", "Log Horizon", "Shangri-La Frontier"],
+              feedTerms: ["game", "gaming"])
     ]
 }
 
@@ -1590,6 +1713,7 @@ private struct KinetiqStreamingHome: View {
     @State private var categoryID: String?
     @State private var selectedGenreID: String?
     @State private var showsAllGenres = false
+    @State private var genreFilter = ""
     @State private var genreResults: [ModuleAnimeItem] = []
     @State private var genreCache: [String: [ModuleAnimeItem]] = [:]
     @State private var genreLoading = false
@@ -1598,6 +1722,16 @@ private struct KinetiqStreamingHome: View {
 
     private var selectedGenre: KinetiqExploreGenre? {
         KinetiqExploreGenre.all.first { $0.id == selectedGenreID }
+    }
+    private var displayedGenres: [KinetiqExploreGenre] {
+        let term = genreFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !term.isEmpty {
+            return KinetiqExploreGenre.all.filter {
+                $0.title.localizedCaseInsensitiveContains(term) ||
+                $0.feedTerms.contains(where: { $0.localizedCaseInsensitiveContains(term) })
+            }
+        }
+        return showsAllGenres ? KinetiqExploreGenre.all : Array(KinetiqExploreGenre.all.prefix(12))
     }
     private var genreShelves: [ModuleDiscoveryShelf] {
         guard let selectedGenre else { return [] }
@@ -1905,9 +2039,31 @@ private struct KinetiqStreamingHome: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Find a genre", text: $genreFilter)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("Filter Explore genres")
+                if !genreFilter.isEmpty {
+                    Button {
+                        genreFilter = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .frame(width: 36, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear genre filter")
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 49)
+            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 13))
+
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 11),
                                 GridItem(.flexible(), spacing: 11)], spacing: 11) {
-                ForEach(showsAllGenres ? KinetiqExploreGenre.all : Array(KinetiqExploreGenre.all.prefix(12))) { genre in
+                ForEach(displayedGenres) { genre in
                     Button { chooseGenre(genre) } label: {
                         VStack(alignment: .leading, spacing: 17) {
                             Image(systemName: genre.symbol)
@@ -1938,6 +2094,11 @@ private struct KinetiqStreamingHome: View {
                     .accessibilityLabel("Explore \(genre.title) anime")
                 }
             }
+            if displayedGenres.isEmpty {
+                ContentUnavailableView("No matching genres", systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("Try Romance, Fantasy, Isekai or another category."))
+            }
+            if genreFilter.isEmpty {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                     showsAllGenres.toggle()
@@ -1952,6 +2113,7 @@ private struct KinetiqStreamingHome: View {
                                 in: RoundedRectangle(cornerRadius: 13))
             }
             .buttonStyle(.plain)
+            }
         }
     }
 
@@ -2632,6 +2794,7 @@ struct DiscoverView: View {
     private var themeID = KinetiqVisualTheme.signature.rawValue
 
     @State private var scope: SearchScope = .all
+    @State private var scopedSourceID: String? = nil
     @State private var searchText = ""
     @FocusState private var textFieldFocused: Bool
     @State private var submittedQuery = ""
@@ -2667,6 +2830,15 @@ struct DiscoverView: View {
                 && FileManager.default.fileExists(atPath: record.manifestPath)
                 && ModuleRuntimeTrustStore.isTrusted(record)
         }
+    }
+    private var currentSourceName: String {
+        guard let scopedSourceID else { return "All sources" }
+        return authorizedSources.first(where: { $0.id == scopedSourceID })?.title ?? "All sources"
+    }
+    private var searchSources: [ModuleSourceOption] {
+        let authorized = authorizedSources
+        guard let scopedSourceID else { return authorized }
+        return authorized.filter { $0.id == scopedSourceID }
     }
     private var localMatches: [URL] {
         guard hasQuery else { return [] }
@@ -2716,6 +2888,10 @@ struct DiscoverView: View {
         }
         .onChange(of: searchText) { _, _ in cancelSearch() }
         .onChange(of: scope) { _, _ in cancelSearch() }
+        .onChange(of: scopedSourceID) { _, _ in
+            if hasQuery && showOnline { runOnlineSearch() }
+            else { cancelSearch() }
+        }
         .onDisappear { stopWorkersPreservingResults() }
         .sheet(item: $selectedSource) { source in
             KinetiqFocusedSourceSheet(source: source, startInSearch: true,
@@ -2800,9 +2976,41 @@ struct DiscoverView: View {
                         .frame(minHeight: 44)
                         .background(theme.cardBackground, in: Capsule())
                 }
+                .frame(maxWidth: 140, alignment: .leading)
                 .accessibilityLabel("Search options: \(scope.rawValue)")
 
-                Spacer()
+                if showOnline {
+                    Menu {
+                        Button {
+                            scopedSourceID = nil
+                        } label: {
+                            Label("All sources", systemImage: scopedSourceID == nil
+                                ? "checkmark.circle.fill" : "square.stack.3d.up")
+                        }
+                        if !authorizedSources.isEmpty { Divider() }
+                        ForEach(authorizedSources) { source in
+                            Button {
+                                scopedSourceID = source.id
+                            } label: {
+                                Label(source.title, systemImage: scopedSourceID == source.id
+                                    ? "checkmark.circle.fill" : "play.rectangle")
+                            }
+                        }
+                    } label: {
+                        Label(currentSourceName, systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 156, alignment: .leading)
+                            .padding(.horizontal, 13)
+                            .frame(minHeight: 44)
+                            .background(theme.cardBackground, in: Capsule())
+                    }
+                    .accessibilityLabel("Search source filter: \(currentSourceName)")
+                }
+
+                Spacer(minLength: 0)
                 if searching {
                     ProgressView()
                     Text("\(completedSources)/\(sourceCount)")
@@ -2969,6 +3177,11 @@ struct DiscoverView: View {
                     }
                 }
             }
+            if scopedSourceID != nil {
+                Text("Results limited to \(currentSourceName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if submittedQuery == query && sourceCount > 0 && !searching && failures > 0 {
                 Text("\(failures) source(s) couldn't return results. Other results remain available.")
                     .font(.caption)
@@ -3057,7 +3270,7 @@ struct DiscoverView: View {
         let term = query
         submittedQuery = term
         guard showOnline else { return }
-        let all = authorizedSources
+        let all = searchSources
         let ordered = all.sorted { lhs, rhs in
             if lhs.id == sources.selectedSourceID { return true }
             if rhs.id == sources.selectedSourceID { return false }
