@@ -124,7 +124,6 @@ struct HomeView: View {
     }
     @State private var selectedSourceToBrowse: ModuleSourceOption?
     @State private var browseSourceInSearch = false
-    @StateObject private var moduleCollection = ModuleAnimeCollectionStore.shared
     @State private var showingSourcePicker = false
     @State private var openManageModulesAfterDismiss = false
 
@@ -478,137 +477,14 @@ struct HomeView: View {
         }
     }
 
-    // MARK: Remote Source Home (Batch 06K.1)
+    // MARK: - Remote Home · full content-first streaming experience
 
     private func remoteSourceHome(_ source: ModuleSourceOption) -> some View {
-        let resumable = moduleCollection.continueWatching.filter {
-            $0.sourceID == source.id && !$0.isCompleted
-        }
-        return VStack(alignment: .leading, spacing: theme.prefersCompactThumbnails ? 14 : 23) {
-            if theme.prefersEpisodeOrganization && !resumable.isEmpty {
-                remoteContinueWatching(resumable, source: source)
-            }
-            remoteSourceHero(source)
-            remoteSourceActions(source)
-            if !theme.prefersEpisodeOrganization && !resumable.isEmpty {
-                remoteContinueWatching(resumable, source: source)
-            }
-            HStack(spacing: 10) {
-                Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(KinetiqPalette.accent)
-                Text("Browse this module for its real catalogue, details and playback. Saved titles and recent activity are in Discover and Favorites.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(15)
-            .background(theme.cardBackground,
-                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-        }
-    }
-
-    private func remoteSourceHero(_ source: ModuleSourceOption) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: theme.cardCornerRadius)
-                .fill(LinearGradient(colors: theme.stageColors,
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            Image(systemName: theme.heroSymbol)
-                .font(.system(size: 106, weight: .ultraLight))
-                .foregroundStyle(.white.opacity(0.14))
-                .frame(maxWidth: .infinity, maxHeight: .infinity,
-                       alignment: .topTrailing)
-                .padding(23)
-            VStack(alignment: .leading, spacing: 12) {
-                KinetiqModuleIcon(source: source, size: 60)
-                Text(theme.eyebrow.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.8)
-                    .foregroundStyle(.white.opacity(0.75))
-                Text(source.title)
-                    .font(.system(size: theme.isEditorial ? 31 : 34,
-                                  weight: .bold,
-                                  design: theme.isEditorial ? .serif : .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                Text(source.subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.82))
-                    .lineLimit(2)
-                Button {
-                    openSourceBrowser(source)
-                } label: {
-                    Label("Browse catalogue", systemImage: "play.rectangle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 17)
-                        .padding(.vertical, 11)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.34), in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(22)
-        }
-        .frame(height: max(280, theme.heroHeight))
-        .accessibilityElement(children: .contain)
-    }
-
-    private func remoteSourceActions(_ source: ModuleSourceOption) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                openSourceBrowser(source)
-            } label: {
-                Label("Explore", systemImage: "square.grid.2x2.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .accessibilityHint("Open the module's live discovery feed and catalogue")
-            Button {
-                openSourceBrowser(source, search: true)
-            } label: {
-                Label("Search titles", systemImage: "magnifyingglass")
-                    .frame(maxWidth: .infinity)
-            }
-            .accessibilityHint("Search titles from the selected module")
-        }
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(.primary)
-        .padding(.vertical, 13)
-        .padding(.horizontal, 8)
-        .background(theme.cardBackground,
-                    in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-        .buttonStyle(.plain)
-    }
-
-    private func remoteContinueWatching(
-        _ entries: [ModuleAnimeCollectionEntry],
-        source: ModuleSourceOption
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeading("Continue watching", detail: "YOUR ACTUAL WATCH HISTORY")
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 12) {
-                    ForEach(entries.prefix(12)) { entry in
-                        Button {
-                            openSourceBrowser(source)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 7) {
-                                ModuleAnimeArtworkView(url: entry.anime.imageURL)
-                                    .frame(width: theme.prefersCompactThumbnails ? 105 : 120,
-                                           height: theme.prefersCompactThumbnails ? 135 : 160)
-                                    .clipShape(RoundedRectangle(cornerRadius: 11))
-                                Text(entry.title)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                    .frame(width: theme.prefersCompactThumbnails ? 105 : 120,
-                                           alignment: .leading)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Open the source to resume playback")
-                    }
-                }
-            }
-        }
+        KinetiqStreamingHome(
+            source: source,
+            onBrowse: { openSourceBrowser(source) },
+            onSearch: { openSourceBrowser(source, search: true) }
+        )
     }
 
     private var animeSpotlight: some View {
@@ -1110,115 +986,885 @@ struct HomeView: View {
     }
 }
 
-// MARK: - Discover Screen
+// MARK: - Batch 06K.2 · Source-backed Streaming Home
+// This is the actual Home surface, not the module browser or the Search sheet.
+// Provider content always comes from discoveryHome/discoveryFeed; saved rows
+// always come from the existing per-source collection. Nothing is fabricated.
 
 @MainActor
-struct DiscoverView: View {
-    private enum Category: String, CaseIterable, Identifiable {
-        case browse = "Browse"
-        case favorites = "Favorites"
+private struct KinetiqStreamingHome: View {
+    let source: ModuleSourceOption
+    let onBrowse: () -> Void
+    let onSearch: () -> Void
+
+    private enum HomeLane: String, CaseIterable, Identifiable {
+        case forYou = "For You"
+        case explore = "Explore"
+        case saved = "My List"
         case recent = "Recent"
         var id: String { rawValue }
-        var icon: String {
-            switch self {
-            case .browse: "square.grid.2x2.fill"
-            case .favorites: "heart.fill"
-            case .recent: "clock.arrow.circlepath"
+    }
+
+    private enum CatalogStatus {
+        case idle, loading, loaded, unsupported, missingInstallation, failure
+    }
+
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeID = KinetiqVisualTheme.signature.rawValue
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeID) ?? .signature
+    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var collection = ModuleAnimeCollectionStore.shared
+    @StateObject private var packages = ModulePackageStore.shared
+    @StateObject private var sources = ModuleSourceStore.shared
+    @StateObject private var repositoryTrust = KinetiqRepositoryTrustStore.shared
+
+    @State private var activeLane: HomeLane = .forYou
+    @State private var runtime: SynthetiqModuleRuntime?
+    @State private var shelves: [ModuleDiscoveryShelf] = []
+    @State private var status: CatalogStatus = .idle
+    @State private var failureSummary: String?
+    @State private var currentRequest: UUID?
+    @State private var chosenTitle: ModuleAnimeItem?
+    @State private var chosenFeed: ModuleDiscoveryFeedSelection?
+
+    private var record: InstalledModuleRecord? {
+        packages.installedModule(for: source)
+    }
+
+    private var authorizedSource: Bool {
+        guard let record,
+              ModuleRuntimeTrustStore.isTrusted(record),
+              let repository = sources.repositories.first(where: {
+                  $0.url.absoluteString == record.repositoryURL
+              }) else { return false }
+        return repositoryTrust.allowsRuntime(
+            for: repository, installedModuleID: record.moduleID
+        )
+    }
+
+    private var catalogIdentity: String {
+        let suffix = record.map { "\($0.version)|\($0.packageSHA256)|\(authorizedSource)" }
+            ?? "not-installed"
+        return "\(source.id)|\(suffix)"
+    }
+
+    private var continues: [ModuleAnimeCollectionEntry] {
+        collection.continueWatching.filter {
+            $0.sourceID == source.id && !$0.isCompleted
+        }
+    }
+    private var favorites: [ModuleAnimeCollectionEntry] {
+        collection.favorites(for: source.id)
+    }
+    private var recent: [ModuleAnimeCollectionEntry] {
+        collection.entries.filter {
+            $0.sourceID == source.id && ($0.latestEpisodeDate != nil || $0.lastPlaybackDate != nil)
+        }.sorted {
+            ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
+                ($1.lastPlaybackDate ?? $1.latestEpisodeDate ?? .distantPast)
+        }
+    }
+
+    private var featured: ModuleAnimeItem? {
+        let card = shelves.lazy.compactMap { $0.cards.first?.anime }.first
+        return card ?? continues.first?.anime ?? favorites.first?.anime ?? recent.first?.anime
+    }
+
+    private var compact: Bool { theme.prefersCompactThumbnails }
+    private var editorial: Bool { theme.isEditorial }
+    private var cardWidth: CGFloat { compact ? 109 : theme == .cinema ? 141 : 128 }
+    private var cardHeight: CGFloat { compact ? 150 : theme == .cinema ? 197 : 176 }
+    private var sectionSpacing: CGFloat { compact ? 19 : 27 }
+    private var corner: CGFloat { theme == .nocturne ? 9 : theme.cardCornerRadius }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: sectionSpacing) {
+            quickLanes
+            switch activeLane {
+            case .forYou:
+                personalizedHome
+            case .explore:
+                liveCatalog
+            case .saved:
+                savedLibrary
+            case .recent:
+                recentLibrary
+            }
+        }
+        .task(id: catalogIdentity) {
+            await loadCatalog()
+        }
+        .onDisappear { currentRequest = nil }
+        .sheet(item: $chosenTitle) { item in
+            if let runtime {
+                ModuleAnimeDetailsView(item: item, runtime: runtime,
+                                       sourceID: source.id, sourceName: source.title)
+            } else {
+                ContentUnavailableView("Source unavailable", systemImage: "wifi.exclamationmark",
+                    description: Text("Open the module's catalogue to load its details."))
+            }
+        }
+        .sheet(item: $chosenFeed) { selection in
+            if let runtime {
+                KinetiqStreamingFeedView(runtime: runtime, selection: selection,
+                                         sourceID: source.id, sourceName: source.title,
+                                         theme: theme)
             }
         }
     }
 
+    private var quickLanes: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(HomeLane.allCases) { lane in
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.19)) {
+                            activeLane = lane
+                        }
+                    } label: {
+                        Text(lane.rawValue)
+                            .font(.system(size: 12, weight: .semibold,
+                                          design: editorial ? .serif : .rounded))
+                            .foregroundStyle(activeLane == lane ? theme.backdrop : Color.primary)
+                            .padding(.horizontal, 15)
+                            .frame(height: 36)
+                            .background(activeLane == lane ? theme.accent : theme.cardBackground,
+                                        in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(activeLane == lane ? .isSelected : [])
+                }
+            }
+        }
+        .accessibilityLabel("Home categories")
+    }
+
+    @ViewBuilder
+    private var personalizedHome: some View {
+        // A theme changes hierarchy and density, not just the accent color.
+        if theme.prefersEpisodeOrganization {
+            if !continues.isEmpty { savedShelf(continues, name: "Pick up where you left off", kind: "CONTINUE") }
+            if !recent.isEmpty { savedShelf(recent, name: "Recently played", kind: "RECENT") }
+            featuredHero
+            liveShelves
+            if !favorites.isEmpty { savedShelf(favorites, name: "Your watchlist", kind: "SAVED") }
+        } else if theme == .anime || theme == .ember {
+            featuredHero
+            liveShelves
+            if !continues.isEmpty { savedShelf(continues, name: "Keep watching", kind: "CONTINUE") }
+            if !favorites.isEmpty { savedShelf(favorites, name: "My anime list", kind: "SAVED") }
+            if !recent.isEmpty { savedShelf(recent, name: "Recently watched", kind: "RECENT") }
+        } else if editorial {
+            featuredHero
+            if !favorites.isEmpty { savedShelf(favorites, name: "Your collection", kind: "SAVED") }
+            liveShelves
+            if !continues.isEmpty { savedShelf(continues, name: "Continue the story", kind: "CONTINUE") }
+            if !recent.isEmpty { savedShelf(recent, name: "Recently viewed", kind: "RECENT") }
+        } else {
+            featuredHero
+            if !continues.isEmpty { savedShelf(continues, name: "Continue watching", kind: "CONTINUE") }
+            liveShelves
+            if !favorites.isEmpty { savedShelf(favorites, name: "Saved for later", kind: "SAVED") }
+            if !recent.isEmpty { savedShelf(recent, name: "Watch it again", kind: "RECENT") }
+        }
+        otherSources
+    }
+
+    private var featuredHero: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let featured {
+                ModuleAnimeArtworkView(url: featured.imageURL)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: compact ? 255 : editorial ? 330 : 375)
+                    .clipped()
+                    .blur(radius: 3)
+                    .overlay {
+                        LinearGradient(colors: [.black.opacity(0.18), .black.opacity(0.42), .black.opacity(0.97)],
+                                       startPoint: .top, endPoint: .bottom)
+                    }
+            } else {
+                LinearGradient(colors: theme.stageColors,
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkles.tv.fill")
+                    Text("ON \(source.title.uppercased())")
+                        .lineLimit(1)
+                }
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .tracking(1.2)
+                .foregroundStyle(.white.opacity(0.84))
+
+                Text(featured?.title ?? source.title)
+                    .font(.system(size: editorial ? 31 : compact ? 25 : 32,
+                                  weight: editorial ? .medium : .bold,
+                                  design: editorial ? .serif : .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(featured == nil
+                     ? "Browse real titles from your selected module."
+                     : "Explore episodes, languages and available servers.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(2)
+
+                HStack(spacing: 10) {
+                    Button {
+                        if let featured { openTitle(featured) }
+                        else { onBrowse() }
+                    } label: {
+                        Label(featured == nil ? "Browse source" : "Episodes & details",
+                              systemImage: "play.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 42)
+                            .foregroundStyle(.black)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 11))
+                    }
+                    if let featured {
+                        Button {
+                            collection.toggleFavorite(sourceID: source.id,
+                                                      sourceName: source.title, anime: featured)
+                        } label: {
+                            Label(collection.isFavorite(sourceID: source.id, animeID: featured.id)
+                                  ? "Saved" : "My List",
+                                  systemImage: collection.isFavorite(sourceID: source.id, animeID: featured.id)
+                                  ? "checkmark" : "plus")
+                                .font(.caption.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .foregroundStyle(.white)
+                                .background(.white.opacity(0.22),
+                                            in: RoundedRectangle(cornerRadius: 11))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(19)
+        }
+        .frame(height: compact ? 255 : editorial ? 330 : 375)
+        .clipShape(RoundedRectangle(cornerRadius: corner))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var liveCatalog: some View {
+        VStack(alignment: .leading, spacing: sectionSpacing) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FROM YOUR MODULE")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.7)
+                        .foregroundStyle(theme.accent)
+                    Text("Explore \(source.title)")
+                        .font(.system(size: editorial ? 27 : 25, weight: .bold,
+                                      design: editorial ? .serif : .rounded))
+                }
+                Spacer(minLength: 4)
+                Button(action: onSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.headline)
+                        .frame(width: 42, height: 42)
+                        .background(theme.cardBackground, in: Circle())
+                }
+                .accessibilityLabel("Search catalogue")
+            }
+            liveShelves
+            otherSources
+        }
+    }
+
+    @ViewBuilder
+    private var liveShelves: some View {
+        if !shelves.isEmpty {
+            ForEach(shelves) { shelf in
+                liveShelf(shelf)
+            }
+            HStack(spacing: 9) {
+                Button(action: onBrowse) {
+                    Label("Full source browser", systemImage: "square.grid.2x2")
+                }
+                Spacer()
+                Button {
+                    Task { await loadCatalog() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .tint(KinetiqPalette.accent)
+            .buttonStyle(.plain)
+        } else {
+            catalogState
+        }
+    }
+
+    @ViewBuilder
+    private var catalogState: some View {
+        switch status {
+        case .idle, .loading:
+            HStack(spacing: 12) {
+                ProgressView()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Loading real catalogue…").font(.subheadline.weight(.semibold))
+                    Text(source.title).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(19)
+            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: corner))
+        case .loaded, .unsupported, .missingInstallation, .failure:
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 10) {
+                    Image(systemName: statusSymbol)
+                        .font(.title2)
+                        .foregroundStyle(theme.accent)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(statusTitle).font(.subheadline.weight(.semibold))
+                        Text(statusDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if case .failure = status, let failureSummary, !failureSummary.isEmpty {
+                    Text(failureSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                    Button("Copy Home diagnostics") {
+                        UIPasteboard.general.string = [
+                            "Kinetiq Home catalogue diagnostics",
+                            "Source: " + ModulePlaybackDiagnostics.redact(source.title, limit: 80),
+                            "Reason: " + failureSummary
+                        ].joined(separator: "\n")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .tint(theme.accent)
+                }
+                HStack(spacing: 15) {
+                    Button("Open source", action: onBrowse)
+                    if case .failure = status {
+                        Button("Retry") { Task { await loadCatalog() } }
+                    }
+                    Spacer()
+                    Button("Search", action: onSearch)
+                }
+                .font(.caption.weight(.semibold))
+                .tint(theme.accent)
+                .buttonStyle(.plain)
+            }
+            .padding(17)
+            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: corner))
+        }
+    }
+
+    private var statusSymbol: String {
+        switch status {
+        case .missingInstallation: "square.and.arrow.down"
+        case .unsupported: "square.stack.3d.up"
+        case .failure: "exclamationmark.triangle"
+        case .idle, .loading, .loaded: "rectangle.stack"
+        }
+    }
+    private var statusTitle: String {
+        switch status {
+        case .missingInstallation: "This source needs installation or trust"
+        case .unsupported: "This module has no Home feed"
+        case .failure: "The catalogue could not load"
+        case .idle, .loading: "Loading catalogue"
+        case .loaded: "No available Home titles"
+        }
+    }
+    private var statusDescription: String {
+        switch status {
+        case .missingInstallation:
+            "Your saved titles remain here. Open the source to install or approve it; Kinetiq never trusts modules automatically."
+        case .unsupported:
+            "This module does not publish discoveryHome shelves. Its regular Explore and Search remain available."
+        case .failure:
+            "The source could not supply a Home feed. Try again or open the regular source browser."
+        case .idle, .loading: "Retrieving source titles"
+        case .loaded: "The module returned no usable titles this time. Search and browsing are still available."
+        }
+    }
+
+    private func liveShelf(_ shelf: ModuleDiscoveryShelf) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text(shelf.title)
+                    .font(.system(size: editorial ? 21 : 19, weight: .bold,
+                                  design: editorial ? .serif : .rounded))
+                    .lineLimit(2)
+                Spacer(minLength: 5)
+                if let feedID = shelf.feedID {
+                    Button("See all") {
+                        chosenFeed = ModuleDiscoveryFeedSelection(id: feedID, title: shelf.title)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .tint(theme.accent)
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: compact ? 9 : 12) {
+                    ForEach(shelf.cards) { card in
+                        poster(card.anime, badge: card.badge, progress: nil)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private func savedShelf(_ entries: [ModuleAnimeCollectionEntry],
+                            name: String, kind: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(kind)
+                        .font(.system(size: 9, weight: .heavy))
+                        .tracking(1.6)
+                        .foregroundStyle(theme.accent)
+                    Text(name)
+                        .font(.system(size: editorial ? 21 : 19, weight: .bold,
+                                      design: editorial ? .serif : .rounded))
+                }
+                Spacer(minLength: 5)
+                Text("\(entries.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: compact ? 9 : 12) {
+                    ForEach(entries.prefix(24)) { entry in
+                        poster(entry.anime, badge: nil,
+                               progress: kind == "CONTINUE" ? entry.playbackFraction : nil)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private func poster(_ anime: ModuleAnimeItem,
+                        badge: String?, progress: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                openTitle(anime)
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    ModuleAnimeArtworkView(url: anime.imageURL)
+                        .frame(width: cardWidth, height: cardHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: compact ? 8 : 12))
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 9, weight: .heavy))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 5)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.72), in: Capsule())
+                            .padding(5)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(anime.title) details")
+            if let progress, progress > 0 {
+                ProgressView(value: min(max(progress, 0), 1))
+                    .tint(theme.accent)
+                    .frame(width: cardWidth)
+            }
+            HStack(alignment: .top, spacing: 3) {
+                Text(anime.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    collection.toggleFavorite(sourceID: source.id,
+                                              sourceName: source.title, anime: anime)
+                } label: {
+                    Image(systemName: collection.isFavorite(sourceID: source.id, animeID: anime.id)
+                          ? "checkmark.circle.fill" : "plus.circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(theme.accent)
+                        .frame(width: 25, height: 29)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(collection.isFavorite(sourceID: source.id, animeID: anime.id)
+                    ? "Remove \(anime.title) from favorites" : "Save \(anime.title)")
+            }
+            .frame(width: cardWidth)
+        }
+        .frame(width: cardWidth)
+    }
+
+    private var savedLibrary: some View {
+        VStack(alignment: .leading, spacing: sectionSpacing) {
+            Text("My List").font(.system(size: 30, weight: .bold, design: editorial ? .serif : .rounded))
+            if !continues.isEmpty { savedShelf(continues, name: "In progress", kind: "CONTINUE") }
+            if !favorites.isEmpty { savedShelf(favorites, name: "Saved titles", kind: "SAVED") }
+            if favorites.isEmpty && continues.isEmpty {
+                emptyLane("Your list is waiting", system: "heart",
+                          message: "Save titles directly from real Home catalogue posters.")
+            }
+        }
+    }
+
+    private var recentLibrary: some View {
+        VStack(alignment: .leading, spacing: sectionSpacing) {
+            Text("Recently watched").font(.system(size: 30, weight: .bold,
+                                                     design: editorial ? .serif : .rounded))
+            if !recent.isEmpty { savedShelf(recent, name: "Your watch activity", kind: "RECENT") }
+            else { emptyLane("Nothing watched yet", system: "clock.arrow.circlepath",
+                             message: "Episodes you play from this source show up here.") }
+        }
+    }
+
+    private func emptyLane(_ name: String, system: String, message: String) -> some View {
+        VStack(spacing: 11) {
+            Image(systemName: system)
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(theme.accent)
+            Text(name).font(.headline)
+            Text(message).font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Explore titles") { activeLane = .explore }
+                .font(.caption.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: corner))
+    }
+
+    private var otherSources: some View {
+        let alternatives = sources.availableSources.filter {
+            $0.id != source.id && $0.module.contentType?.lowercased() == "video"
+        }
+        return VStack(alignment: .leading, spacing: 11) {
+            if !alternatives.isEmpty {
+                HStack {
+                    Text("Explore another source")
+                        .font(.system(size: editorial ? 20 : 18, weight: .bold,
+                                      design: editorial ? .serif : .rounded))
+                    Spacer(minLength: 8)
+                    Text("CONNECTED")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(alternatives.prefix(15)) { item in
+                            Button {
+                                sources.selectSource(item.id)
+                            } label: {
+                                VStack(spacing: 7) {
+                                    KinetiqModuleIcon(source: item, size: 48)
+                                    Text(item.title)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                        .frame(width: 91)
+                                }
+                                .padding(11)
+                                .frame(width: 110)
+                                .background(theme.cardBackground,
+                                            in: RoundedRectangle(cornerRadius: 13))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Switch Home to this source")
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private func openTitle(_ item: ModuleAnimeItem) {
+        if runtime != nil { chosenTitle = item }
+        else { onBrowse() }
+    }
+
+    private func loadCatalog() async {
+        let token = UUID()
+        currentRequest = token
+        shelves = []
+        runtime = nil
+        status = .loading
+        failureSummary = nil
+
+        guard source.module.contentType?.lowercased() == "video" else {
+            if currentRequest == token { status = .unsupported }
+            return
+        }
+        guard let record,
+              FileManager.default.fileExists(atPath: record.entryScriptPath),
+              FileManager.default.fileExists(atPath: record.manifestPath),
+              authorizedSource else {
+            if currentRequest == token { status = .missingInstallation }
+            return
+        }
+        do {
+            let instance = try SynthetiqModuleRuntime(record: record)
+            guard !Task.isCancelled, currentRequest == token else { return }
+            runtime = instance
+            let response = try await instance.call(handler: "discoveryHome", arguments: [])
+            guard !Task.isCancelled, currentRequest == token else { return }
+            shelves = ModuleDiscoveryDecoder.home(from: response, baseURL: instance.baseURL)
+            status = .loaded
+        } catch {
+            guard !Task.isCancelled, currentRequest == token else { return }
+            if case ModuleRuntimeError.missingHandler = error {
+                status = .unsupported
+            } else {
+                status = .failure
+                failureSummary = ModulePlaybackDiagnostics.redact(error.localizedDescription)
+            }
+        }
+    }
+}
+
+// A source-advertised feed can be paginated without leaving the Home experience.
+@MainActor
+private struct KinetiqStreamingFeedView: View {
+    @Environment(\.dismiss) private var dismiss
+    let runtime: SynthetiqModuleRuntime
+    let selection: ModuleDiscoveryFeedSelection
+    let sourceID: String
+    let sourceName: String
+    let theme: KinetiqVisualTheme
+
+    @State private var cards: [ModuleDiscoveryCard] = []
+    @State private var nextPage = 1
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var errorText: String?
+    @State private var selectedTitle: ModuleAnimeItem?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
+                                    GridItem(.flexible(), spacing: 12)], spacing: 16) {
+                    ForEach(cards) { card in
+                        Button { selectedTitle = card.anime } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ModuleAnimeArtworkView(url: card.anime.imageURL)
+                                    .frame(height: 212)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                Text(card.anime.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(16)
+                if loading { ProgressView().padding(18) }
+                if let errorText {
+                    VStack(spacing: 9) {
+                        Text("Could not load this page")
+                        Text(errorText).font(.caption).foregroundStyle(.secondary)
+                        Button("Retry") { Task { await next() } }
+                    }
+                    .padding(18)
+                } else if hasMore && !loading {
+                    Button("Load more") { Task { await next() } }
+                        .buttonStyle(.borderedProminent)
+                        .padding(18)
+                } else if cards.isEmpty && !loading {
+                    ContentUnavailableView("No titles in this feed", systemImage: "rectangle.stack")
+                }
+            }
+            .background(KinetiqExperienceBackground())
+            .navigationTitle(selection.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await next() }
+            .sheet(item: $selectedTitle) { item in
+                ModuleAnimeDetailsView(item: item, runtime: runtime,
+                                       sourceID: sourceID, sourceName: sourceName)
+            }
+        }
+    }
+
+    private func next() async {
+        guard !loading && hasMore && nextPage <= 20 else { return }
+        loading = true
+        errorText = nil
+        defer { loading = false }
+        let requestedPage = nextPage
+        do {
+            let response = try await runtime.call(
+                handler: "discoveryFeed", arguments: [selection.id, requestedPage]
+            )
+            guard !Task.isCancelled else { return }
+            let decoded = ModuleDiscoveryDecoder.feed(
+                from: response, baseURL: runtime.baseURL, requestedPage: requestedPage
+            )
+            var seen = Set(cards.map(\.id))
+            cards.append(contentsOf: decoded.cards.filter { seen.insert($0.id).inserted })
+            nextPage = requestedPage + 1
+            hasMore = decoded.hasMore && nextPage <= 20
+        } catch {
+            guard !Task.isCancelled else { return }
+            errorText = ModulePlaybackDiagnostics.redact(error.localizedDescription)
+        }
+    }
+}
+
+// MARK: - Batch 06K.2 · Dedicated Search (distinct from content-first Home)
+
+@MainActor
+struct DiscoverView: View {
     @StateObject private var sources = ModuleSourceStore.shared
     @StateObject private var collection = ModuleAnimeCollectionStore.shared
     @AppStorage(KinetiqVisualTheme.storageKey)
-    private var themeRawValue = KinetiqVisualTheme.signature.rawValue
-    @State private var category: Category = .browse
+    private var themeID = KinetiqVisualTheme.signature.rawValue
     @State private var searchText = ""
     @State private var selectedSource: ModuleSourceOption?
-    @State private var startInSearch = false
     @State private var showingLocalLibrary = false
     @State private var requestedMediaID: String?
 
     private var theme: KinetiqVisualTheme {
-        KinetiqVisualTheme(rawValue: themeRawValue) ?? .signature
+        KinetiqVisualTheme(rawValue: themeID) ?? .signature
     }
-
     private var query: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
+    private var videoSources: [ModuleSourceOption] {
+        sources.availableSources
+            .filter { $0.module.contentType?.lowercased() == "video" }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
     private var matchingSources: [ModuleSourceOption] {
-        let all = sources.availableSources.sorted {
-            $0.title.localizedStandardCompare($1.title) == .orderedAscending
-        }
-        guard !query.isEmpty else { return all }
-        let matched = all.filter {
+        guard !query.isEmpty else { return videoSources }
+        let matches = videoSources.filter {
             $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.subtitle.localizedCaseInsensitiveContains(query) ||
             $0.repositoryName.localizedCaseInsensitiveContains(query) ||
-            $0.module.displayType.localizedCaseInsensitiveContains(query)
+            $0.subtitle.localizedCaseInsensitiveContains(query)
         }
-        // An unknown title can still be searched within a connected provider.
-        return matched.isEmpty ? all : matched
+        // Search terms can be anime titles, not just provider names.
+        // Every connected provider is still an available live search destination.
+        return matches.isEmpty ? videoSources : matches
     }
-
-    private var matchingSaved: [ModuleAnimeCollectionEntry] {
-        collection.favorites.filter { entry in
-            query.isEmpty || entry.title.localizedCaseInsensitiveContains(query) ||
-            entry.sourceName.localizedCaseInsensitiveContains(query)
-        }
-    }
-
-    private var matchingRecent: [ModuleAnimeCollectionEntry] {
-        collection.entries.filter { $0.latestEpisodeDate != nil || $0.lastPlaybackDate != nil }
-            .filter { entry in
-                query.isEmpty || entry.title.localizedCaseInsensitiveContains(query) ||
-                entry.sourceName.localizedCaseInsensitiveContains(query)
-            }
-            .sorted {
-                ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
+    private var matchesInHistory: [ModuleAnimeCollectionEntry] {
+        guard !query.isEmpty else { return [] }
+        var ids = Set<String>()
+        return (collection.favorites + collection.entries.sorted {
+            ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
                 ($1.lastPlaybackDate ?? $1.latestEpisodeDate ?? .distantPast)
-            }
-    }
-
-    private var matchingTitles: [ModuleAnimeCollectionEntry] {
-        var seen = Set<String>()
-        return (matchingSaved + matchingRecent).filter { seen.insert($0.id).inserted }
+        })
+        .filter {
+            $0.title.localizedCaseInsensitiveContains(query) ||
+            $0.sourceName.localizedCaseInsensitiveContains(query)
+        }
+        .filter { ids.insert($0.id).inserted }
+        .prefix(12)
+        .map { $0 }
     }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 23) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(theme.eyebrow.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .tracking(2)
-                        .foregroundStyle(KinetiqPalette.accent)
-                    Text(theme.isEditorial ? "Discover a story." : "Search & Discover")
-                        .font(.system(size: theme.isEditorial ? 35 : 32,
-                                      weight: .bold,
-                                      design: theme.isEditorial ? .serif : .rounded))
-                    Text("Browse your connected sources, search their real catalogues, or revisit saved titles and recently watched episodes.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                searchIntro
+
+                if query.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Search a source", systemImage: "magnifyingglass")
+                            .font(.headline)
+                        Text("Choose a connected provider to search its real catalogue. Your full Explore, My List and Recent shelves now live on Home.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(16)
+                    .background(theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
                 }
-                categorySelector
-                switch category {
-                case .browse: browseContent
-                case .favorites: savedContent
-                case .recent: recentContent
+
+                if !matchesInHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        sectionTitle("Matches from your activity",
+                                     caption: "YOUR SAVED TITLES AND WATCH HISTORY")
+                        ForEach(matchesInHistory) { entry in
+                            historyHit(entry)
+                        }
+                    }
                 }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    sectionTitle(query.isEmpty ? "Connected catalogues" : "Search in a catalogue",
+                                 caption: "LIVE PROVIDER SEARCH")
+                    if !query.isEmpty {
+                        Text("Open a provider below to search for “\(query)”. Each module searches its own live catalogue; Kinetiq does not merge or invent results.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if sources.isRefreshing && videoSources.isEmpty {
+                        ProgressView("Loading connected sources…")
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: .infinity)
+                    } else if videoSources.isEmpty {
+                        ContentUnavailableView("No sources connected", systemImage: "square.stack.3d.up",
+                            description: Text("Connect and install video modules in Settings → Modules & Sources."))
+                    } else {
+                        ForEach(matchingSources) { source in
+                            sourceSearchRow(source)
+                        }
+                    }
+                }
+
+                Button {
+                    showingLocalLibrary = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "iphone.gen3")
+                            .font(.title3)
+                            .foregroundStyle(theme.accent)
+                            .frame(width: 42, height: 42)
+                            .background(theme.accent.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 11))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Local Library").font(.subheadline.weight(.semibold))
+                            Text("Find videos stored on your device")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(13)
+                    .background(theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 20)
-            .padding(.vertical, 17)
+            .padding(.vertical, 18)
         }
         .background(KinetiqExperienceBackground())
-        .searchable(text: $searchText, prompt: "Sources or saved titles")
+        .searchable(text: $searchText, prompt: "Anime, films, sources…")
         .task { await sources.loadSavedRepositoriesIfNeeded() }
         .sheet(item: $selectedSource) { source in
             NavigationStack {
-                ModuleBrowserView(source: source, startInSearch: startInSearch)
+                ModuleBrowserView(source: source, startInSearch: true)
                     .navigationTitle(source.title)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -1242,182 +1888,72 @@ struct DiscoverView: View {
         }
     }
 
-    private var categorySelector: some View {
-        HStack(spacing: 8) {
-            ForEach(Category.allCases) { item in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        category = item
-                    }
-                } label: {
-                    Label(item.rawValue, systemImage: item.icon)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .foregroundStyle(category == item ? Color.white : Color.primary)
-                        .background(category == item ? KinetiqPalette.accent : theme.cardBackground,
-                                    in: RoundedRectangle(cornerRadius: 14))
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(category == item ? .isSelected : [])
-            }
+    private var searchIntro: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("KINETIQ FIND")
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .tracking(2)
+                .foregroundStyle(theme.accent)
+            Text(theme.isEditorial ? "Find a story." : "Search")
+                .font(.system(size: theme.isEditorial ? 39 : 37, weight: .bold,
+                              design: theme.isEditorial ? .serif : .rounded))
+            Text("A focused search. Your personalized streaming catalogue is now on Home.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var browseContent: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Button { showingLocalLibrary = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "iphone.gen3")
-                        .font(.title2)
-                        .foregroundStyle(KinetiqPalette.accent)
-                        .frame(width: 46, height: 46)
-                        .background(KinetiqPalette.accent.opacity(0.12),
-                                    in: RoundedRectangle(cornerRadius: 13))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Local Library")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Browse and play media on your iPhone")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.right")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(13)
-                .background(theme.cardBackground,
-                            in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-            }
-            .buttonStyle(.plain)
-
-            if !query.isEmpty && !matchingTitles.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Matches in your library")
-                        .font(.headline)
-                    ForEach(matchingTitles.prefix(6)) { entry in
-                        savedRow(entry)
-                    }
-                }
-            }
-
-            HStack(alignment: .firstTextBaseline) {
-                Text(query.isEmpty ? "Connected sources" : "Search in a source")
-                    .font(.headline)
-                Spacer(minLength: 4)
-                Text("\(matchingSources.count) MODULES")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-            if !query.isEmpty {
-                Text("Source names and saved titles filter here. To search a provider's live catalogue for \"\(query)\", open its Search page below.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if sources.isRefreshing && sources.availableSources.isEmpty {
-                ProgressView("Loading sources…")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            } else if matchingSources.isEmpty {
-                ContentUnavailableView("No sources installed", systemImage: "square.stack.3d.up",
-                    description: Text("Install and trust a video source in Settings → Modules & Sources."))
-            } else {
-                LazyVStack(spacing: theme.prefersCompactThumbnails ? 6 : 11) {
-                    ForEach(matchingSources) { source in
-                        sourceCard(source)
-                    }
-                }
-            }
+    private func sectionTitle(_ name: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(caption)
+                .font(.system(size: 9, weight: .heavy))
+                .tracking(1.5)
+                .foregroundStyle(theme.accent)
+            Text(name)
+                .font(.system(size: theme.isEditorial ? 23 : 20,
+                              weight: .bold,
+                              design: theme.isEditorial ? .serif : .rounded))
         }
     }
 
-    private func sourceCard(_ source: ModuleSourceOption) -> some View {
-        let supportsVideo = source.module.contentType?.lowercased() == "video"
-        return Button {
-            guard supportsVideo else { return }
-            startInSearch = !query.isEmpty
-            selectedSource = source
-        } label: {
-            HStack(spacing: 13) {
-                KinetiqModuleIcon(source: source, size: 49)
+    private func sourceSearchRow(_ source: ModuleSourceOption) -> some View {
+        Button { selectedSource = source } label: {
+            HStack(spacing: 12) {
+                KinetiqModuleIcon(source: source, size: 50)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(source.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(source.repositoryName + " · " + source.subtitle)
+                    Text(source.repositoryName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
-                Spacer(minLength: 5)
-                Image(systemName: supportsVideo ? "chevron.right" : "book.closed")
-                    .foregroundStyle(KinetiqPalette.accent)
+                Spacer(minLength: 6)
+                Label("Search", systemImage: "arrow.up.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .labelStyle(.titleAndIcon)
             }
             .padding(13)
             .background(theme.cardBackground,
                         in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
         }
         .buttonStyle(.plain)
-        .disabled(!supportsVideo)
-        .accessibilityHint(supportsVideo
-            ? "Browse source discovery, or search its live catalogue"
-            : "This source does not support video browsing in this screen")
+        .accessibilityLabel("Search \(source.title) catalogue")
     }
 
-    private var savedContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Favorites")
-                    .font(.headline)
-                Spacer()
-                Text("\(matchingSaved.count) SAVED")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-            if matchingSaved.isEmpty {
-                ContentUnavailableView("No matching favorites", systemImage: "heart",
-                                       description: Text("Save a title in a source, then find it here or in your Favorites tab."))
-            } else {
-                ForEach(matchingSaved) { entry in savedRow(entry) }
-            }
-        }
-    }
-
-    private var recentContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Recently watched")
-                    .font(.headline)
-                Spacer()
-                Text("\(matchingRecent.count) TITLES")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-            if matchingRecent.isEmpty {
-                ContentUnavailableView("No recent activity", systemImage: "clock.arrow.circlepath",
-                                       description: Text("Episodes you've opened from sources will appear here."))
-            } else {
-                ForEach(matchingRecent) { entry in savedRow(entry) }
-            }
-        }
-    }
-
-    private func savedRow(_ entry: ModuleAnimeCollectionEntry) -> some View {
-        let source = sources.availableSources.first { $0.id == entry.sourceID }
+    private func historyHit(_ entry: ModuleAnimeCollectionEntry) -> some View {
+        let source = videoSources.first { $0.id == entry.sourceID }
         return Button {
-            if let source {
-                startInSearch = false
-                selectedSource = source
-            }
+            selectedSource = source
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 11) {
                 ModuleAnimeArtworkView(url: entry.anime.imageURL)
-                    .frame(width: 62, height: 83)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .frame(width: 56, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(entry.title)
                         .font(.subheadline.weight(.semibold))
@@ -1426,23 +1962,19 @@ struct DiscoverView: View {
                     Text(entry.sourceName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let episode = entry.latestEpisodeNumber {
-                        Text("Episode " + episode)
-                            .font(.caption2)
-                            .foregroundStyle(KinetiqPalette.accent)
-                    }
                 }
                 Spacer(minLength: 5)
-                Image(systemName: source == nil ? "exclamationmark.circle" : "chevron.right")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "arrow.up.right")
+                    .foregroundStyle(source == nil ? Color.secondary : theme.accent)
             }
-            .padding(12)
+            .padding(10)
             .background(theme.cardBackground,
                         in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
         }
         .buttonStyle(.plain)
         .disabled(source == nil)
-        .accessibilityHint(source == nil ? "Source unavailable" : "Open the original source catalogue")
+        .accessibilityHint(source == nil
+            ? "Original source is not connected" : "Search the original provider for this title")
     }
 }
 
