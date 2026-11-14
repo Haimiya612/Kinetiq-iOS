@@ -136,13 +136,17 @@ struct HomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 13) {
-            sourcePicker
-            mediaModeSwitcher
+        VStack(spacing: remoteStreamingEnabled ? 4 : 13) {
+            if remoteStreamingEnabled {
+                streamingToolbar
+            } else {
+                sourcePicker
+                mediaModeSwitcher
+            }
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 27) {
-                    header
+                VStack(alignment: .leading, spacing: remoteStreamingEnabled ? 17 : 27) {
+                    if !remoteStreamingEnabled { header }
 
                     switch HomeContentRoute.resolve(
                         mode: selectedMode,
@@ -162,12 +166,12 @@ struct HomeView: View {
                         selectedModulePlaceholder
                     }
                 }
-                .padding(.horizontal, 21)
-                .padding(.top, theme == .nocturne ? 4 : 12)
-                .padding(.bottom, 30)
+                .padding(.horizontal, remoteStreamingEnabled ? 16 : 21)
+                .padding(.top, remoteStreamingEnabled ? 6 : (theme == .nocturne ? 4 : 12))
+                .padding(.bottom, 40)
             }
         }
-        .padding(.top, 10)
+        .padding(.top, remoteStreamingEnabled ? 3 : 10)
         .background(KinetiqExperienceBackground())
         .sheet(isPresented: $showingSourcePicker, onDismiss: {
             if openManageModulesAfterDismiss {
@@ -216,7 +220,62 @@ struct HomeView: View {
         }
     }
 
-    // All search entry points open one real, source-aware Discover experience.
+    private var remoteStreamingEnabled: Bool {
+        selectedMode == .video && !moduleSourceStore.isLocalLibrarySelected &&
+        moduleSourceStore.activeSource != nil
+    }
+
+    /// One compact, safe-area-respecting navigation row. The source selector
+    /// remains a button, and Search is a separate 44-point target.
+    private var streamingToolbar: some View {
+        HStack(spacing: 10) {
+            Button { showingSourcePicker = true } label: {
+                HStack(spacing: 9) {
+                    KinetiqModuleIcon(source: moduleSourceStore.activeSource, size: 35)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("KINETIQ  ·  HOME")
+                            .font(.system(size: 10, weight: .black, design: .rounded))
+                            .tracking(1.2)
+                        Text(moduleSourceStore.activeSourceTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change source, current: \(moduleSourceStore.activeSourceTitle)")
+
+            Button {
+                selectedModeRawValue = HomeMediaMode.manga.rawValue
+            } label: {
+                Image(systemName: "book.closed")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Switch to manga")
+
+            Button(action: onDiscover) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Search all connected modules")
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+
+    // Search is a distinct destination; Explore is in the Home feed.
     private func openSourceSearch() { onDiscover() }
 
     private func openSourceBrowser(_ source: ModuleSourceOption, search: Bool = false) {
@@ -1432,6 +1491,38 @@ private struct KinetiqStreamingHome: View {
     @State private var chosenSavedTitle: ModuleAnimeCollectionEntry?
     @State private var chosenFeed: ModuleDiscoveryFeedSelection?
 
+    private enum BrowseScope: String, CaseIterable, Identifiable {
+        case forYou = "For You"
+        case shows = "Shows"
+        case movies = "Movies"
+        case newHot = "New & Hot"
+        var id: String { rawValue }
+    }
+    @State private var browseScope: BrowseScope = .forYou
+    @State private var categoryID: String?
+
+    // The source decides what is popular or new. Never synthesize rankings.
+    // A movie badge is set only when the source explicitly supplies isMovie.
+    private var visibleShelves: [ModuleDiscoveryShelf] {
+        let candidate = categoryID.map { id in shelves.filter { $0.id == id } } ?? shelves
+        return candidate.compactMap { shelf in
+            let items: [ModuleDiscoveryCard]
+            switch browseScope {
+            case .forYou: items = shelf.cards
+            case .shows: items = shelf.cards.filter { $0.badge?.lowercased() != "movie" }
+            case .movies: items = shelf.cards.filter { $0.badge?.lowercased() == "movie" }
+            case .newHot:
+                let title = shelf.title.lowercased()
+                let knownLabels = ["new", "neu", "hot", "trending", "popular", "beliebt", "top", "aktuell", "derzeit"]
+                items = knownLabels.contains(where: title.contains) ? shelf.cards : []
+            }
+            guard !items.isEmpty else { return nil }
+            return ModuleDiscoveryShelf(id: shelf.id, title: shelf.title,
+                                        style: shelf.style, feedID: shelf.feedID,
+                                        cards: items)
+        }
+    }
+
     private var record: InstalledModuleRecord? {
         packages.installedModule(for: source)
     }
@@ -1476,7 +1567,8 @@ private struct KinetiqStreamingHome: View {
     }
 
     private var featured: ModuleAnimeItem? {
-        let card = shelves.lazy.compactMap { $0.cards.first?.anime }.first
+        let card = visibleShelves.lazy.compactMap { $0.cards.first?.anime }.first
+        guard browseScope == .forYou, categoryID == nil else { return card }
         return card
             ?? continues.first(where: { $0.sourceID == source.id })?.anime
             ?? favorites.first(where: { $0.sourceID == source.id })?.anime
@@ -1492,8 +1584,7 @@ private struct KinetiqStreamingHome: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: sectionSpacing) {
-            // Home is a single stream of real content. Search and the
-            // dedicated Favorites tab own their separate destinations.
+            homeFilters
             personalizedHome
         }
         .task(id: catalogIdentity) {
@@ -1521,10 +1612,76 @@ private struct KinetiqStreamingHome: View {
         }
     }
 
+    /// Netflix-style inline filters control the actual Home catalogue.
+    /// Categories come only from source-declared feed sections.
+    private var homeFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(BrowseScope.allCases) { scope in
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                            browseScope = scope
+                            categoryID = nil
+                        }
+                    } label: {
+                        Text(scope.rawValue)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 15)
+                            .frame(minHeight: 43)
+                            .background(browseScope == scope && categoryID == nil
+                                ? theme.accent.opacity(0.24) : theme.cardBackground,
+                                in: Capsule())
+                            .overlay(Capsule().strokeBorder(
+                                browseScope == scope && categoryID == nil
+                                    ? theme.accent.opacity(0.8) : .white.opacity(0.08),
+                                lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(browseScope == scope && categoryID == nil ? .isSelected : [])
+                }
+                Menu {
+                    Button("All categories") {
+                        categoryID = nil
+                        browseScope = .forYou
+                    }
+                    ForEach(shelves) { shelf in
+                        Button(shelf.title) {
+                            browseScope = .forYou
+                            categoryID = shelf.id
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(categoryID.flatMap { id in shelves.first(where: { $0.id == id })?.title }
+                             ?? "Categories")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 15)
+                    .frame(minHeight: 43)
+                    .background(categoryID == nil ? theme.cardBackground : theme.accent.opacity(0.24),
+                                in: Capsule())
+                    .overlay(Capsule().strokeBorder(categoryID == nil
+                         ? .white.opacity(0.08) : theme.accent.opacity(0.8), lineWidth: 1))
+                }
+                .disabled(shelves.isEmpty)
+                .accessibilityLabel("Browse source categories")
+            }
+            .padding(.vertical, 2)
+        }
+        .accessibilityLabel("Home catalogue filters")
+    }
+
     @ViewBuilder
     private var personalizedHome: some View {
-        // A theme changes hierarchy and density, not just the accent color.
-        if theme.prefersEpisodeOrganization {
+        // Filters never navigate away: the rail content changes in place.
+        if browseScope != .forYou || categoryID != nil {
+            if featured != nil { featuredHero }
+            liveShelves
+        } else if theme.prefersEpisodeOrganization {
             if !continues.isEmpty { savedShelf(continues, name: "Pick up where you left off", kind: "CONTINUE") }
             if !homeRecent.isEmpty { savedShelf(homeRecent, name: "Recently played", kind: "RECENT") }
             featuredHero
@@ -1558,9 +1715,8 @@ private struct KinetiqStreamingHome: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: compact ? 255 : editorial ? 330 : 375)
                     .clipped()
-                    .blur(radius: 3)
                     .overlay {
-                        LinearGradient(colors: [.black.opacity(0.18), .black.opacity(0.42), .black.opacity(0.97)],
+                        LinearGradient(colors: [.black.opacity(0.02), .black.opacity(0.30), .black.opacity(0.95)],
                                        startPoint: .top, endPoint: .bottom)
                     }
                     .allowsHitTesting(false)
@@ -1637,8 +1793,20 @@ private struct KinetiqStreamingHome: View {
 
     @ViewBuilder
     private var liveShelves: some View {
-        if !shelves.isEmpty {
-            ForEach(shelves) { shelf in
+        if !visibleShelves.isEmpty {
+            HStack(spacing: 6) {
+                Text("EXPLORE")
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .tracking(1.7)
+                    .foregroundStyle(theme.accent)
+                Text("ON \(source.title.uppercased())")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .tracking(1)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            ForEach(visibleShelves) { shelf in
                 liveShelf(shelf)
             }
             HStack(spacing: 9) {
@@ -1655,6 +1823,18 @@ private struct KinetiqStreamingHome: View {
             .font(.caption.weight(.semibold))
             .tint(KinetiqPalette.accent)
             .buttonStyle(.plain)
+        } else if !shelves.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                ContentUnavailableView(
+                    "No matching catalogue titles", systemImage: "rectangle.stack",
+                    description: Text("This source hasn't identified titles for this filter. Try For You or choose another category.")
+                )
+                Button("Show all titles") {
+                    browseScope = .forYou
+                    categoryID = nil
+                }
+                .buttonStyle(.borderedProminent)
+            }
         } else {
             catalogState
         }
@@ -1865,7 +2045,7 @@ private struct KinetiqStreamingHome: View {
                           ? "checkmark.circle.fill" : "plus.circle")
                         .font(.system(size: 15))
                         .foregroundStyle(theme.accent)
-                        .frame(width: 25, height: 29)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(collection.isFavorite(
@@ -2018,248 +2198,560 @@ private struct KinetiqStreamingFeedView: View {
 
 // MARK: - Batch 06K.2 · Dedicated Search (distinct from content-first Home)
 
+// MARK: - Unified Search
+// Searching is explicit, source-scoped at the network boundary, and bounded
+// to three concurrent trusted module runtimes. No fabricated titles or rankings.
+
+private struct KinetiqUnifiedSearchHit: Identifiable {
+    let source: ModuleSourceOption
+    let item: ModuleAnimeItem
+    var id: String { source.id + "|" + item.id }
+}
+
 @MainActor
 struct DiscoverView: View {
+    private enum SearchScope: String, CaseIterable, Identifiable {
+        case all = "All sources"
+        case files = "Your files"
+        case online = "Online titles"
+        var id: String { rawValue }
+        var symbol: String {
+            switch self {
+            case .all: "square.stack.3d.up"
+            case .files: "iphone.gen3"
+            case .online: "play.rectangle.on.rectangle"
+            }
+        }
+    }
+
     @StateObject private var sources = ModuleSourceStore.shared
     @StateObject private var collection = ModuleAnimeCollectionStore.shared
+    @StateObject private var packages = ModulePackageStore.shared
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var themeID = KinetiqVisualTheme.signature.rawValue
+
+    @State private var scope: SearchScope = .all
     @State private var searchText = ""
+    @FocusState private var textFieldFocused: Bool
+    @State private var submittedQuery = ""
+    @State private var liveMatches: [KinetiqUnifiedSearchHit] = []
+    @State private var searchToken: UUID?
+    @State private var searchJobs: [Task<Void, Never>] = []
+    @State private var completedSources = 0
+    @State private var sourceCount = 0
+    @State private var failures = 0
+    @State private var selectedHit: KinetiqUnifiedSearchHit?
+    @State private var selectedSavedTitle: ModuleAnimeCollectionEntry?
     @State private var selectedSource: ModuleSourceOption?
-    @State private var showingLocalLibrary = false
+    @State private var showingLibrary = false
     @State private var requestedMediaID: String?
+    @State private var localFiles: [URL] = []
 
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeID) ?? .signature
     }
-    private var query: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var hasQuery: Bool { !query.isEmpty }
+    private var searching: Bool { searchToken != nil && completedSources < sourceCount }
+
     private var videoSources: [ModuleSourceOption] {
         sources.availableSources
             .filter { $0.module.contentType?.lowercased() == "video" }
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
-    private var matchingSources: [ModuleSourceOption] {
-        guard !query.isEmpty else { return videoSources }
-        let matches = videoSources.filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.repositoryName.localizedCaseInsensitiveContains(query) ||
-            $0.subtitle.localizedCaseInsensitiveContains(query)
+    private var authorizedSources: [ModuleSourceOption] {
+        videoSources.filter { source in
+            guard let record = packages.installedModule(for: source) else { return false }
+            return FileManager.default.fileExists(atPath: record.entryScriptPath)
+                && FileManager.default.fileExists(atPath: record.manifestPath)
+                && ModuleRuntimeTrustStore.isTrusted(record)
         }
-        // Search terms can be anime titles, not just provider names.
-        // Every connected provider is still an available live search destination.
-        return matches.isEmpty ? videoSources : matches
     }
-    private var matchesInHistory: [ModuleAnimeCollectionEntry] {
-        guard !query.isEmpty else { return [] }
-        var ids = Set<String>()
-        return (collection.favorites + collection.entries.sorted {
-            ($0.lastPlaybackDate ?? $0.latestEpisodeDate ?? .distantPast) >
-                ($1.lastPlaybackDate ?? $1.latestEpisodeDate ?? .distantPast)
-        })
-        .filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.sourceName.localizedCaseInsensitiveContains(query)
-        }
-        .filter { ids.insert($0.id).inserted }
-        .prefix(12)
-        .map { $0 }
+    private var localMatches: [URL] {
+        guard hasQuery else { return [] }
+        return localFiles.filter { $0.deletingPathExtension().lastPathComponent
+            .localizedCaseInsensitiveContains(query) }
     }
+    private var savedMatches: [ModuleAnimeCollectionEntry] {
+        guard hasQuery else { return [] }
+        var seen = Set<String>()
+        return (collection.favorites + collection.entries)
+            .filter { $0.title.localizedCaseInsensitiveContains(query) ||
+                      $0.sourceName.localizedCaseInsensitiveContains(query) }
+            .filter { seen.insert($0.id).inserted }
+            .prefix(10).map { $0 }
+    }
+    private var showFiles: Bool { scope == .all || scope == .files }
+    private var showOnline: Bool { scope == .all || scope == .online }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 23) {
-                searchIntro
-
-                if query.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Search a source", systemImage: "magnifyingglass")
-                            .font(.headline)
-                        Text("Choose a connected provider to search its real catalogue. Home shows the real content feed; your Favorites tab keeps saved titles organized.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(16)
-                    .background(theme.cardBackground,
-                                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-                }
-
-                if !matchesInHistory.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        sectionTitle("Matches from your activity",
-                                     caption: "YOUR SAVED TITLES AND WATCH HISTORY")
-                        ForEach(matchesInHistory) { entry in
-                            historyHit(entry)
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    sectionTitle(query.isEmpty ? "Connected catalogues" : "Search in a catalogue",
-                                 caption: "LIVE PROVIDER SEARCH")
-                    if !query.isEmpty {
-                        Text("Open a provider below to search for “\(query)”. Each module searches its own live catalogue; Kinetiq does not merge or invent results.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if sources.isRefreshing && videoSources.isEmpty {
-                        ProgressView("Loading connected sources…")
-                            .padding(.vertical, 24)
-                            .frame(maxWidth: .infinity)
-                    } else if videoSources.isEmpty {
-                        ContentUnavailableView("No sources connected", systemImage: "square.stack.3d.up",
-                            description: Text("Connect and install video modules in Settings → Modules & Sources."))
+        VStack(spacing: 0) {
+            searchToolbar
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 23) {
+                    if !hasQuery {
+                        emptySearch
                     } else {
-                        ForEach(matchingSources) { source in
-                            sourceSearchRow(source)
+                        if showFiles { fileSection }
+                        if showOnline {
+                            savedSection
+                            onlineSection
                         }
                     }
+                    if showOnline { providerSelector }
                 }
-
-                Button {
-                    showingLocalLibrary = true
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "iphone.gen3")
-                            .font(.title3)
-                            .foregroundStyle(theme.accent)
-                            .frame(width: 42, height: 42)
-                            .background(theme.accent.opacity(0.12),
-                                        in: RoundedRectangle(cornerRadius: 11))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Local Library").font(.subheadline.weight(.semibold))
-                            Text("Find videos stored on your device")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(.secondary)
-                    }
-                    .foregroundStyle(.primary)
-                    .padding(13)
-                    .background(theme.cardBackground,
-                                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-                }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 18)
+                .padding(.top, 20)
+                .padding(.bottom, 48)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 18)
+            .scrollDismissesKeyboard(.interactively)
         }
         .background(KinetiqExperienceBackground())
-        .searchable(text: $searchText, prompt: "Anime, films, sources…")
-        .task { await sources.loadSavedRepositoriesIfNeeded() }
-        .sheet(item: $selectedSource) { source in
-            KinetiqFocusedSourceSheet(
-                source: source,
-                startInSearch: true,
-                initialQuery: query,
-                onClose: { selectedSource = nil }
-            )
+        .navigationTitle("Search")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await sources.loadSavedRepositoriesIfNeeded()
+            loadLocalFiles()
         }
-        .sheet(isPresented: $showingLocalLibrary) {
+        .onChange(of: searchText) { _, _ in cancelSearch() }
+        .onChange(of: scope) { _, _ in cancelSearch() }
+        .onDisappear { stopWorkersPreservingResults() }
+        .sheet(item: $selectedSource) { source in
+            KinetiqFocusedSourceSheet(source: source, startInSearch: true,
+                                     initialQuery: query, onClose: { selectedSource = nil })
+        }
+        .sheet(item: $selectedHit) { hit in
+            KinetiqUnifiedSearchDestination(hit: hit)
+        }
+        .sheet(item: $selectedSavedTitle) { entry in
+            KinetiqSavedTitleDestination(entry: entry)
+        }
+        .sheet(isPresented: $showingLibrary) {
             NavigationStack {
                 LibraryView(requestedMediaID: $requestedMediaID)
                     .navigationTitle("Local Library")
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") { showingLocalLibrary = false }
+                            Button("Done") { showingLibrary = false }
                         }
                     }
             }
         }
     }
 
-    private var searchIntro: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("KINETIQ FIND")
-                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                .tracking(2)
+    private var searchToolbar: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 9) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search media and sources", text: $searchText)
+                    .focused($textFieldFocused)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .onSubmit { runOnlineSearch() }
+                    .accessibilityLabel("Search media")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                        textFieldFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 36, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+                Button {
+                    runOnlineSearch()
+                } label: {
+                    Image(systemName: "arrow.right")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .background(theme.accent.opacity(0.24), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasQuery || !showOnline)
+                .accessibilityLabel("Search connected modules")
+            }
+            .padding(.leading, 15)
+            .padding(.trailing, 5)
+            .frame(height: 54)
+            .background(theme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: 16))
+
+            HStack {
+                Menu {
+                    ForEach(SearchScope.allCases) { option in
+                        Button {
+                            scope = option
+                        } label: {
+                            Label(option.rawValue, systemImage: option.symbol)
+                        }
+                    }
+                } label: {
+                    Label(scope.rawValue, systemImage: "slider.horizontal.3")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                        .background(theme.cardBackground, in: Capsule())
+                }
+                .accessibilityLabel("Search options: \(scope.rawValue)")
+
+                Spacer()
+                if searching {
+                    ProgressView()
+                    Text("\(completedSources)/\(sourceCount)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+    }
+
+    private var emptySearch: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 31, weight: .light))
                 .foregroundStyle(theme.accent)
-            Text(theme.isEditorial ? "Find a story." : "Search")
-                .font(.system(size: theme.isEditorial ? 39 : 37, weight: .bold,
+            Text("Find your next story")
+                .font(.system(size: theme.isEditorial ? 28 : 26, weight: .bold,
                               design: theme.isEditorial ? .serif : .rounded))
-            Text("Find a title in a connected source. Explore real provider feeds on Home.")
+            Text("Search across trusted modules, your saved titles and videos on this device. Explore real poster collections directly on Home.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Label("All sources", systemImage: "square.stack.3d.up")
+                Spacer()
+                Text("\(authorizedSources.count) ready")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(12)
+            .background(theme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: 12))
         }
     }
 
-    private func sectionTitle(_ name: String, caption: String) -> some View {
+    @ViewBuilder
+    private var fileSection: some View {
+        if !localMatches.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader("Your files", detail: "ON THIS IPHONE")
+                ForEach(localMatches.prefix(12), id: \.path) { url in
+                    Button {
+                        requestedMediaID = url.lastPathComponent
+                        showingLibrary = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.title2)
+                                .foregroundStyle(theme.accent)
+                                .frame(width: 44, height: 52)
+                                .background(theme.accent.opacity(0.10),
+                                            in: RoundedRectangle(cornerRadius: 10))
+                            Text(url.deletingPathExtension().lastPathComponent)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(10)
+                        .background(theme.cardBackground,
+                                    in: RoundedRectangle(cornerRadius: 13))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } else if scope == .files {
+            ContentUnavailableView("No matching files", systemImage: "film",
+                description: Text("No imported local videos matched your search."))
+        }
+    }
+
+    @ViewBuilder
+    private var savedSection: some View {
+        if !savedMatches.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionHeader("From your watchlist & history", detail: "PERSONAL MEDIA")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 12) {
+                        ForEach(savedMatches) { entry in
+                            Button { selectedSavedTitle = entry } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ModuleAnimeArtworkView(url: entry.anime.imageURL)
+                                        .frame(width: 116, height: 158)
+                                        .clipShape(RoundedRectangle(cornerRadius: 9))
+                                    Text(entry.title)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text(entry.sourceName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 116, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var onlineSection: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                sectionHeader("Online titles", detail: "LIVE MODULE SEARCH")
+                Spacer(minLength: 3)
+                if searching {
+                    ProgressView()
+                }
+            }
+            if !hasQuery { EmptyView() }
+            else if submittedQuery != query {
+                Button {
+                    runOnlineSearch()
+                } label: {
+                    Label("Search across connected sources", systemImage: "magnifyingglass")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+            } else if liveMatches.isEmpty && searching {
+                ProgressView("Searching connected modules…")
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: .infinity)
+            } else if liveMatches.isEmpty {
+                ContentUnavailableView(
+                    authorizedSources.isEmpty ? "No trusted modules" : "No online results",
+                    systemImage: "magnifyingglass",
+                    description: Text(authorizedSources.isEmpty
+                        ? "Install and approve a video module in Settings."
+                        : "Try a different title or search a specific provider below.")
+                )
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
+                                    GridItem(.flexible(), spacing: 12)],
+                          spacing: 16) {
+                    ForEach(liveMatches) { hit in
+                        Button { selectedHit = hit } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ModuleAnimeArtworkView(url: hit.item.imageURL)
+                                    .frame(height: 210)
+                                    .frame(maxWidth: .infinity)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                Text(hit.item.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                Text(hit.source.title)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(hit.item.title) from \(hit.source.title)")
+                    }
+                }
+            }
+            if submittedQuery == query && sourceCount > 0 && !searching && failures > 0 {
+                Text("\(failures) source(s) couldn't return results. Other results remain available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var providerSelector: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            sectionHeader("Search a specific provider", detail: "CONNECTED SOURCES")
+            if videoSources.isEmpty {
+                ContentUnavailableView("No modules connected", systemImage: "square.stack.3d.up",
+                    description: Text("Add providers in Settings → Modules & Sources."))
+            } else {
+                Menu {
+                    ForEach(videoSources) { source in
+                        Button(source.title) { selectedSource = source }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "square.stack.3d.up")
+                            .foregroundStyle(theme.accent)
+                        Text("Choose a module")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.down")
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(16)
+                    .frame(minHeight: 52)
+                    .background(theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+                }
+                .accessibilityHint("Open the original module's search screen")
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(caption)
+            Text(detail)
                 .font(.system(size: 9, weight: .heavy))
-                .tracking(1.5)
+                .tracking(1.4)
                 .foregroundStyle(theme.accent)
-            Text(name)
-                .font(.system(size: theme.isEditorial ? 23 : 20,
-                              weight: .bold,
+            Text(title)
+                .font(.system(size: 20, weight: .bold,
                               design: theme.isEditorial ? .serif : .rounded))
         }
     }
 
-    private func sourceSearchRow(_ source: ModuleSourceOption) -> some View {
-        Button { selectedSource = source } label: {
-            HStack(spacing: 12) {
-                KinetiqModuleIcon(source: source, size: 50)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(source.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(source.repositoryName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                Label("Search", systemImage: "arrow.up.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(theme.accent)
-                    .labelStyle(.titleAndIcon)
-            }
-            .padding(13)
-            .background(theme.cardBackground,
-                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Search \(source.title) catalogue")
+    private func loadLocalFiles() {
+        let folder = FileManager.default.urls(for: .documentDirectory,
+            in: .userDomainMask)[0].appendingPathComponent("KinetiqMedia", isDirectory: true)
+        let candidates = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) ?? []
+        let formats: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm"]
+        localFiles = candidates.filter { formats.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
-    private func historyHit(_ entry: ModuleAnimeCollectionEntry) -> some View {
-        let source = videoSources.first { $0.id == entry.sourceID }
-        return Button {
-            selectedSource = source
-        } label: {
-            HStack(spacing: 11) {
-                ModuleAnimeArtworkView(url: entry.anime.imageURL)
-                    .frame(width: 56, height: 72)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(entry.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-                    Text(entry.sourceName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 5)
-                Image(systemName: "arrow.up.right")
-                    .foregroundStyle(source == nil ? Color.secondary : theme.accent)
-            }
-            .padding(10)
-            .background(theme.cardBackground,
-                        in: RoundedRectangle(cornerRadius: theme.cardCornerRadius))
+    private func stopWorkersPreservingResults() {
+        searchJobs.forEach { $0.cancel() }
+        searchJobs = []
+        searchToken = nil
+        completedSources = sourceCount
+    }
+
+    private func cancelSearch() {
+        searchJobs.forEach { $0.cancel() }
+        searchJobs = []
+        searchToken = nil
+        submittedQuery = ""
+        liveMatches = []
+        completedSources = 0
+        sourceCount = 0
+        failures = 0
+    }
+
+    /// A maximum of three source workers can run concurrently. No module is
+    /// automatically trusted, and each request uses the established runtime.
+    private func runOnlineSearch() {
+        cancelSearch()
+        guard hasQuery else { return }
+        textFieldFocused = false
+        let term = query
+        submittedQuery = term
+        guard showOnline else { return }
+        let all = authorizedSources
+        let ordered = all.sorted { lhs, rhs in
+            if lhs.id == sources.selectedSourceID { return true }
+            if rhs.id == sources.selectedSourceID { return false }
+            return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
         }
-        .buttonStyle(.plain)
-        .disabled(source == nil)
-        .accessibilityHint(source == nil
-            ? "Original source is not connected" : "Search the original provider for this title")
+        sourceCount = ordered.count
+        guard !ordered.isEmpty else { return }
+
+        let token = UUID()
+        searchToken = token
+        let workers = min(3, ordered.count)
+        for worker in 0..<workers {
+            let assigned = stride(from: worker, to: ordered.count, by: workers).map { ordered[$0] }
+            let job = Task { @MainActor in
+                for source in assigned {
+                    guard !Task.isCancelled, searchToken == token else { return }
+                    guard let record = packages.installedModule(for: source),
+                          ModuleRuntimeTrustStore.isTrusted(record) else {
+                        completedSources += 1
+                        continue
+                    }
+                    do {
+                        let runtime = try SynthetiqModuleRuntime(record: record)
+                        let payload = try await runtime.call(handler: "searchResults", arguments: [term])
+                        guard !Task.isCancelled, searchToken == token else { return }
+                        let decoded = ModuleRuntimeDecoder.searchResults(
+                            from: payload, baseURL: runtime.baseURL,
+                            maximumResults: min(runtime.maximumHomeResults, 24))
+                        var seen = Set(liveMatches.map(\.id))
+                        for item in decoded.prefix(18) {
+                            let hit = KinetiqUnifiedSearchHit(source: source, item: item)
+                            if seen.insert(hit.id).inserted { liveMatches.append(hit) }
+                        }
+                    } catch {
+                        guard !Task.isCancelled, searchToken == token else { return }
+                        failures += 1
+                    }
+                    completedSources += 1
+                }
+            }
+            searchJobs.append(job)
+        }
+    }
+}
+
+@MainActor
+private struct KinetiqUnifiedSearchDestination: View {
+    let hit: KinetiqUnifiedSearchHit
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var packages = ModulePackageStore.shared
+    @State private var runtime: SynthetiqModuleRuntime?
+    @State private var errorText: String?
+
+    var body: some View {
+        Group {
+            if let runtime {
+                ModuleAnimeDetailsView(item: hit.item, runtime: runtime,
+                    sourceID: hit.source.id, sourceName: hit.source.title)
+            } else {
+                NavigationStack {
+                    Group {
+                        if let errorText {
+                            ContentUnavailableView("Title unavailable", systemImage: "exclamationmark.triangle",
+                                description: Text(errorText))
+                        } else {
+                            ProgressView("Opening from \(hit.source.title)…")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .navigationTitle(hit.item.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: hit.id) {
+            guard let record = packages.installedModule(for: hit.source),
+                  ModuleRuntimeTrustStore.isTrusted(record),
+                  FileManager.default.fileExists(atPath: record.entryScriptPath),
+                  FileManager.default.fileExists(atPath: record.manifestPath) else {
+                errorText = "Install and approve the original source in Settings → Modules & Sources."
+                return
+            }
+            do {
+                let prepared = try SynthetiqModuleRuntime(record: record)
+                guard !Task.isCancelled else { return }
+                runtime = prepared
+            } catch {
+                errorText = ModulePlaybackDiagnostics.redact(error.localizedDescription)
+            }
+        }
     }
 }
 
