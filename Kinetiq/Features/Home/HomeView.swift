@@ -1714,6 +1714,7 @@ private struct KinetiqStreamingHome: View {
     @State private var selectedGenreID: String?
     @State private var showsAllGenres = false
     @State private var genreFilter = ""
+    @FocusState private var genreFilterFocused: Bool
     @State private var genreResults: [ModuleAnimeItem] = []
     @State private var genreCache: [String: [ModuleAnimeItem]] = [:]
     @State private var genreLoading = false
@@ -2043,6 +2044,9 @@ private struct KinetiqStreamingHome: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField("Find a genre", text: $genreFilter)
+                    .focused($genreFilterFocused)
+                    .submitLabel(.done)
+                    .onSubmit { genreFilterFocused = false }
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityLabel("Filter Explore genres")
@@ -2185,6 +2189,7 @@ private struct KinetiqStreamingHome: View {
     }
 
     private func chooseGenre(_ genre: KinetiqExploreGenre) {
+        genreFilterFocused = false
         browseScope = .explore
         categoryID = nil
         selectedGenreID = genre.id
@@ -2887,10 +2892,20 @@ struct DiscoverView: View {
             loadLocalFiles()
         }
         .onChange(of: searchText) { _, _ in cancelSearch() }
-        .onChange(of: scope) { _, _ in cancelSearch() }
+        .onChange(of: scope) { _, _ in
+            if hasQuery && showOnline { runOnlineSearch() }
+            else { cancelSearch() }
+        }
         .onChange(of: scopedSourceID) { _, _ in
             if hasQuery && showOnline { runOnlineSearch() }
             else { cancelSearch() }
+        }
+        .onChange(of: authorizedSources.map(\.id)) { _, available in
+            // A removed or untrusted provider must never remain the active
+            // search restriction. Fall back to All Sources immediately.
+            if let scopedSourceID, !available.contains(scopedSourceID) {
+                self.scopedSourceID = nil
+            }
         }
         .onDisappear { stopWorkersPreservingResults() }
         .sheet(item: $selectedSource) { source in
@@ -2926,7 +2941,10 @@ struct DiscoverView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
-                    .onSubmit { runOnlineSearch() }
+                    .onSubmit {
+                        if showOnline { runOnlineSearch() }
+                        else { textFieldFocused = false }
+                    }
                     .accessibilityLabel("Search media")
                 if !searchText.isEmpty {
                     Button {
@@ -3192,7 +3210,7 @@ struct DiscoverView: View {
 
     private var providerSelector: some View {
         VStack(alignment: .leading, spacing: 11) {
-            sectionHeader("Search a specific provider", detail: "CONNECTED SOURCES")
+            sectionHeader("Open source browser", detail: "SOURCE EXPLORE & SEARCH")
             if videoSources.isEmpty {
                 ContentUnavailableView("No modules connected", systemImage: "square.stack.3d.up",
                     description: Text("Add providers in Settings → Modules & Sources."))
@@ -3205,7 +3223,7 @@ struct DiscoverView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "square.stack.3d.up")
                             .foregroundStyle(theme.accent)
-                        Text("Choose a module")
+                        Text("Open module Explore / Search")
                             .font(.subheadline.weight(.semibold))
                         Spacer(minLength: 4)
                         Image(systemName: "chevron.down")
