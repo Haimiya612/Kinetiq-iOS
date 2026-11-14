@@ -1094,15 +1094,16 @@ private struct KinetiqFocusedSourceSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    sourceTab(.explore, symbol: "rectangle.stack.fill")
-                    sourceTab(.search, symbol: "magnifyingglass")
+                if !startInSearch {
+                    HStack(spacing: 8) {
+                        sourceTab(.explore, symbol: "rectangle.stack.fill")
+                        sourceTab(.search, symbol: "magnifyingglass")
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(theme.cardBackground)
+                    Divider().opacity(0.22)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .background(theme.cardBackground)
-
-                Divider().opacity(0.22)
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 21) {
@@ -1456,6 +1457,92 @@ private struct KinetiqSavedTitleDestination: View {
     }
 }
 
+// MARK: - Batch 06K.5 · Home Explore genres
+// Genre labels and example queries are editorial navigation, not provider
+// rankings. Every result card is returned by the selected installed module.
+private struct KinetiqExploreGenre: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let searchExamples: [String]
+    let feedTerms: [String]
+
+    static let all: [KinetiqExploreGenre] = [
+        .init(id: "romance", title: "Romance", symbol: "heart.fill",
+              searchExamples: ["roshidere", "Horimiya", "Toradora", "Kaguya-sama", "The Angel Next Door"],
+              feedTerms: ["romance", "romantik", "romantic"]),
+        .init(id: "romcom", title: "Romantic Comedy", symbol: "heart.text.square.fill",
+              searchExamples: ["Roshidere", "Kaguya-sama", "Nisekoi", "My Dress-Up Darling"],
+              feedTerms: ["romcom", "romantic comedy", "romantische komödie"]),
+        .init(id: "action", title: "Action", symbol: "bolt.fill",
+              searchExamples: ["Attack on Titan", "Jujutsu Kaisen", "Demon Slayer", "Solo Leveling"],
+              feedTerms: ["action"]),
+        .init(id: "fantasy", title: "Fantasy", symbol: "sparkles",
+              searchExamples: ["Frieren", "Re:Zero", "Mushoku Tensei", "Fate/Zero"],
+              feedTerms: ["fantasy", "fantasie"]),
+        .init(id: "comedy", title: "Comedy", symbol: "face.smiling.fill",
+              searchExamples: ["KonoSuba", "Nichijou", "Gintama", "Spy x Family"],
+              feedTerms: ["comedy", "komödie"]),
+        .init(id: "slice", title: "Slice of Life", symbol: "sun.max.fill",
+              searchExamples: ["Bocchi the Rock", "Yuru Camp", "Non Non Biyori", "K-On"],
+              feedTerms: ["slice of life", "alltag"]),
+        .init(id: "adventure", title: "Adventure", symbol: "safari.fill",
+              searchExamples: ["One Piece", "Hunter x Hunter", "Made in Abyss", "Fullmetal Alchemist"],
+              feedTerms: ["adventure", "abenteuer"]),
+        .init(id: "drama", title: "Drama", symbol: "theatermasks.fill",
+              searchExamples: ["Violet Evergarden", "Your Lie in April", "Oshi no Ko", "A Silent Voice"],
+              feedTerms: ["drama"]),
+        .init(id: "mystery", title: "Mystery", symbol: "eye.fill",
+              searchExamples: ["Death Note", "Erased", "Hyouka", "The Apothecary Diaries"],
+              feedTerms: ["mystery", "mysterium", "rätsel"]),
+        .init(id: "scifi", title: "Sci-Fi", symbol: "atom",
+              searchExamples: ["Steins Gate", "Psycho-Pass", "Cyberpunk Edgerunners", "Dr Stone"],
+              feedTerms: ["sci-fi", "science fiction", "science-fiction"]),
+        .init(id: "thriller", title: "Thriller", symbol: "exclamationmark.triangle.fill",
+              searchExamples: ["Monster", "Death Parade", "Paranoia Agent", "The Promised Neverland"],
+              feedTerms: ["thriller", "suspense"]),
+        .init(id: "sports", title: "Sports", symbol: "sportscourt.fill",
+              searchExamples: ["Haikyuu", "Blue Lock", "Kuroko", "Yuri on Ice"],
+              feedTerms: ["sports", "sport"]),
+        .init(id: "supernatural", title: "Supernatural", symbol: "moon.stars.fill",
+              searchExamples: ["Jujutsu Kaisen", "Mob Psycho 100", "Noragami", "Bungo Stray Dogs"],
+              feedTerms: ["supernatural", "übernatürlich"]),
+        .init(id: "isekai", title: "Isekai", symbol: "globe.europe.africa.fill",
+              searchExamples: ["Re:Zero", "KonoSuba", "Slime", "Overlord"],
+              feedTerms: ["isekai"]),
+        .init(id: "school", title: "School Life", symbol: "graduationcap.fill",
+              searchExamples: ["Classroom of the Elite", "Assassination Classroom", "Roshidere", "Kakegurui"],
+              feedTerms: ["school", "schule", "school life"]),
+        .init(id: "historical", title: "Historical", symbol: "building.columns.fill",
+              searchExamples: ["Vinland Saga", "Kingdom", "Golden Kamuy", "The Apothecary Diaries"],
+              feedTerms: ["historical", "history", "historisch"]),
+        .init(id: "music", title: "Music", symbol: "music.note",
+              searchExamples: ["Bocchi the Rock", "Your Lie in April", "K-On", "Sound Euphonium"],
+              feedTerms: ["music", "musik"]),
+        .init(id: "mecha", title: "Mecha", symbol: "gearshape.2.fill",
+              searchExamples: ["Gundam", "Code Geass", "Evangelion", "86 Eighty Six"],
+              feedTerms: ["mecha", "robot"]),
+        .init(id: "horror", title: "Horror", symbol: "hand.raised.fill",
+              searchExamples: ["Another", "Higurashi", "Junji Ito", "Mieruko-chan"],
+              feedTerms: ["horror", "horror-anime"]),
+        .init(id: "psychological", title: "Psychological", symbol: "brain.head.profile",
+              searchExamples: ["Death Note", "Monster", "Serial Experiments Lain", "Perfect Blue"],
+              feedTerms: ["psychological", "psychologisch"]),
+        .init(id: "shoujo", title: "Shoujo", symbol: "heart.circle.fill",
+              searchExamples: ["Fruits Basket", "Nana", "Yona of the Dawn", "Ouran Host Club"],
+              feedTerms: ["shoujo", "shojo", "shōjo"]),
+        .init(id: "shounen", title: "Shounen", symbol: "flame.fill",
+              searchExamples: ["Naruto", "Bleach", "One Piece", "Demon Slayer"],
+              feedTerms: ["shounen", "shonen", "shōnen"]),
+        .init(id: "seinen", title: "Seinen", symbol: "shield.lefthalf.filled",
+              searchExamples: ["Berserk", "Vinland Saga", "Monster", "Kingdom"],
+              feedTerms: ["seinen"]),
+        .init(id: "magical", title: "Magical Girl", symbol: "wand.and.stars",
+              searchExamples: ["Madoka Magica", "Sailor Moon", "Cardcaptor Sakura", "Precure"],
+              feedTerms: ["magical girl", "mahou shoujo"])
+    ]
+}
+
 // MARK: - Batch 06K.2 · Source-backed Streaming Home
 // This is the actual Home surface, not the module browser or the Search sheet.
 // Provider content always comes from discoveryHome/discoveryFeed; saved rows
@@ -1493,6 +1580,7 @@ private struct KinetiqStreamingHome: View {
 
     private enum BrowseScope: String, CaseIterable, Identifiable {
         case forYou = "For You"
+        case explore = "Explore"
         case shows = "Shows"
         case movies = "Movies"
         case newHot = "New & Hot"
@@ -1500,6 +1588,25 @@ private struct KinetiqStreamingHome: View {
     }
     @State private var browseScope: BrowseScope = .forYou
     @State private var categoryID: String?
+    @State private var selectedGenreID: String?
+    @State private var showsAllGenres = false
+    @State private var genreResults: [ModuleAnimeItem] = []
+    @State private var genreCache: [String: [ModuleAnimeItem]] = [:]
+    @State private var genreLoading = false
+    @State private var genreFailure: String?
+    @State private var genreRequest: UUID?
+
+    private var selectedGenre: KinetiqExploreGenre? {
+        KinetiqExploreGenre.all.first { $0.id == selectedGenreID }
+    }
+    private var genreShelves: [ModuleDiscoveryShelf] {
+        guard let selectedGenre else { return [] }
+        return shelves.filter { shelf in
+            let label = (shelf.id + " " + shelf.title + " " + (shelf.feedID ?? ""))
+                .lowercased()
+            return selectedGenre.feedTerms.contains(where: { label.contains($0) })
+        }
+    }
 
     // The source decides what is popular or new. Never synthesize rankings.
     // A movie badge is set only when the source explicitly supplies isMovie.
@@ -1508,7 +1615,7 @@ private struct KinetiqStreamingHome: View {
         return candidate.compactMap { shelf in
             let items: [ModuleDiscoveryCard]
             switch browseScope {
-            case .forYou: items = shelf.cards
+            case .forYou, .explore: items = shelf.cards
             case .shows: items = shelf.cards.filter { $0.badge?.lowercased() != "movie" }
             case .movies: items = shelf.cards.filter { $0.badge?.lowercased() == "movie" }
             case .newHot:
@@ -1590,7 +1697,10 @@ private struct KinetiqStreamingHome: View {
         .task(id: catalogIdentity) {
             await loadCatalog()
         }
-        .onDisappear { currentRequest = nil }
+        .onDisappear {
+            currentRequest = nil
+            genreRequest = nil
+        }
         .sheet(item: $chosenTitle) { item in
             if let runtime {
                 ModuleAnimeDetailsView(item: item, runtime: runtime,
@@ -1613,7 +1723,7 @@ private struct KinetiqStreamingHome: View {
     }
 
     /// Netflix-style inline filters control the actual Home catalogue.
-    /// Categories come only from source-declared feed sections.
+    /// Genre selections open real module-backed content inside Home.
     private var homeFilters: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -1622,13 +1732,16 @@ private struct KinetiqStreamingHome: View {
                         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
                             browseScope = scope
                             categoryID = nil
+                            selectedGenreID = nil
+                            genreRequest = nil
+                            genreLoading = false
                         }
                     } label: {
                         Text(scope.rawValue)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.primary)
                             .padding(.horizontal, 15)
-                            .frame(minHeight: 43)
+                            .frame(minHeight: 46)
                             .background(browseScope == scope && categoryID == nil
                                 ? theme.accent.opacity(0.24) : theme.cardBackground,
                                 in: Capsule())
@@ -1641,33 +1754,45 @@ private struct KinetiqStreamingHome: View {
                     .accessibilityAddTraits(browseScope == scope && categoryID == nil ? .isSelected : [])
                 }
                 Menu {
-                    Button("All categories") {
+                    Button("Explore all genres") {
+                        browseScope = .explore
                         categoryID = nil
-                        browseScope = .forYou
+                        selectedGenreID = nil
+                        genreRequest = nil
+                        genreLoading = false
                     }
-                    ForEach(shelves) { shelf in
-                        Button(shelf.title) {
-                            browseScope = .forYou
-                            categoryID = shelf.id
+                    ForEach(KinetiqExploreGenre.all) { genre in
+                        Button(genre.title) { chooseGenre(genre) }
+                    }
+                    if !shelves.isEmpty {
+                        Divider()
+                        ForEach(shelves) { shelf in
+                            Button(shelf.title) {
+                                browseScope = .forYou
+                                selectedGenreID = nil
+                                genreRequest = nil
+                                categoryID = shelf.id
+                            }
                         }
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Text(categoryID.flatMap { id in shelves.first(where: { $0.id == id })?.title }
-                             ?? "Categories")
+                        Text(selectedGenre?.title ?? categoryID.flatMap { id in
+                            shelves.first(where: { $0.id == id })?.title
+                        } ?? "Categories")
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 15)
-                    .frame(minHeight: 43)
-                    .background(categoryID == nil ? theme.cardBackground : theme.accent.opacity(0.24),
-                                in: Capsule())
-                    .overlay(Capsule().strokeBorder(categoryID == nil
+                    .frame(minHeight: 46)
+                    .background(categoryID == nil && selectedGenreID == nil
+                        ? theme.cardBackground : theme.accent.opacity(0.24),
+                        in: Capsule())
+                    .overlay(Capsule().strokeBorder(categoryID == nil && selectedGenreID == nil
                          ? .white.opacity(0.08) : theme.accent.opacity(0.8), lineWidth: 1))
                 }
-                .disabled(shelves.isEmpty)
                 .accessibilityLabel("Browse source categories")
             }
             .padding(.vertical, 2)
@@ -1678,7 +1803,9 @@ private struct KinetiqStreamingHome: View {
     @ViewBuilder
     private var personalizedHome: some View {
         // Filters never navigate away: the rail content changes in place.
-        if browseScope != .forYou || categoryID != nil {
+        if browseScope == .explore {
+            exploreHome
+        } else if browseScope != .forYou || categoryID != nil {
             if featured != nil { featuredHero }
             liveShelves
         } else if theme.prefersEpisodeOrganization {
@@ -1705,6 +1832,271 @@ private struct KinetiqStreamingHome: View {
             liveShelves
             if !favorites.isEmpty { savedShelf(favorites, name: "Saved for later", kind: "SAVED") }
             if !homeRecent.isEmpty { savedShelf(homeRecent, name: "Watch it again", kind: "RECENT") }
+        }
+    }
+
+    // MARK: Real Explore page inside Home
+
+    private var exploreHome: some View {
+        VStack(alignment: .leading, spacing: 19) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("EXPLORE ON HOME")
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(1.6)
+                        .foregroundStyle(theme.accent)
+                    Text(selectedGenre?.title ?? "Explore anime")
+                        .font(.system(size: editorial ? 31 : 29, weight: .bold,
+                                      design: editorial ? .serif : .rounded))
+                    Text(selectedGenre == nil
+                         ? "Find your next story by genre, or browse live collections from \(source.title)."
+                         : "Titles found in \(source.title), using its own installed module.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if selectedGenre != nil {
+                    Button {
+                        selectedGenreID = nil
+                        genreRequest = nil
+                        genreLoading = false
+                    } label: {
+                        Image(systemName: "arrow.left")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .frame(width: 44, height: 44)
+                            .background(theme.cardBackground, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to Explore genres")
+                }
+            }
+
+            if let selectedGenre {
+                selectedGenreContent(selectedGenre)
+            } else {
+                genreChooser
+                if !shelves.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("FROM \(source.title.uppercased())")
+                            .font(.system(size: 10, weight: .heavy))
+                            .tracking(1.4)
+                            .foregroundStyle(theme.accent)
+                        Text("Browse the catalogue")
+                            .font(.system(size: editorial ? 23 : 22, weight: .bold,
+                                          design: editorial ? .serif : .rounded))
+                    }
+                    liveShelves
+                } else {
+                    catalogState
+                }
+            }
+        }
+    }
+
+    private var genreChooser: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("Genres & collections")
+                    .font(.system(size: 20, weight: .bold))
+                Spacer(minLength: 5)
+                Text("\(KinetiqExploreGenre.all.count) genres")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 11),
+                                GridItem(.flexible(), spacing: 11)], spacing: 11) {
+                ForEach(showsAllGenres ? KinetiqExploreGenre.all : Array(KinetiqExploreGenre.all.prefix(12))) { genre in
+                    Button { chooseGenre(genre) } label: {
+                        VStack(alignment: .leading, spacing: 17) {
+                            Image(systemName: genre.symbol)
+                                .font(.system(size: 25, weight: .medium))
+                                .foregroundStyle(theme.accent)
+                                .frame(width: 43, height: 43)
+                                .background(theme.accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                            HStack(spacing: 4) {
+                                Text(genre.title)
+                                    .font(.system(size: 13, weight: .bold))
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .foregroundStyle(.primary)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, minHeight: 122, alignment: .leading)
+                        .background(theme.cardBackground,
+                                    in: RoundedRectangle(cornerRadius: max(12, corner)))
+                        .overlay(RoundedRectangle(cornerRadius: max(12, corner))
+                            .strokeBorder(theme.accent.opacity(0.15), lineWidth: 1))
+                        .contentShape(RoundedRectangle(cornerRadius: max(12, corner)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Explore \(genre.title) anime")
+                }
+            }
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    showsAllGenres.toggle()
+                }
+            } label: {
+                Label(showsAllGenres ? "Show fewer genres" : "View all genres",
+                      systemImage: showsAllGenres ? "chevron.up" : "chevron.down")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 47)
+                    .foregroundStyle(.primary)
+                    .background(theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: 13))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func selectedGenreContent(_ genre: KinetiqExploreGenre) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !genreShelves.isEmpty {
+                Text("Genre collections from \(source.title)")
+                    .font(.headline)
+                ForEach(genreShelves) { shelf in liveShelf(shelf) }
+            } else {
+                HStack(spacing: 8) {
+                    Text("TITLES FOUND ON \(source.title.uppercased())")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.1)
+                    Spacer(minLength: 4)
+                    if !genreResults.isEmpty {
+                        Text("\(genreResults.count)")
+                            .font(.caption.monospacedDigit())
+                    }
+                }
+                .foregroundStyle(.secondary)
+
+                if genreLoading {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Finding \(genre.title) titles…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 15)
+                }
+                if !genreResults.isEmpty {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth), spacing: 12)],
+                              spacing: 18) {
+                        ForEach(genreResults) { anime in
+                            poster(anime, badge: nil, progress: nil)
+                        }
+                    }
+                } else if !genreLoading {
+                    ContentUnavailableView("No titles found", systemImage: "rectangle.stack",
+                        description: Text("\(source.title) didn't return matching example titles. You can still browse its catalogue."))
+                }
+                if let genreFailure, !genreLoading {
+                    Text(genreFailure)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Retry this category") {
+                        genreCache.removeValue(forKey: genre.id)
+                        Task { await findGenreTitles(genre) }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .tint(theme.accent)
+                }
+                Text("Curated title searches are not an exhaustive genre index. Results come from your current module, not a separate streaming service.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(action: onBrowse) {
+                Label("Browse all on \(source.title)", systemImage: "rectangle.stack")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 46)
+                    .foregroundStyle(.primary)
+                    .background(theme.cardBackground,
+                                in: RoundedRectangle(cornerRadius: 13))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func chooseGenre(_ genre: KinetiqExploreGenre) {
+        browseScope = .explore
+        categoryID = nil
+        selectedGenreID = genre.id
+        genreRequest = nil
+        genreLoading = false
+        genreFailure = nil
+        if let cached = genreCache[genre.id] {
+            genreResults = cached
+        } else {
+            genreResults = []
+            if genreShelves.isEmpty {
+                switch status {
+                case .loaded, .unsupported, .failure:
+                    Task { await findGenreTitles(genre) }
+                case .idle, .loading:
+                    genreLoading = true
+                case .missingInstallation:
+                    genreLoading = false
+                }
+            }
+        }
+    }
+
+    // A source may provide genre-specific discovery feeds directly. Otherwise,
+    // search distinctive real titles in that genre using the existing trusted
+    // searchResults contract. Never invent cards, episodes, streams or rankings.
+    private func findGenreTitles(_ genre: KinetiqExploreGenre) async {
+        guard selectedGenreID == genre.id, genreShelves.isEmpty else { return }
+        guard let runtime else {
+            switch status {
+            case .idle, .loading: genreLoading = true
+            case .loaded, .unsupported, .missingInstallation, .failure: genreLoading = false
+            }
+            return
+        }
+        let token = UUID()
+        genreRequest = token
+        genreLoading = true
+        genreResults = []
+        genreFailure = nil
+        var found: [ModuleAnimeItem] = []
+        var seen = Set<String>()
+        var seenTitles = Set<String>()
+        var failedCount = 0
+        for term in genre.searchExamples.prefix(5) {
+            guard !Task.isCancelled, genreRequest == token,
+                  selectedGenreID == genre.id, self.runtime === runtime else { return }
+            do {
+                let response = try await runtime.call(handler: "searchResults", arguments: [term])
+                guard !Task.isCancelled, genreRequest == token,
+                      selectedGenreID == genre.id, self.runtime === runtime else { return }
+                let result = ModuleRuntimeDecoder.searchResults(
+                    from: response, baseURL: runtime.baseURL,
+                    maximumResults: min(8, runtime.maximumHomeResults))
+                for item in result.prefix(3) {
+                    let titleKey = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                    if !titleKey.isEmpty && seen.insert(item.id).inserted &&
+                       seenTitles.insert(titleKey).inserted {
+                        found.append(item)
+                    }
+                }
+                genreResults = found
+            } catch {
+                guard !Task.isCancelled, genreRequest == token,
+                      selectedGenreID == genre.id else { return }
+                failedCount += 1
+            }
+        }
+        guard genreRequest == token, selectedGenreID == genre.id else { return }
+        genreCache[genre.id] = found
+        genreLoading = false
+        if found.isEmpty && failedCount > 0 {
+            genreFailure = "The source couldn't complete some searches. You can retry or browse directly."
         }
     }
 
@@ -2069,6 +2461,10 @@ private struct KinetiqStreamingHome: View {
         runtime = nil
         status = .loading
         failureSummary = nil
+        genreRequest = nil
+        genreResults = []
+        genreCache = [:]
+        genreLoading = false
 
         guard source.module.contentType?.lowercased() == "video" else {
             if currentRequest == token { status = .unsupported }
@@ -2089,6 +2485,9 @@ private struct KinetiqStreamingHome: View {
             guard !Task.isCancelled, currentRequest == token else { return }
             shelves = ModuleDiscoveryDecoder.home(from: response, baseURL: instance.baseURL)
             status = .loaded
+            if let selectedGenre, genreShelves.isEmpty {
+                await findGenreTitles(selectedGenre)
+            }
         } catch {
             guard !Task.isCancelled, currentRequest == token else { return }
             if case ModuleRuntimeError.missingHandler = error {
@@ -2097,6 +2496,8 @@ private struct KinetiqStreamingHome: View {
                 status = .failure
                 failureSummary = ModulePlaybackDiagnostics.redact(error.localizedDescription)
             }
+            // Modules without discoveryHome can still implement searchResults.
+            if let selectedGenre { await findGenreTitles(selectedGenre) }
         }
     }
 }
