@@ -153,6 +153,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var hasCredential: Bool
     @Published private(set) var connection: Connection = .off
     @Published private(set) var message = "No connection has been tested."
+    @Published private(set) var connectionStage = "Not started"
+    /// Only fixed labels and numeric system codes. Never include a server frame,
+    /// token, HTTP header, request URL, or the original error description.
+    @Published private(set) var safeDiagnostics = "No connection attempt recorded."
     @Published private(set) var lastPreview: KinetiqPresencePlayback?
     @Published private(set) var lastSentAt: Date?
 
@@ -164,6 +168,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private var lastSignature: String?
     private var lastPublication = Date.distantPast
     private var foregroundObserver: NSObjectProtocol?
+    private var startedAt: Date?
+    private var lastGatewayOpcode: Int?
 
     private init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
@@ -212,6 +218,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         hasCredential = false
         connection = .needsCredential
         message = "Saved token removed from this iPhone."
+        connectionStage = "Credential removed"
     }
 
     func connect() {
@@ -230,6 +237,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         socket = task
         connection = .connecting
         message = "Opening the experimental Gateway session…"
+        connectionStage = "Opening WebSocket"
+        safeDiagnostics = "Connection attempt in progress. No credential data is recorded."
+        lastGatewayOpcode = nil
+        startedAt = Date()
         task.resume()
         listeningTask = Task { @MainActor [weak self] in
             await self?.receiveLoop(on: task, generation: currentGeneration, token: token)
@@ -250,6 +261,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         lastSentAt = nil
         connection = enabled ? .disconnected : .off
         message = "Disconnected from Discord."
+        connectionStage = "Disconnected"
     }
 
     func record(_ snapshot: KinetiqPresencePlayback) {
@@ -313,8 +325,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 }
                 guard let packet = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let op = packet["op"] as? Int else { continue }
+                lastGatewayOpcode = op
                 if let sequence = packet["s"] as? Int { lastSequence = sequence }
                 if op == 10 {
+                    connectionStage = "Gateway HELLO received"
                     if let details = packet["d"] as? [String: Any],
                        let interval = details["heartbeat_interval"] as? Double {
                         beginHeartbeat(on: task, interval: interval, generation: generation)
@@ -328,16 +342,24 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                         "large_threshold": 50
                     ]]
                     try await Self.send(identify, on: task)
+                    connectionStage = "IDENTIFY sent; awaiting READY"
                 } else if op == 0, packet["t"] as? String == "READY" {
                     connection = .connected
+                    connectionStage = "Gateway READY received"
                     message = "Gateway READY. Rich Presence and artwork still need peer verification."
+                    safeDiagnostics = "Gateway READY received. Rich Presence visibility has not been verified. No credential data is recorded."
                     publishIfNeeded(force: true)
                 } else if op == 9 {
-                    connection = .needsCredential
-                    message = "Discord rejected the session. Replace the token or turn this experiment off."
+                    connection = .interrupted
+                    connectionStage = "Gateway invalid session (opcode 9)"
+                    message = "Discord reported an invalid Gateway session. This does not establish why it was rejected."
+                    safeDiagnostics = diagnosticReport(for: task, error: nil)
                     break
                 } else if op == 7 {
-                    message = "Discord requested a new session. Tap Reconnect."
+                    connection = .interrupted
+                    connectionStage = "Gateway reconnect requested (opcode 7)"
+                    message = "Discord requested a new session."
+                    safeDiagnostics = diagnosticReport(for: task, error: nil)
                     break
                 } else if op == 1 {
                     try await Self.send(["op": 1, "d": lastSequence as Any? ?? NSNull()], on: task)
@@ -345,13 +367,14 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             }
         } catch {
             if generation == self.generation {
-                let code = task.closeCode.rawValue
-                if code == 4004 || code == 4003 {
+                safeDiagnostics = diagnosticReport(for: task, error: error)
+                let code = task.closeCode
+                if code.rawValue == 4004 || code.rawValue == 4003 {
                     connection = .needsCredential
-                    message = "Discord refused authentication. Replace the saved token."
+                    message = "Discord closed the authentication session. See safe diagnostics."
                 } else {
                     connection = .interrupted
-                    message = "Connection closed (code \(code)). iOS may suspend sockets during PiP."
+                    message = "Connection interrupted before a usable session. See safe diagnostics; this is not necessarily a PiP issue."
                 }
             }
         }
@@ -362,7 +385,40 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         if connection == .connected || connection == .connecting {
             connection = .interrupted
             message = "Gateway session ended. Tap Reconnect."
+            safeDiagnostics = diagnosticReport(for: task, error: nil)
         }
+    }
+
+    private func diagnosticReport(for task: URLSessionWebSocketTask, error: Error?) -> String {
+        let closeCode = task.closeCode
+        let closeText = closeCode == .invalid ? "Not provided" : String(closeCode.rawValue)
+        let httpText = (task.response as? HTTPURLResponse).map { String($0.statusCode) } ?? "Not available"
+        let opcodeText = lastGatewayOpcode.map { String($0) } ?? "None received"
+        let duration = startedAt.map { max(0, Int(Date().timeIntervalSince($0))) } ?? 0
+        let errorText: String
+        if let error {
+            let nsError = error as NSError
+            let category: String
+            switch nsError.domain {
+            case NSURLErrorDomain: category = "URLSession"
+            case NSPOSIXErrorDomain: category = "POSIX"
+            case NSCocoaErrorDomain: category = "Cocoa"
+            default: category = "Other system error"
+            }
+            errorText = "\(category) (\(nsError.code))"
+        } else {
+            errorText = "No transport error was captured"
+        }
+        return """
+        Kinetiq Presence Lab / safe diagnostic
+        Stage: \(connectionStage)
+        HTTP upgrade: \(httpText)
+        Last Gateway opcode: \(opcodeText)
+        WebSocket close code: \(closeText)
+        Transport: \(errorText)
+        Elapsed: \(duration) seconds
+        Token, WebSocket payloads, headers, cookies, and server text excluded.
+        """
     }
 
     private func beginHeartbeat(on task: URLSessionWebSocketTask, interval: Double, generation: Int) {

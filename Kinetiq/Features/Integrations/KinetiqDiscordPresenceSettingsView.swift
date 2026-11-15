@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The feature has its own screen; it does not add controls to the player or
 /// change the app's four-tab navigation.
@@ -66,10 +67,23 @@ struct KinetiqDiscordPresenceSettingsView: View {
 
             Section("Connection") {
                 LabeledContent("Status", value: presence.connection.rawValue)
+                LabeledContent("Last stage", value: presence.connectionStage)
                 Text(presence.message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+
+                Text(presence.safeDiagnostics)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Safe connection diagnostics")
+
+                Button {
+                    UIPasteboard.general.string = presence.safeDiagnostics
+                } label: {
+                    Label("Copy safe diagnostics", systemImage: "doc.on.doc")
+                }
 
                 HStack {
                     Button("Reconnect", systemImage: "arrow.clockwise") {
@@ -124,7 +138,7 @@ struct KinetiqDiscordPresenceSettingsView: View {
             }
 
             Section {
-                Text("1. Connect and wait for Gateway READY.\n2. Play an anime and check the Rich Presence from another Discord account.\n3. Check episode changes, Sub/Dub, pause/resume, and the anime poster.\n4. Enable PiP, leave Kinetiq, and check whether the activity survives app suspension.\n5. Disconnect and confirm the activity disappears.")
+                Text("1. Connect and check the safe diagnostics.\n2. A WebSocket upgrade is not proof that authentication succeeded.\n3. Only a Gateway READY confirms a session, not visible Rich Presence.\n4. Never share session tokens or raw network captures.\n5. Test PiP and background behavior only after a verified supported integration.")
                     .font(.footnote)
             } header: {
                 Text("What to test")
