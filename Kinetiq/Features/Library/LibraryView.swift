@@ -2162,6 +2162,7 @@ private struct PlayerOptionsSheet: View {
     let panel: PlayerPanel
 
     @ObservedObject var model: KinetiqPlaybackModel
+    @ObservedObject private var externalSubtitles = ExternalSubtitleController.shared
 
     let onClose: () -> Void
 
