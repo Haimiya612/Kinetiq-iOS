@@ -1,3 +1,4 @@
+
 import SwiftUI
 import AVFoundation
 import UIKit
@@ -76,7 +77,18 @@ final class KinetiqPlaybackAppDelegate: UIResponder, UIApplicationDelegate, UNUs
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        _ = KinetiqOfflineDownloadStore.shared
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        KinetiqOfflineDownloadStore.shared.handleBackgroundEvents(
+            identifier: identifier, completion: completionHandler
+        )
     }
 
     nonisolated func userNotificationCenter(

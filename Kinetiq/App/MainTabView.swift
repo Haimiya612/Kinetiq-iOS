@@ -163,12 +163,7 @@ struct MainTabView: View {
                     ModuleGlobalFavoritesView()
 
                 case .downloads:
-                    KinetiqPlaceholderView(
-                        title: "Downloads",
-                        subtitle: "Keep your media available offline with Kinetiq's download manager.",
-                        symbol: "arrow.down.circle.fill",
-                        accent: KinetiqPalette.accent
-                    )
+                    KinetiqOfflineDownloadsView()
 
                 case .settings:
                     SettingsView()

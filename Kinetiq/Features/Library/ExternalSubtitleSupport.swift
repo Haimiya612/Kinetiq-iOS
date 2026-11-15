@@ -1221,6 +1221,23 @@ enum ModuleSubtitleLoader {
     static let maximumCues = 20_000
 
     static func load(_ track: ModuleRemoteSubtitleTrack) async throws -> ModuleSubtitleTimeline {
+        // Only our own downloaded caption sidecars may be opened from disk.
+        // The ordinary module request policy remains HTTPS-only.
+        if track.url.isFileURL {
+            let root = FileManager.default.urls(for: .applicationSupportDirectory,
+                in: .userDomainMask)[0]
+                .appendingPathComponent("KinetiqOffline/v1/subtitles", isDirectory: true)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            let file = track.url.standardizedFileURL.resolvingSymlinksInPath()
+            let metadata = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard file.path.hasPrefix(root.path + "/"),
+                  metadata?.isRegularFile == true,
+                  (metadata?.fileSize ?? .max) <= maximumBytes else {
+                throw ModuleSubtitleError.invalidURL
+            }
+            let bytes = try Data(contentsOf: file, options: [.mappedIfSafe])
+            return try parse(data: bytes, format: track.format, contentType: nil)
+        }
         let request = try ModuleSubtitleRequestPolicy.request(for: track)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil

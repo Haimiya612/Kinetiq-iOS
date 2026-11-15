@@ -808,6 +808,9 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
     let moduleVersion: String
     let packageSHA256Prefix: String
     let defaultStreamHeaders: [String: String]
+    let offlineAllowedStreamHosts: Set<String>
+
+    var permitsOfflineDownloads: Bool { !offlineAllowedStreamHosts.isEmpty }
 
     private let jsQueue = DispatchQueue(
         label: "com.kinetiq.modules.javascript",
@@ -911,6 +914,29 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         )
 
         baseURL = parsedBaseURL
+        // Parse this optional extension independently: an unrelated or
+        // malformed 'offline' value must never break legacy module playback.
+        let payload = (try? JSONSerialization.jsonObject(with: manifestData)) as? [String: Any]
+        let configuration = payload?["config"] as? [String: Any]
+        let offline = configuration?["offline"] as? [String: Any]
+        let authorizationText = offline?["authorizationURL"] as? String ?? ""
+        let hosts = offline?["allowedStreamHosts"] as? [String] ?? []
+        if offline?["allowDownloads"] as? Bool == true,
+           let authorization = URL(string: authorizationText),
+           authorization.scheme?.lowercased() == "https",
+           authorization.host?.lowercased() == parsedBaseURL.host?.lowercased(),
+           authorization.user == nil, authorization.password == nil,
+           !hosts.isEmpty,
+           hosts.count <= 32,
+           hosts.allSatisfy({ host in
+               !host.isEmpty && host.count <= 253 && !host.contains("/") &&
+               !host.contains(":") && !host.contains("*") &&
+               host.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-").contains($0) }
+           }) {
+            offlineAllowedStreamHosts = Set(hosts.map { $0.lowercased() })
+        } else {
+            offlineAllowedStreamHosts = []
+        }
         timeoutMilliseconds = timeout
         maximumHomeResults = homeLimit
         moduleName = record.name
@@ -2091,8 +2117,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
         let header = [
             "Kinetiq module diagnostics · Batch 05K playback triage",
             "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 80))",
-            "Module version: \(ModulePlaybackDiagnostics.redact(runtime.moduleVersion, limit: 48))",
-            "Package SHA-256 prefix: \(runtime.packageSHA256Prefix)",
+            "Module version: \(ModulePlaybackDiagnostics.redact(runtime?.moduleVersion ?? "Saved offline episode", limit: 48))",
+            "Package SHA-256 prefix: \(runtime?.packageSHA256Prefix ?? "offline")",
             "Episode number: \(ModulePlaybackDiagnostics.redact(diagnosticEpisodeNumber ?? currentEpisode?.number ?? "Unknown", limit: 30))",
             "Language: \(diagnosticLanguage)",
             "Failure code: \(resolutionFailureCode ?? "none")",
@@ -2112,7 +2138,7 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
         }
     }
 
-    private let runtime: SynthetiqModuleRuntime
+    private let runtime: SynthetiqModuleRuntime?
     private var activeRequestID: UUID?
 
     init(
@@ -2129,6 +2155,33 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
         self.runtime = runtime
         self.sourceName = runtime.moduleName
         self.currentEpisodeTitle = animeTitle
+    }
+
+    /// Reuse the complete streaming player, including AVPlayer/PiP, caption
+    /// selection, gestures, diagnostics and the same module history identity.
+    /// No JavaScript module or internet connection is needed for this session.
+    init(offline entry: KinetiqOfflineEntry, url: URL,
+         subtitleTracks: [ModuleRemoteSubtitleTrack]) {
+        let episode = ModuleAnimeEpisode(id: entry.episodeID,
+            number: entry.episodeNumber, href: entry.episodeID,
+            subAvailable: true, dubAvailable: true)
+        self.sourceID = entry.sourceID
+        self.sourceName = entry.sourceName
+        self.animeTitle = entry.animeTitle
+        self.animeItem = ModuleAnimeItem(id: entry.animeID, title: entry.animeTitle,
+            href: entry.animeID, imageURL: entry.artworkURL.flatMap { URL(string: $0) })
+        self.episodes = [episode]
+        self.currentEpisode = episode
+        self.currentEpisodeIndex = 0
+        self.currentEpisodeTitle = "\(entry.animeTitle) -- Episode \(entry.episodeNumber)"
+        self.selectedLanguage = entry.language
+        self.runtime = nil
+        let stream = ModuleResolvedStream(title: self.currentEpisodeTitle,
+            label: "Saved offline · \(entry.sourceName)", url: url,
+            headers: [:], streamType: entry.format == .hls ? "hls" : "mp4",
+            subtitles: subtitleTracks)
+        self.currentStream = stream
+        self.availableStreams = [stream]
     }
 
     var upcomingEpisodes: [ModuleAnimeEpisode] {
@@ -2204,6 +2257,23 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
             trace("Episode validation failed: language unavailable")
             return false
         }
+
+        if runtime == nil {
+            guard let stream = availableStreams.first,
+                  stream.url.isFileURL,
+                  FileManager.default.fileExists(atPath: stream.url.path) else {
+                playbackError = "The saved episode is missing from Downloads."
+                return false
+            }
+            currentEpisode = episode
+            currentEpisodeIndex = index
+            currentStream = stream
+            selectedLanguage = language
+            playbackError = nil
+            return true
+        }
+
+        guard let runtime else { return false }
 
         guard !isResolving else {
             trace("Skipped duplicate concurrent resolve request")
@@ -4424,6 +4494,7 @@ struct ModuleAnimeDetailsView: View {
     @State private var detailSection: ModuleDetailSection = .episodes
     @State private var selectedSeason: Int?
     @State private var relatedSelection: ModuleAnimeItem?
+    @State private var downloadEpisode: ModuleAnimeEpisode?
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
     @State private var activeLaunch: ModuleEpisodeLaunch?
@@ -4513,6 +4584,13 @@ struct ModuleAnimeDetailsView: View {
                 ModuleAnimeDetailsView(
                     item: related, runtime: runtime,
                     sourceID: sourceID, sourceName: sourceName
+                )
+                .preferredColorScheme(.dark)
+            }
+            .sheet(item: $downloadEpisode) { episode in
+                KinetiqEpisodeDownloadSheet(
+                    anime: details ?? item, episode: episode,
+                    sourceID: sourceID, sourceName: sourceName, runtime: runtime
                 )
                 .preferredColorScheme(.dark)
             }
@@ -5021,6 +5099,17 @@ struct ModuleAnimeDetailsView: View {
                 }
                 .disabled(activeLaunch != nil || (!episode.subAvailable && !episode.dubAvailable))
                 .accessibilityLabel("Manage Episode \(episode.number) progress")
+
+                Button {
+                    downloadEpisode = episode
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 20))
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(activeLaunch != nil)
+                .accessibilityLabel("Download options for Episode \(episode.number)")
             }
 
             if episode.subAvailable { episodeProgressLabel(episode, language: "sub") }

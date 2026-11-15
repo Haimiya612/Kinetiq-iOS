@@ -4155,7 +4155,7 @@ private final class ModuleHLSProbeRedirectGuard: NSObject,
 // AVTextStyleRule applies only to native WebVTT. Closed captions, some HLS
 // formats and the system PiP UI can instead obey Apple's accessibility styles.
 // No code here claims to turn overlay SRT/WebVTT into PiP native captions.
-private enum KinetiqModuleNativeCaptionStyle {
+enum KinetiqModuleNativeCaptionStyle {
     static func rules(
         for appearance: KinetiqSubtitleAppearance,
         inPiP: Bool
