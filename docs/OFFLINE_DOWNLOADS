@@ -1,0 +1,75 @@
+# Kinetiq offline video contract — 06K.10B candidate
+
+The Downloads tab contains a shared native MP4 and HLS VOD download queue,
+distinct from the user's imported Local Library. Its index never saves a
+remote stream URL, provider credentials, or cookies.
+
+## Source authorization
+
+Existing repository trust grants permission to execute source code, **not**
+permission to save third-party media. The source operator must actually own
+or be authorized to distribute offline copies and publish an offline policy.
+
+An eligible video module can add these optional fields under config:
+
+    "offline": {
+      "allowDownloads": true,
+      "authorizationURL": "https://media.example.org/offline-policy",
+      "allowedStreamHosts": ["media.example.org", "cdn.media.example.org"]
+    }
+
+This is only the additional object, not an entire module.json.
+
+- The policy URL must be HTTPS and on the config.baseUrl hostname.
+- Media hosts must be explicitly named; wildcards are not accepted.
+- The installed module must remain trusted.
+- HTTPS direct MP4/MOV/M4V and authorized HLS VOD can be eligible.
+- Web embeds, live streams and DRM-protected media without offline rights
+  cannot be downloaded in this release.
+- HLS media requiring arbitrary stream headers/cookies is currently rejected
+  because segment requests cannot promise to carry this context.
+- A manifest claim alone is **not** verified legal authorization. Developers
+  distributing the module must confirm provider rights before enabling it.
+
+## Functional scope
+
+- Per-episode download sheet with sub/dub and real available HLS qualities.
+- Background URLSession transfers for direct MP4 and AVAssetDownloadURLSession
+  for HLS VOD; task identifiers are opaque and contain no stream secrets.
+- Progress, queue, pause/resume, cancel, in-session retry, deletion,
+  storage limits and Wi-Fi/cellular preferences.
+- Offline episodes reopen **the same `KinetiqModulePlayerView` and
+  `ModuleEpisodePlaybackSession`**, with its established controls, PiP,
+  caption preferences and module watch-history/resume identity. Nothing is
+  inserted into personally imported Local Library data.
+- **Every source-advertised external SRT/WebVTT track** must be fetched,
+  parsed and saved as a local sidecar before the episode is queued. An
+  unauthorized host or failed track makes the entire request fail clearly;
+  no available subtitle is silently skipped.
+- For HLS VOD, the native asset configuration requests every reported
+  `allMediaSelections` audio/caption combination (bounded to 100). Whether
+  AVFoundation preserves every rendition requires an iPhone verification.
+- Offline sidecars feed the same custom subtitle controller; native embedded
+  subtitles are controlled through the same AVPlayer menu. Offline sidecar
+  display **in system PiP remains unverified** and may require an additional
+  native handoff path.
+
+## Limits that still need device tests
+
+- Existing modules may not yet declare an authorized offline capability. Test
+  with an owned/licensed module fixture to prove actual offline downloading.
+- Season batch queues, HEVC transcoding/compression and FairPlay offline
+  licenses belong to later work. Quality presets choose actual HLS variants,
+  not an invented transcoded resolution.
+- All available subtitle tracks are requested, but real multi-language HLS
+  retention, external caption rendering and captions in offline PiP still
+  require iPhone verification against permitted sample media.
+- External caption downloads are bounded to 24 tracks and 2 MiB per track,
+  and currently reject redirects to avoid unapproved-host requests.
+- Expiring signed links may require reopening the episode after an app relaunch.
+
+Apple primary references:
+- https://developer.apple.com/documentation/avfoundation/using-avfoundation-to-play-and-persist-http-live-streams
+- https://developer.apple.com/documentation/avfoundation/avassetdownloadurlsession
+- https://developer.apple.com/documentation/foundation/downloading-files-in-the-background
+- https://developer.apple.com/app-store/review/guidelines/
