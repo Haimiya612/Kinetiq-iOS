@@ -232,6 +232,9 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         guard let url = URL(string: "wss://gateway.discord.gg/?v=10&encoding=json") else { return }
         let session = URLSession(configuration: .ephemeral)
         let task = session.webSocketTask(with: url)
+        // A Gateway READY payload can exceed URLSession's default receive limit.
+        // Allow a larger message while retaining a finite memory bound.
+        task.maximumMessageSize = 16 * 1024 * 1024
         generation += 1
         let currentGeneration = generation
         socket = task
@@ -401,7 +404,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             let category: String
             switch nsError.domain {
             case NSURLErrorDomain: category = "URLSession"
-            case NSPOSIXErrorDomain: category = "POSIX"
+            case NSPOSIXErrorDomain: category = nsError.code == 40 ? "POSIX / message too long" : "POSIX"
             case NSCocoaErrorDomain: category = "Cocoa"
             default: category = "Other system error"
             }
