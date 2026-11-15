@@ -380,14 +380,6 @@ struct SettingsView: View {
                     Text("Calendar alerts use published airtimes and are delivered locally after scheduling. Newly announced dates while the app is closed require a later push service.")
                 }
 
-                Section("Integrations") {
-                    NavigationLink {
-                        KinetiqDiscordPresenceSettingsView()
-                    } label: {
-                        Label("Discord Presence Lab", systemImage: "person.crop.circle.badge.checkmark")
-                    }
-                }
-
                 // MARK: Modules & Sources
 
                 Section("Modules & Sources") {
