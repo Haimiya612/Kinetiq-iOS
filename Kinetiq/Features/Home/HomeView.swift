@@ -2752,6 +2752,7 @@ private struct KinetiqStreamingFeedView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                LazyVStack(spacing: 0) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
                                     GridItem(.flexible(), spacing: 12)], spacing: 16) {
                     ForEach(cards) { card in
@@ -2768,7 +2769,8 @@ private struct KinetiqStreamingFeedView: View {
                         }
                         .buttonStyle(.plain)
                         .onAppear {
-                            if card.id == cards.last?.id && hasMore && !loading {
+                            if cards.suffix(6).contains(where: { $0.id == card.id }) &&
+                               hasMore && !loading && errorText == nil {
                                 Task { await next() }
                             }
                         }
@@ -2784,11 +2786,21 @@ private struct KinetiqStreamingFeedView: View {
                     }
                     .padding(18)
                 } else if hasMore && !loading {
-                    Button("Load more") { Task { await next() } }
-                        .buttonStyle(.borderedProminent)
+                    // The sentinel is part of the scroll content so feeds keep
+                    // paging automatically even when a page has very few cards.
+                    ProgressView("Loading more titles…")
+                        .frame(maxWidth: .infinity)
                         .padding(18)
+                        .onAppear { Task { await next() } }
                 } else if cards.isEmpty && !loading {
                     ContentUnavailableView("No titles in this feed", systemImage: "rectangle.stack")
+                } else if !hasMore && !loading {
+                    Text("End of available titles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(18)
+                }
                 }
             }
             .background(KinetiqExperienceBackground())
@@ -2839,6 +2851,78 @@ private struct KinetiqStreamingFeedView: View {
 // Searching is explicit, source-scoped at the network boundary, and bounded
 // to three concurrent trusted module runtimes. No fabricated titles or rankings.
 
+/// A calendar card or release alert can open one consistent source-aware
+/// destination without importing the anime into the personal Local Library.
+struct KinetiqAnimeSourceRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let alternativeTitles: [String]
+
+    init(title: String, alternativeTitles: [String] = []) {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = cleanTitle
+        var seen = Set([KinetiqCalendarRelevance.key(cleanTitle)])
+        self.alternativeTitles = alternativeTitles
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert(KinetiqCalendarRelevance.key($0)).inserted }
+    }
+}
+
+struct KinetiqAnimeSourceLookupSheet: View {
+    let request: KinetiqAnimeSourceRequest
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedQuery: String
+
+    init(request: KinetiqAnimeSourceRequest) {
+        self.request = request
+        _selectedQuery = State(initialValue: request.title)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .foregroundStyle(KinetiqPalette.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("SEARCH ALL TRUSTED SOURCES")
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(.secondary)
+                        Text("Choose a source to open its anime details")
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                    }
+                    Spacer(minLength: 0)
+                    if !request.alternativeTitles.isEmpty {
+                        Menu {
+                            ForEach([request.title] + request.alternativeTitles, id: \.self) { title in
+                                Button(title) { selectedQuery = title }
+                            }
+                        } label: {
+                            Label("Other titles", systemImage: "text.magnifyingglass")
+                                .font(.caption.weight(.semibold))
+                                .frame(minHeight: 44)
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                DiscoverView(initialQuery: selectedQuery, searchesAllSourcesOnOpen: true,
+                             fallbackQueries: ([request.title] + request.alternativeTitles)
+                                .filter { $0 != selectedQuery })
+                    .id(selectedQuery)
+            }
+            .navigationTitle("Find Anime")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 private struct KinetiqUnifiedSearchHit: Identifiable {
     let source: ModuleSourceOption
     let item: ModuleAnimeItem
@@ -2867,9 +2951,12 @@ struct DiscoverView: View {
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var themeID = KinetiqVisualTheme.signature.rawValue
 
-    @State private var scope: SearchScope = .all
+    @State private var scope: SearchScope
     @State private var scopedSourceID: String? = nil
-    @State private var searchText = ""
+    @State private var searchText: String
+    private let searchesAllSourcesOnOpen: Bool
+    private let prefilledQuery: String
+    private let fallbackQueries: [String]
     @FocusState private var textFieldFocused: Bool
     @State private var submittedQuery = ""
     @State private var liveMatches: [KinetiqUnifiedSearchHit] = []
@@ -2886,6 +2973,15 @@ struct DiscoverView: View {
     @State private var showingLibrary = false
     @State private var requestedMediaID: String?
     @State private var localFiles: [URL] = []
+
+    init(initialQuery: String = "", searchesAllSourcesOnOpen: Bool = false,
+         fallbackQueries: [String] = []) {
+        self.searchesAllSourcesOnOpen = searchesAllSourcesOnOpen
+        self.prefilledQuery = initialQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.fallbackQueries = Array(fallbackQueries.prefix(2))
+        _searchText = State(initialValue: initialQuery)
+        _scope = State(initialValue: searchesAllSourcesOnOpen ? .online : .all)
+    }
 
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeID) ?? .signature
@@ -2961,6 +3057,11 @@ struct DiscoverView: View {
         .task {
             await sources.loadSavedRepositoriesIfNeeded()
             loadLocalFiles()
+            if searchesAllSourcesOnOpen && hasQuery {
+                // Notification and calendar lookups must inspect every trusted
+                // video provider, not just the first source returning a hit.
+                runOnlineSearch()
+            }
         }
         .onChange(of: searchText) { _, _ in cancelSearch() }
         .onChange(of: scope) { _, _ in
@@ -3419,10 +3520,30 @@ struct DiscoverView: View {
                     )
                     guard !Task.isCancelled, searchToken == token,
                           submittedQuery == term else { return }
-                    let decoded = ModuleRuntimeDecoder.searchResults(
+                    var decoded = ModuleRuntimeDecoder.searchResults(
                         from: payload, baseURL: runtime.baseURL,
                         maximumResults: min(runtime.maximumHomeResults, 48)
                     )
+                    // AniList's English name may differ from the name used
+                    // by a module. Try up to two real aliases only when that
+                    // source returned no result for the displayed query.
+                    if decoded.isEmpty && searchesAllSourcesOnOpen && term == prefilledQuery {
+                        for alternative in fallbackQueries {
+                            guard !Task.isCancelled, searchToken == token else { return }
+                            if let response = try? await runtime.call(
+                                handler: "searchResults", arguments: [alternative]
+                            ) {
+                                let matches = ModuleRuntimeDecoder.searchResults(
+                                    from: response, baseURL: runtime.baseURL,
+                                    maximumResults: min(runtime.maximumHomeResults, 48)
+                                )
+                                if !matches.isEmpty {
+                                    decoded = matches
+                                    break
+                                }
+                            }
+                        }
+                    }
                     var seenIDs = Set(liveMatches.map(\.id))
                     var seenTitles = Set(liveMatches.map {
                         $0.item.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3433,7 +3554,7 @@ struct DiscoverView: View {
                             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                         let hit = KinetiqUnifiedSearchHit(source: source, item: item)
                         if !titleKey.isEmpty && seenIDs.insert(hit.id).inserted &&
-                           seenTitles.insert(titleKey).inserted {
+                           (searchesAllSourcesOnOpen || seenTitles.insert(titleKey).inserted) {
                             liveMatches.append(hit)
                         }
                     }
@@ -3445,7 +3566,7 @@ struct DiscoverView: View {
             }
             guard !Task.isCancelled, searchToken == token else { return }
             batchInFlight = false
-            if liveMatches.isEmpty && !pendingSources.isEmpty {
+            if (liveMatches.isEmpty || searchesAllSourcesOnOpen) && !pendingSources.isEmpty {
                 loadNextSearchBatch()
             }
         }

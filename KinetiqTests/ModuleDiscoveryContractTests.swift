@@ -9,6 +9,70 @@ import XCTest
 final class ModuleDiscoveryContractTests: XCTestCase {
     private let baseURL = URL(string: "https://example.org/")!
 
+    @MainActor
+    func testCalendarAlertRoutesDirectlyToAllSourceLookup() {
+        let payload: [AnyHashable: Any] = [
+            "kinetiqCalendar": true,
+            "mediaID": 123,
+            "animeTitle": "Magical Sisters LuluttoLilly Part 2",
+            "animeAliases": ["LuluttoLilly", "Magical Sisters LuluttoLilly"]
+        ]
+        let route = KinetiqEpisodeAlerts.route(from: payload)
+        XCTAssertEqual(route?.animeTitle, "Magical Sisters LuluttoLilly Part 2")
+        XCTAssertEqual(route?.alternativeTitles.count, 2)
+        XCTAssertNil(route?.sourceID)
+    }
+
+    @MainActor
+    func testVerifiedEpisodeAlertKeepsSourceIdentityButSearchesByTitle() {
+        let route = KinetiqEpisodeAlerts.route(from: [
+            "animeTitle": "Roshidere", "sourceID": "provider-1", "animeID": "1234"
+        ])
+        XCTAssertEqual(route?.animeTitle, "Roshidere")
+        XCTAssertEqual(route?.sourceID, "provider-1")
+        XCTAssertEqual(route?.animeID, "1234")
+    }
+
+    @MainActor
+    func testLegacyCalendarPayloadFallsBackWithoutFabricatingATitle() {
+        XCTAssertNil(KinetiqEpisodeAlerts.route(from: [
+            "kinetiqCalendar": true, "mediaID": 123
+        ]))
+        XCTAssertNil(KinetiqEpisodeAlerts.route(from: ["animeTitle": " "]))
+    }
+
+    func testPublishedEpisodeMetadataUsesRealTitleOrNoTitle() {
+        let item = KinetiqCalendarMedia.StreamingEpisode(
+            title: "Episode 7 - The Festival", thumbnail: "https://example.org/ep7.jpg"
+        )
+        XCTAssertEqual(item.episodeName(number: 7), "The Festival")
+        let untitled = KinetiqCalendarMedia.StreamingEpisode(
+            title: "Episode 7", thumbnail: nil
+        )
+        XCTAssertNil(untitled.episodeName(number: 7))
+    }
+
+    func testExistingNotificationHistoryDecodesWithoutArtworkFields() throws {
+        struct OldNotice: Codable {
+            let id: UUID
+            let level: KinetiqNoticeLevel
+            let title: String
+            let message: String
+            let details: String?
+            let groupKey: String
+            let date: Date
+            let occurrences: Int
+        }
+        let old = OldNotice(id: UUID(), level: .information, title: "Modules",
+                            message: "An update is ready", details: nil,
+                            groupKey: "legacy", date: Date(), occurrences: 1)
+        let data = try JSONEncoder().encode(old)
+        let migrated = try JSONDecoder().decode(KinetiqNotice.self, from: data)
+        XCTAssertEqual(migrated.id, old.id)
+        XCTAssertNil(migrated.artworkURL)
+        XCTAssertNil(migrated.animeTitle)
+    }
+
     func testRealHomeSectionsAndViewAllFeed() {
         let payload: [String: Any] = [
             "sections": [

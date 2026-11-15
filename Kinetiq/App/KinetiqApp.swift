@@ -91,6 +91,32 @@ final class KinetiqPlaybackAppDelegate: UIResponder, UIApplicationDelegate, UNUs
         }
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        let content = notification.request.content
+        let info = content.userInfo
+        Task { @MainActor in
+            if let route = KinetiqEpisodeAlerts.route(from: info), !route.animeTitle.isEmpty {
+                // Show the familiar in-app banner with the episode artwork
+                // and search action, avoiding a duplicate native banner.
+                KinetiqNoticeCenter.shared.post(
+                    .information, title: content.title,
+                    message: [content.subtitle, content.body]
+                        .filter { !$0.isEmpty }.joined(separator: " · "),
+                    groupKey: notification.request.identifier,
+                    artworkURL: info["artworkURL"] as? String,
+                    animeTitle: route.animeTitle
+                )
+                completionHandler([])
+            } else {
+                completionHandler([.banner, .sound])
+            }
+        }
+    }
+
     func application(
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
@@ -216,6 +242,9 @@ struct KinetiqNotice: Codable, Identifiable, Equatable {
     let groupKey: String
     var date: Date
     var occurrences: Int
+    // Optional to preserve decoding of existing on-device notice history.
+    var artworkURL: String? = nil
+    var animeTitle: String? = nil
 }
 
 /// Protect history and copy actions from persisting source URLs, query tokens,
@@ -275,10 +304,21 @@ final class KinetiqNoticeCenter: ObservableObject {
     /// Posting is intentionally fire-and-forget. Failure notifications never
     /// block a module batch or require an alert's OK button.
     func post(_ level: KinetiqNoticeLevel, title: String, message: String,
-              groupKey: String, details: String? = nil) {
+              groupKey: String, details: String? = nil,
+              artworkURL: String? = nil, animeTitle: String? = nil) {
         let safeTitle = KinetiqNoticeRedaction.safe(title, maximumLength: 90)
         let safeMessage = KinetiqNoticeRedaction.safe(message, maximumLength: 220)
         let safeDetails = details.map { KinetiqNoticeRedaction.safe($0) }
+        // Keep only plain public HTTPS artwork links (no credentials/queries).
+        let safeArtwork: String? = artworkURL.flatMap { raw in
+            guard let url = URL(string: raw), url.scheme == "https",
+                  url.user == nil, url.password == nil, url.query == nil,
+                  url.fragment == nil else { return nil }
+            return url.absoluteString
+        }
+        let safeAnimeTitle = animeTitle.map {
+            KinetiqNoticeRedaction.safe($0, maximumLength: 110)
+        }
         // Source identifiers can contain a repository URL with query secrets.
         // Store only its opaque digest, never the original URL/key in history.
         let safeGroupKey = groupKey.isEmpty ? "" : SHA256.hash(data: Data(groupKey.utf8))
@@ -296,6 +336,8 @@ final class KinetiqNoticeCenter: ObservableObject {
             duplicate.date = date
             duplicate.message = safeMessage
             duplicate.details = safeDetails
+            duplicate.artworkURL = safeArtwork
+            duplicate.animeTitle = safeAnimeTitle
             duplicate.occurrences += 1
             history.insert(duplicate, at: 0)
             if current?.id == duplicate.id { current = duplicate }
@@ -303,9 +345,11 @@ final class KinetiqNoticeCenter: ObservableObject {
             return
         }
 
-        let notice = KinetiqNotice(id: UUID(), level: level,
+        var notice = KinetiqNotice(id: UUID(), level: level,
             title: safeTitle, message: safeMessage, details: safeDetails,
             groupKey: safeGroupKey, date: date, occurrences: 1)
+        notice.artworkURL = safeArtwork
+        notice.animeTitle = safeAnimeTitle
         history.insert(notice, at: 0)
         if history.count > maximumHistory { history.removeLast(history.count - maximumHistory) }
         persist()
@@ -389,10 +433,14 @@ struct KinetiqNoticeBannerHost: View {
 
     private func banner(_ notice: KinetiqNotice) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: notice.level.symbol)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(notice.level.color)
-                .frame(width: 28)
+            if notice.animeTitle != nil {
+                KinetiqNoticeArtworkView(notice: notice, width: 48, height: 62)
+            } else {
+                Image(systemName: notice.level.symbol)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(notice.level.color)
+                    .frame(width: 28)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(notice.title)
@@ -430,13 +478,57 @@ struct KinetiqNoticeBannerHost: View {
         .shadow(color: .black.opacity(0.15), radius: 17, x: 0, y: 8)
         .frame(maxWidth: 560)
         .contentShape(RoundedRectangle(cornerRadius: 19))
-        .onTapGesture { showingHistory = true }
+        .onTapGesture {
+            if let animeTitle = notice.animeTitle, !animeTitle.isEmpty {
+                KinetiqEpisodeAlerts.openAnime(animeTitle)
+                center.dismissCurrent()
+            } else {
+                showingHistory = true
+            }
+        }
         .gesture(DragGesture(minimumDistance: 18).onEnded { gesture in
             if gesture.translation.height < -18 { center.dismissCurrent() }
         })
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(notice.title). \(notice.message)")
-        .accessibilityHint("Tap to open notification history, or swipe up to dismiss")
+        .accessibilityHint(notice.animeTitle == nil
+                           ? "Tap to open notification history, or swipe up to dismiss"
+                           : "Tap to find this anime across all sources, or swipe up to dismiss")
+    }
+}
+
+private struct KinetiqNoticeArtworkView: View {
+    let notice: KinetiqNotice
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Group {
+            if let raw = notice.artworkURL, let url = URL(string: raw) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        fallback
+                    }
+                }
+                .frame(width: width, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            } else {
+                fallback
+                    .frame(width: width, height: height)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var fallback: some View {
+        Image(systemName: notice.animeTitle == nil ? notice.level.symbol : "play.rectangle.fill")
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(notice.level.color)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(notice.level.color.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 9))
     }
 }
 
@@ -453,9 +545,13 @@ struct KinetiqNoticeHistoryView: View {
             } else {
                 ForEach(center.history) { notice in
                     HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: notice.level.symbol)
-                            .foregroundStyle(notice.level.color)
-                            .frame(width: 24)
+                        if notice.animeTitle != nil {
+                            KinetiqNoticeArtworkView(notice: notice, width: 46, height: 60)
+                        } else {
+                            Image(systemName: notice.level.symbol)
+                                .foregroundStyle(notice.level.color)
+                                .frame(width: 24)
+                        }
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
                                 Text(notice.title).font(.subheadline.weight(.semibold))
@@ -469,6 +565,19 @@ struct KinetiqNoticeHistoryView: View {
                             Text(notice.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                            if let animeTitle = notice.animeTitle, !animeTitle.isEmpty {
+                                Button {
+                                    dismiss()
+                                    Task {
+                                        try? await Task.sleep(for: .milliseconds(250))
+                                        KinetiqEpisodeAlerts.openAnime(animeTitle)
+                                    }
+                                } label: {
+                                    Label("Find anime in all sources", systemImage: "magnifyingglass")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .buttonStyle(.borderless)
+                            }
                             if let details = notice.details, !details.isEmpty {
                                 Button {
                                     UIPasteboard.general.string = details

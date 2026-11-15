@@ -55,6 +55,18 @@ private enum HomeSheet: String, Identifiable {
     }
 }
 
+private enum AnimeNavigationSheet: Identifiable {
+    case calendar
+    case sourceLookup(KinetiqAnimeSourceRequest)
+
+    var id: String {
+        switch self {
+        case .calendar: "calendar"
+        case .sourceLookup(let request): "lookup-\(request.id)"
+        }
+    }
+}
+
 // MARK: - Main Tab View
 
 struct MainTabView: View {
@@ -77,8 +89,7 @@ struct MainTabView: View {
     @State private var requestedMediaID: String?
     @State private var showingLibrary = false
     @State private var activeSheet: HomeSheet?
-    @State private var notificationTitle: ModuleAnimeCollectionEntry?
-    @State private var showingAiringCalendar = false
+    @State private var animeSheet: AnimeNavigationSheet?
 
     @State private var draggedTabPosition: CGFloat?
     @State private var dragStartPosition: CGFloat?
@@ -93,37 +104,48 @@ struct MainTabView: View {
             .onAppear {
                 openEpisodeNotification()
                 if KinetiqEpisodeAlerts.takePendingCalendar() {
-                    showingAiringCalendar = true
+                    animeSheet = .calendar
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenCalendar)) { _ in
-                showingAiringCalendar = true
+                animeSheet = .calendar
             }
             .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenEpisode)) { _ in
                 openEpisodeNotification()
             }
-            .sheet(item: $notificationTitle) { entry in
-                ModuleSavedAnimeDetailsHost(entry: entry)
-            }
-            .sheet(isPresented: $showingAiringCalendar) {
-                NavigationStack {
-                    KinetiqAiringCalendarView()
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Done") { showingAiringCalendar = false }
+            .sheet(item: $animeSheet) { destination in
+                switch destination {
+                case .calendar:
+                    NavigationStack {
+                        KinetiqAiringCalendarView()
+                            .toolbar {
+                                ToolbarItem(placement: .topBarTrailing) {
+                                    Button("Done") { animeSheet = nil }
+                                }
                             }
-                        }
+                    }
+                case .sourceLookup(let request):
+                    KinetiqAnimeSourceLookupSheet(request: request)
                 }
             }
     }
 
     private func openEpisodeNotification() {
         guard let route = KinetiqEpisodeAlerts.takePendingRoute() else { return }
-        if let entry = ModuleAnimeCollectionStore.shared.favorites.first(where: {
-            $0.sourceID == route.sourceID && $0.animeID == route.animeID
-        }) {
-            notificationTitle = entry
+        let savedTitle = ModuleAnimeCollectionStore.shared.favorites.first(where: {
+            guard let sourceID = route.sourceID, let animeID = route.animeID else {
+                return false
+            }
+            return $0.sourceID == sourceID && $0.animeID == animeID
+        })?.title
+        let title = route.animeTitle.isEmpty ? (savedTitle ?? "") : route.animeTitle
+        if !title.isEmpty {
+            animeSheet = .sourceLookup(KinetiqAnimeSourceRequest(
+                title: title, alternativeTitles: route.alternativeTitles
+            ))
         } else {
+            // Old already-scheduled alerts may not carry a title. Preserve
+            // their previous destination until the new notifications replace them.
             selectedTab = .favorites
         }
     }
@@ -228,7 +250,7 @@ struct MainTabView: View {
                 },
                 onContinueWatching: openContinueWatching,
                 onOpenLibrary: openLibrary,
-                onOpenCalendar: { showingAiringCalendar = true }
+                onOpenCalendar: { animeSheet = .calendar }
             )
         }
     }

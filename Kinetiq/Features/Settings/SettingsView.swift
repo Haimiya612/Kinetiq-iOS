@@ -1151,8 +1151,10 @@ enum KinetiqEpisodeAlerts {
     static let didOpenCalendar = Notification.Name("kinetiq.episodeAlerts.openCalendar")
     static let genreRecommendationsKey = "kinetiq.episodeAlerts.genreRecommendations"
     struct Route {
-        let sourceID: String
-        let animeID: String
+        let animeTitle: String
+        let alternativeTitles: [String]
+        let sourceID: String?
+        let animeID: String?
     }
     private static var pendingRoute: Route?
     private static var pendingCalendar = false
@@ -1164,17 +1166,39 @@ enum KinetiqEpisodeAlerts {
         defer { pendingRoute = nil }
         return pendingRoute
     }
+    static func route(from userInfo: [AnyHashable: Any]) -> Route? {
+        let title = (userInfo["animeTitle"] as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = (userInfo["sourceID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let anime = (userInfo["animeID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        guard !title.isEmpty || (source != nil && anime != nil) else { return nil }
+        return Route(animeTitle: title,
+                     alternativeTitles: userInfo["animeAliases"] as? [String] ?? [],
+                     sourceID: source, animeID: anime)
+    }
+    static func openAnime(_ title: String, alternativeTitles: [String] = []) {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        pendingCalendar = false
+        pendingRoute = Route(animeTitle: clean, alternativeTitles: alternativeTitles,
+                             sourceID: nil, animeID: nil)
+        NotificationCenter.default.post(name: didOpenEpisode, object: nil)
+    }
     static func receiveResponse(userInfo: [AnyHashable: Any]) {
+        if let route = route(from: userInfo) {
+            pendingCalendar = false
+            pendingRoute = route
+            NotificationCenter.default.post(name: didOpenEpisode, object: nil)
+            return
+        }
+        // Compatibility with already-scheduled calendar notifications that
+        // predate the anime title payload.
         if (userInfo["kinetiqCalendar"] as? Bool) == true {
+            pendingRoute = nil
             pendingCalendar = true
             NotificationCenter.default.post(name: didOpenCalendar, object: nil)
             return
         }
-        guard let sourceID = userInfo["sourceID"] as? String,
-              let animeID = userInfo["animeID"] as? String,
-              !sourceID.isEmpty, !animeID.isEmpty else { return }
-        pendingRoute = Route(sourceID: sourceID, animeID: animeID)
-        NotificationCenter.default.post(name: didOpenEpisode, object: nil)
     }
     static func requestPermission() async throws -> Bool {
         try await UNUserNotificationCenter.current().requestAuthorization(
@@ -1186,7 +1210,8 @@ enum KinetiqEpisodeAlerts {
     @discardableResult
     static func scheduleVerifiedEpisode(
         animeTitle: String, episodeNumber: String?, episodeName: String?,
-        sourceID: String, animeID: String, releaseDate: Date
+        sourceID: String, animeID: String, releaseDate: Date,
+        episodeImageURL: URL? = nil
     ) async throws -> Bool {
         guard UserDefaults.standard.bool(forKey: enabledKey),
               releaseDate > Date().addingTimeInterval(5),
@@ -1206,10 +1231,21 @@ enum KinetiqEpisodeAlerts {
         content.title = String(animeTitle.prefix(110))
         let label = number.flatMap { $0.isEmpty ? nil : "Episode \($0)" } ?? "New episode"
         content.subtitle = name.flatMap { $0.isEmpty ? nil : "\(label) · \($0)" } ?? label
-        content.body = "New episode available. Tap to open Kinetiq."
+        content.body = "Tap to find this anime across your trusted Kinetiq sources."
         content.sound = .default
         content.threadIdentifier = "kinetiq.episodes"
-        content.userInfo = ["sourceID": sourceID, "animeID": animeID]
+        var notificationInfo: [String: Any] = ["sourceID": sourceID, "animeID": animeID,
+                                                "animeTitle": animeTitle]
+        if let name, !name.isEmpty { notificationInfo["episodeName"] = name }
+        if let episodeImageURL, episodeImageURL.scheme == "https" {
+            if episodeImageURL.query == nil, episodeImageURL.user == nil {
+                notificationInfo["artworkURL"] = episodeImageURL.absoluteString
+            }
+            if let artwork = await KinetiqEpisodeNotificationArtwork.attachment(for: episodeImageURL) {
+                content.attachments = [artwork]
+            }
+        }
+        content.userInfo = notificationInfo
         let components = Calendar.current.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],
             from: releaseDate
@@ -1243,12 +1279,74 @@ enum KinetiqEpisodeAlerts {
         )
     }
 }
+
+/// Native iPhone notification artwork must be a local attachment. A remote
+/// HTTPS cover/still is downloaded to a size-limited cache at schedule time.
+/// Missing or unsupported artwork never prevents the episode alert itself.
+@MainActor
+private enum KinetiqEpisodeNotificationArtwork {
+    static func attachment(for imageURL: URL) async -> UNNotificationAttachment? {
+        guard imageURL.scheme?.lowercased() == "https" else { return nil }
+        let identifier = SHA256.hash(data: Data(imageURL.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("KinetiqEpisodeArtwork", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder,
+                                                    withIntermediateDirectories: true)
+            for ext in ["jpg", "png"] {
+                let cached = folder.appendingPathComponent("\(identifier).\(ext)")
+                if FileManager.default.fileExists(atPath: cached.path),
+                   let existing = try? UNNotificationAttachment(
+                    identifier: "kinetiq-episode-cover", url: cached, options: nil
+                   ) { return existing }
+            }
+
+            var request = URLRequest(url: imageURL)
+            request.timeoutInterval = 6
+            let (temporary, response) = try await URLSession.shared.download(for: request)
+            guard !Task.isCancelled,
+                  let http = response as? HTTPURLResponse,
+                  http.statusCode == 200 else { return nil }
+            let ext: String
+            switch response.mimeType?.lowercased() {
+            case "image/jpeg", "image/jpg": ext = "jpg"
+            case "image/png": ext = "png"
+            default: return nil
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: temporary.path)
+            let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            guard fileSize > 0 && fileSize <= 4_000_000 else { return nil }
+            let destination = folder.appendingPathComponent("\(identifier).\(ext)")
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.moveItem(at: temporary, to: destination)
+            }
+            return try? UNNotificationAttachment(identifier: "kinetiq-episode-cover",
+                                                 url: destination, options: nil)
+        } catch {
+            return nil
+        }
+    }
+}
 // MARK: - 06K.7 · Anime schedule models and verified release provider
 
 struct KinetiqCalendarMedia: Codable, Identifiable {
     struct Title: Codable { let english: String?; let romaji: String?; let native: String? }
     struct Cover: Codable { let large: String? }
     struct StartDate: Codable { let year: Int?; let month: Int?; let day: Int? }
+    struct StreamingEpisode: Codable {
+        let title: String?
+        let thumbnail: String?
+
+        func episodeName(number: Int) -> String? {
+            guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { return nil }
+            let prefix = "(?i)^\\s*(?:(?:episode|ep\\.?)\\s*)?0*\(number)\\s*[-:–—]?\\s*"
+            let stripped = title.replacingOccurrences(of: prefix, with: "",
+                options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+            return stripped.isEmpty ? nil : stripped
+        }
+    }
     let id: Int
     let title: Title
     let synonyms: [String]?
@@ -1258,12 +1356,20 @@ struct KinetiqCalendarMedia: Codable, Identifiable {
     let siteUrl: String?
     let status: String?
     let startDate: StartDate?
+    let streamingEpisodes: [StreamingEpisode]?
     var name: String {
         [title.english, title.romaji, title.native]
             .compactMap { $0 }.first(where: { !$0.isEmpty }) ?? "Anime"
     }
     var names: [String] {
         [title.english, title.romaji, title.native].compactMap { $0 } + (synonyms ?? [])
+    }
+    func episodeMetadata(number: Int) -> StreamingEpisode? {
+        guard number > 0 else { return nil }
+        let expression = "(?i)(?:\\b(?:episode|ep\\.?)\\s*0*\(number)\\b|^0*\(number)\\b)"
+        return streamingEpisodes?.first {
+            $0.title?.range(of: expression, options: .regularExpression) != nil
+        }
     }
     var premiereDate: String {
         guard let d = startDate, let year = d.year else { return "Release date TBA" }
@@ -1331,7 +1437,8 @@ final class KinetiqCalendarStore: ObservableObject {
           id episode airingAt
           media { id title { english romaji native } synonyms genres
                   coverImage { large } isAdult siteUrl status
-                  startDate { year month day } }
+                  startDate { year month day }
+                  streamingEpisodes { title thumbnail } }
         }
       }
     }
@@ -1343,6 +1450,7 @@ final class KinetiqCalendarStore: ObservableObject {
           id title { english romaji native } synonyms genres
           coverImage { large } isAdult siteUrl status
           startDate { year month day }
+          streamingEpisodes { title thumbnail }
         }
       }
     }
@@ -1447,13 +1555,35 @@ extension KinetiqEpisodeAlerts {
         var count = 0
         for item in matches.prefix(40) {
             guard !Task.isCancelled, let media = item.media else { break }
+            let episodeInfo = media.episodeMetadata(number: item.episode)
+            let episodeName = episodeInfo?.episodeName(number: item.episode)
             let content = UNMutableNotificationContent()
             content.title = String(media.name.prefix(110))
-            content.subtitle = "Episode \(item.episode) · scheduled release"
+            content.subtitle = episodeName.map { "Episode \(item.episode) · \($0)" }
+                ?? "Episode \(item.episode) · scheduled release"
             content.body = "Expected airtime: \(item.date.formatted(date: .abbreviated, time: .shortened)). Streaming sources may publish it later."
             content.sound = .default
             content.threadIdentifier = "kinetiq.calendar"
-            content.userInfo = ["kinetiqCalendar": true, "mediaID": media.id]
+            var info: [String: Any] = [
+                "kinetiqCalendar": true, "mediaID": media.id,
+                "animeTitle": media.name, "animeAliases": media.names,
+                "episodeNumber": item.episode
+            ]
+            if let episodeName { info["episodeName"] = episodeName }
+            let artworkCandidates = [episodeInfo?.thumbnail, media.coverImage?.large]
+                .compactMap { $0 }
+            if let displayedArtwork = artworkCandidates.first,
+               let url = URL(string: displayedArtwork), url.scheme == "https" {
+                info["artworkURL"] = url.absoluteString
+            }
+            for candidate in artworkCandidates {
+                guard let url = URL(string: candidate), url.scheme == "https" else { continue }
+                if let attachment = await KinetiqEpisodeNotificationArtwork.attachment(for: url) {
+                    content.attachments = [attachment]
+                    break
+                }
+            }
+            content.userInfo = info
             try await center.add(UNNotificationRequest(
                 identifier: "kinetiq.calendar.\(media.id).\(item.episode)",
                 content: content,
@@ -1488,7 +1618,7 @@ struct KinetiqAiringCalendarView: View {
     @State private var forYou = false
     @State private var searchText = ""
     @State private var notificationMessage: String?
-    @State private var openedFavorite: ModuleAnimeCollectionEntry?
+    @State private var sourceLookup: KinetiqAnimeSourceRequest?
 
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
@@ -1511,11 +1641,9 @@ struct KinetiqAiringCalendarView: View {
         KinetiqCalendarRelevance.isFavorite(media, names: favoriteNames) ||
         KinetiqCalendarRelevance.matchesGenre(media, genres: chosenGenres)
     }
-    private func favorite(_ media: KinetiqCalendarMedia) -> ModuleAnimeCollectionEntry? {
-        favorites.favorites.first { item in
-            let key = KinetiqCalendarRelevance.key(item.title)
-            return media.names.contains { KinetiqCalendarRelevance.key($0) == key }
-        }
+    private func findInSources(_ media: KinetiqCalendarMedia) {
+        sourceLookup = KinetiqAnimeSourceRequest(title: media.name,
+                                                 alternativeTitles: media.names)
     }
     private var todaysEpisodes: [KinetiqCalendarEpisode] {
         calendarStore.episodes.filter { event in
@@ -1719,36 +1847,60 @@ struct KinetiqAiringCalendarView: View {
                 }
             }
         }
-        .sheet(item: $openedFavorite) { entry in
-            ModuleSavedAnimeDetailsHost(entry: entry)
+        .sheet(item: $sourceLookup) { request in
+            KinetiqAnimeSourceLookupSheet(request: request)
         }
     }
 
     private func animeCard(_ media: KinetiqCalendarMedia,
                            episode: Int?, releaseDate: Date?) -> some View {
-        HStack(alignment: .top, spacing: 13) {
-            AsyncImage(url: media.coverImage?.large.flatMap { URL(string: $0) }) { phase in
-                if let picture = phase.image {
-                    picture.resizable().scaledToFill()
-                } else {
-                    Image(systemName: "film.stack")
-                        .resizable().scaledToFit().padding(22)
-                        .foregroundStyle(.secondary)
+        let episodeInfo = episode.flatMap { media.episodeMetadata(number: $0) }
+        let episodeName = episode.flatMap { episodeInfo?.episodeName(number: $0) }
+        let artworkURL = (episodeInfo?.thumbnail ?? media.coverImage?.large)
+            .flatMap { URL(string: $0) }
+        return HStack(alignment: .top, spacing: 13) {
+            Button { findInSources(media) } label: {
+                AsyncImage(url: artworkURL) { phase in
+                    if let picture = phase.image {
+                        picture.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "film.stack")
+                            .resizable().scaledToFit().padding(22)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .frame(width: 90, height: 125)
+                .background(theme.accent.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 11))
             }
-            .frame(width: 90, height: 125)
-            .background(theme.accent.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 11))
-            .allowsHitTesting(false)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Find \(media.name) across all sources")
             VStack(alignment: .leading, spacing: 7) {
-                Text(media.name)
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(3)
+                Button { findInSources(media) } label: {
+                    HStack(alignment: .top, spacing: 4) {
+                        Text(media.name)
+                            .font(.subheadline.weight(.bold))
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(3)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(theme.accent)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Search all sources for \(media.name)")
                 Text(releaseDate.map {
                     "Episode \(episode ?? 1) · \($0.formatted(date: .omitted, time: .shortened))"
                 } ?? media.premiereDate)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(theme.accent)
+                if let episodeName {
+                    Text(episodeName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                }
                 Text((media.genres ?? []).prefix(3).joined(separator: " · "))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1767,23 +1919,13 @@ struct KinetiqAiringCalendarView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(followed.contains(media.id)
                                         ? "Unfollow \(media.name)" : "Follow \(media.name)")
-                    if let entry = favorite(media) {
-                        Button {
-                            openedFavorite = entry
-                        } label: {
-                            Image(systemName: "play.rectangle.fill")
-                                .frame(width: 40, height: 38)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Open \(media.name) from saved module")
-                    } else if let address = media.siteUrl, let url = URL(string: address),
-                              url.scheme == "https" {
-                        Link(destination: url) {
-                            Image(systemName: "info.circle")
-                                .frame(width: 40, height: 38)
-                        }
-                        .accessibilityLabel("Open public anime details")
+                    Button { findInSources(media) } label: {
+                        Label("Find sources", systemImage: "magnifyingglass")
+                            .font(.caption.weight(.semibold))
+                            .frame(minHeight: 44)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Searches every installed trusted video module")
                 }
                 .foregroundStyle(theme.accent)
             }

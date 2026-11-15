@@ -150,12 +150,19 @@ private struct KinetiqSourceDiscoveryFeedView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                LazyVStack(spacing: 0) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
                                     GridItem(.flexible(), spacing: 12)],
                           spacing: 20) {
                     ForEach(cards) { card in
                         KinetiqDiscoveryPoster(card: card, width: nil) {
                             selectedItem = card.anime
+                        }
+                        .onAppear {
+                            if cards.suffix(6).contains(where: { $0.id == card.id }) &&
+                               hasMore && !loading && errorText == nil {
+                                Task { await loadNextPage() }
+                            }
                         }
                     }
                 }
@@ -173,13 +180,21 @@ private struct KinetiqSourceDiscoveryFeedView: View {
                     .padding(20)
                 }
                 if hasMore && !loading && errorText == nil {
-                    Button("Load more") { Task { await loadNextPage() } }
-                        .buttonStyle(.borderedProminent)
+                    ProgressView("Loading more titles…")
+                        .frame(maxWidth: .infinity)
                         .padding(20)
+                        .onAppear { Task { await loadNextPage() } }
                 }
                 if !hasMore && cards.isEmpty && !loading {
                     ContentUnavailableView("No titles in this feed",
                                            systemImage: "rectangle.stack")
+                } else if !hasMore && !loading {
+                    Text("End of available titles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(20)
+                }
                 }
             }
             .navigationTitle(selection.title)
@@ -216,9 +231,10 @@ private struct KinetiqSourceDiscoveryFeedView: View {
                 requestedPage: requestedPage
             )
             var seen = Set(cards.map(\.id))
-            cards.append(contentsOf: result.cards.filter { seen.insert($0.id).inserted })
+            let unique = result.cards.filter { seen.insert($0.id).inserted }
+            cards.append(contentsOf: unique)
             page = requestedPage
-            hasMore = result.hasMore && page < 20
+            hasMore = result.hasMore && !unique.isEmpty && page < 20
         } catch {
             guard !Task.isCancelled else { return }
             errorText = ModulePlaybackDiagnostics.redact(error.localizedDescription)
