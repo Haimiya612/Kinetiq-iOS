@@ -7,8 +7,8 @@ import CoreMedia
 // MARK: - Subtitle Preferences
 
 struct KinetiqSubtitleAppearance: Equatable {
-    enum Size: String, CaseIterable { case small = "Small", standard = "Standard", large = "Large" }
-    enum Ink: String, CaseIterable { case standard = "Default", yellow = "Yellow", cyan = "Cyan" }
+    enum Size: String, CaseIterable { case small = "Small", standard = "Standard", large = "Large", extraLarge = "Extra Large" }
+    enum Ink: String, CaseIterable { case standard = "Default", yellow = "Yellow", cyan = "Cyan", green = "Green", magenta = "Magenta" }
     enum Background: String, CaseIterable { case standard = "Default", clear = "Clear", solid = "Solid" }
 
     var size: Size = .standard
@@ -16,7 +16,7 @@ struct KinetiqSubtitleAppearance: Equatable {
     var background: Background = .standard
 
     var points: CGFloat {
-        switch size { case .small: 15; case .standard: 19; case .large: 25 }
+        switch size { case .small: 15; case .standard: 19; case .large: 25; case .extraLarge: 31 }
     }
 
     private var rgb: (red: Double, green: Double, blue: Double) {
@@ -24,6 +24,8 @@ struct KinetiqSubtitleAppearance: Equatable {
         case .standard: (1, 1, 1)
         case .yellow: (1, 0.9, 0.25)
         case .cyan: (0.4, 0.95, 1)
+        case .green: (0.55, 1, 0.55)
+        case .magenta: (1, 0.55, 0.95)
         }
     }
 
@@ -37,7 +39,8 @@ struct KinetiqSubtitleAppearance: Equatable {
     var nativeRules: [AVTextStyleRule]? {
         var attributes: [String: Any] = [:]
         if size != .standard {
-            attributes[kCMTextMarkupAttribute_BaseFontSizePercentageRelativeToVideoHeight as String] = size == .small ? 3.5 : 6.5
+            attributes[kCMTextMarkupAttribute_BaseFontSizePercentageRelativeToVideoHeight as String] =
+                size == .small ? 3.5 : size == .large ? 6.5 : 8.0
         }
         if ink != .standard {
             attributes[kCMTextMarkupAttribute_ForegroundColorARGB as String] = [1.0, rgb.red, rgb.green, rgb.blue]
@@ -150,9 +153,17 @@ enum KinetiqCaptionChoice: Equatable {
 @MainActor
 final class KinetiqSubtitleSettings: ObservableObject {
     static let shared = KinetiqSubtitleSettings()
-    static let commonLanguages = ["en", "de", "ja", "tr", "bg", "fr", "es", "pt", "it", "ko", "ar", "zh-hans", "zh-hant"]
+    static let commonLanguages = [
+        "en", "de", "ja", "tr", "bg", "fr", "es", "pt", "it", "ko", "ar",
+        "zh-hans", "zh-hant", "ru", "pl", "uk", "hi", "id", "th", "vi",
+        "nl", "sv", "da", "no", "fi", "ro", "el", "he", "cs", "hu", "ms", "fa"
+    ]
 
     @Published private(set) var language: String
+    /// Timing correction for SRT/WebVTT cue timelines, not embedded subtitles.
+    @Published var sourceTimingOffset: Double {
+        didSet { defaults.set(sourceTimingOffset, forKey: Self.key + "sourceTimingOffset") }
+    }
     @Published var appearance: KinetiqSubtitleAppearance {
         didSet {
             defaults.set(appearance.size.rawValue, forKey: Self.key + "size")
@@ -167,6 +178,7 @@ final class KinetiqSubtitleSettings: ObservableObject {
         self.defaults = defaults
         let saved = defaults.string(forKey: Self.key + "language")
         language = saved == "off" ? "off" : KinetiqCaptionLanguage.normalized(saved) ?? "automatic"
+        sourceTimingOffset = min(5, max(-5, defaults.double(forKey: Self.key + "sourceTimingOffset")))
         appearance = KinetiqSubtitleAppearance(
             size: .init(rawValue: defaults.string(forKey: Self.key + "size") ?? "") ?? .standard,
             ink: .init(rawValue: defaults.string(forKey: Self.key + "ink") ?? "") ?? .standard,
@@ -866,6 +878,13 @@ final class ExternalSubtitleController: ObservableObject {
         select(nil)
     }
 
+    /// Temporarily stop overlay rendering without overwriting the user's
+    /// saved subtitle selection while AVKit presents native Picture in Picture.
+    func suspendForPictureInPicture() {
+        selectedTrackID = nil
+        currentCue = nil
+    }
+
     // MARK: Playback Synchronization
 
     func updatePlaybackTime(_ seconds: Double) {
@@ -1159,6 +1178,8 @@ struct ModuleSubtitleTimeline: Sendable {
     private let maximumEndTimes: [Double]
 
     var isEmpty: Bool { cues.isEmpty }
+    /// Immutable parsed cues used to author a temporary native HLS rendition.
+    var bridgeCues: [ExternalSubtitleCue] { cues }
 
     init(cues: [ExternalSubtitleCue]) {
         self.cues = cues.filter {
@@ -1355,9 +1376,16 @@ final class ModuleExternalSubtitleController: ObservableObject {
         errorMessage = "This stream requires its embedded subtitle track."
     }
 
+    /// Native HLS must own the caption rendering while system PiP is active.
+    /// Keep the session preference so returning to the original item can
+    /// restore the selected external track without displaying two overlays.
+    func suspendForNativeBridge() {
+        cancelLoad()
+    }
+
     func updatePlaybackTime(_ seconds: Double) {
         currentTime = seconds
-        let next = timeline?.text(at: seconds)
+        let next = timeline?.text(at: seconds + KinetiqSubtitleSettings.shared.sourceTimingOffset)
         if currentText != next { currentText = next }
     }
 

@@ -1393,6 +1393,22 @@ final class KinetiqSubtitlePreferenceTests: XCTestCase {
     }
 
     @MainActor
+    func testExternalTimingAndExpandedCaptionAppearancePersist() throws {
+        let suite = "kinetiq.tests.subtitleOptions.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = KinetiqSubtitleSettings(defaults: defaults)
+        XCTAssertEqual(settings.sourceTimingOffset, 0)
+        settings.sourceTimingOffset = -1.25
+        settings.appearance = .init(size: .extraLarge, ink: .green, background: .solid)
+        let restored = KinetiqSubtitleSettings(defaults: defaults)
+        XCTAssertEqual(restored.sourceTimingOffset, -1.25, accuracy: 0.001)
+        XCTAssertEqual(restored.appearance.size, .extraLarge)
+        XCTAssertEqual(restored.appearance.ink, .green)
+        XCTAssertNotNil(restored.appearance.nativeRules)
+    }
+
+    @MainActor
     func testOnlyManualSourceSelectionCarriesToTheNextItem() throws {
         let controller = ModuleExternalSubtitleController(loader: { _ in ModuleSubtitleTimeline(cues: []) })
         let one = ModuleRemoteSubtitleTrack(url: try XCTUnwrap(URL(string: "https://source.example.invalid/one.vtt")), label: "English", language: "en", format: .vtt, headers: [:])
@@ -1407,5 +1423,85 @@ final class KinetiqSubtitlePreferenceTests: XCTestCase {
         controller.configure(tracks: [one])
         XCTAssertEqual(controller.selectedTrackID, one.id)
         controller.stop()
+    }
+}
+
+// MARK: - Native HLS / WebVTT PiP Bridge (experimental)
+
+final class NativeHLSSubtitleManifestTests: XCTestCase {
+    func testMediaPlaylistCreatesNativeAlternateRendition() throws {
+        let sourceURL = try XCTUnwrap(URL(string: "https://video.example.invalid/episode/playlist.m3u8"))
+        let subtitles = try XCTUnwrap(URL(string: "http://127.0.0.1:8123/bridge/subtitles.m3u8"))
+        let media = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        000.ts
+        #EXTINF:4.5,
+        001.ts
+        #EXT-X-ENDLIST
+        """
+
+        let result = try NativeHLSSubtitleManifest.create(
+            source: media, sourceURL: sourceURL,
+            subtitleURL: subtitles, language: "en"
+        )
+
+        XCTAssertEqual(result.duration, 9.5, accuracy: 0.001)
+        XCTAssertEqual(result.mediaURL, sourceURL)
+        XCTAssertTrue(result.master.contains("TYPE=SUBTITLES"))
+        XCTAssertTrue(result.master.contains("SUBTITLES=\"kinetiq-external\""))
+        XCTAssertTrue(result.master.contains("LANGUAGE=\"en\""))
+        XCTAssertTrue(result.master.contains(subtitles.absoluteString))
+    }
+
+    func testMasterResolvesRelativeVariantsAndPreservesNativeTracks() throws {
+        let sourceURL = try XCTUnwrap(URL(string: "https://cdn.example.invalid/hls/master.m3u8"))
+        let subtitles = try XCTUnwrap(URL(string: "http://127.0.0.1:8123/bridge/subtitles.m3u8"))
+        let media = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="existing",NAME="English",URI="captions/en.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=1500000,SUBTITLES="existing"
+        variants/high.m3u8?token=sample
+        """
+
+        let result = try NativeHLSSubtitleManifest.create(
+            source: media, sourceURL: sourceURL,
+            subtitleURL: subtitles, language: "en"
+        )
+
+        XCTAssertEqual(result.mediaURL.absoluteString,
+                       "https://cdn.example.invalid/hls/variants/high.m3u8?token=sample")
+        XCTAssertTrue(result.master.contains("https://cdn.example.invalid/hls/captions/en.m3u8"))
+        XCTAssertTrue(result.master.contains("GROUP-ID=\"existing\",NAME=\"Kinetiq External\""))
+    }
+
+    func testSubtitleOffsetCreatesTimestampAdjustedNativeWebVTT() throws {
+        let cues = [
+            ExternalSubtitleCue(id: 1, startTime: 5, endTime: 9, text: "Hello"),
+            ExternalSubtitleCue(id: 2, startTime: 99, endTime: 110, text: "End")
+        ]
+        let result = try NativeHLSSubtitleManifest.webVTT(
+            cues: cues, offset: 1.25, duration: 100
+        )
+        XCTAssertTrue(result.hasPrefix("WEBVTT\nX-TIMESTAMP-MAP="))
+        XCTAssertTrue(result.contains("00:00:03.750 --> 00:00:07.750"))
+        XCTAssertTrue(result.contains("00:01:37.750 --> 00:01:40.000"))
+        XCTAssertTrue(result.contains("Hello"))
+    }
+
+    func testLiveHLSRejectedAndSubtitlePlaylistIsFinite() throws {
+        let live = """
+        #EXTM3U
+        #EXT-X-TARGETDURATION:5
+        #EXTINF:5.0,
+        000.ts
+        """
+        XCTAssertThrowsError(try NativeHLSSubtitleManifest.mediaDuration(live))
+        let vtt = try XCTUnwrap(URL(string: "http://127.0.0.1:8123/bridge/subtitle.vtt"))
+        let playlist = NativeHLSSubtitleManifest.subtitlePlaylist(url: vtt, duration: 125.2)
+        XCTAssertTrue(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD"))
+        XCTAssertTrue(playlist.contains("#EXT-X-TARGETDURATION:126"))
+        XCTAssertTrue(playlist.contains("#EXT-X-ENDLIST"))
     }
 }

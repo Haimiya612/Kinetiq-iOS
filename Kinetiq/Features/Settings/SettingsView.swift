@@ -548,6 +548,24 @@ private struct KinetiqSubtitleSettingsView: View {
             } footer: {
                 Text("Applies to source captions and native WebVTT subtitles. Other embedded formats use their native appearance.")
             }
+
+            Section {
+                HStack {
+                    Text("External subtitle offset")
+                    Spacer()
+                    Text(String(format: "%+.2f s", settings.sourceTimingOffset))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $settings.sourceTimingOffset, in: -5...5, step: 0.25)
+                    .accessibilityLabel("External subtitle timing offset")
+                Button("Reset subtitle timing") { settings.sourceTimingOffset = 0 }
+                    .disabled(settings.sourceTimingOffset == 0)
+            } header: {
+                Text("Synchronization")
+            } footer: {
+                Text("Correct imported and module-provided SRT/WebVTT subtitles by up to five seconds. Embedded tracks keep their original timestamps.")
+            }
         }
         .navigationTitle("Subtitles")
     }
@@ -1358,10 +1376,10 @@ final class KinetiqCalendarStore: ObservableObject {
                 let result = try await send(Self.premieresQuery, variables: [:])
                 premieres = (result.data?.page?.media ?? []).filter { $0.isAdult != true }
             } catch {
-                error = "Upcoming premieres are temporarily unavailable."
+                self.error = "Upcoming premieres are temporarily unavailable."
             }
         } catch {
-            error = "Couldn't refresh the airing calendar. Try again when connected."
+            self.error = "Couldn't refresh the airing calendar. Try again when connected."
         }
     }
 

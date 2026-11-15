@@ -4309,6 +4309,92 @@ private struct ModuleEpisodeLaunch: Identifiable {
 
 // MARK: - Anime Details and Episodes
 
+/// Optional facts provided by the selected module. There is deliberately no
+/// global metadata lookup here: Kinetiq never invents scores, dates, trailers,
+/// or related titles when a source doesn't supply them.
+private struct ModuleTitleMetadata {
+    var year: String?
+    var rating: String?
+    var status: String?
+    var studio: String?
+    var genres: [String] = []
+    var trailerURL: URL?
+    var related: [ModuleAnimeItem] = []
+
+    static func decode(_ value: Any, baseURL: URL) -> Self {
+        guard let fields = value as? [String: Any] else { return .init() }
+        func field(_ keys: [String]) -> Any? {
+            for key in keys {
+                if let matchingKey = fields.keys.first(where: {
+                    $0.caseInsensitiveCompare(key) == .orderedSame
+                }), let value = fields[matchingKey] { return value }
+            }
+            return nil
+        }
+        func string(_ value: Any?) -> String? {
+            let result: String?
+            switch value {
+            case let text as String: result = text
+            case let number as NSNumber: result = number.stringValue
+            default: result = nil
+            }
+            guard let result = result?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !result.isEmpty, result.count < 160 else { return nil }
+            return result
+        }
+        func url(_ raw: Any?) -> URL? {
+            let source = (raw as? [String: Any]).flatMap {
+                string($0["url"] ?? $0["href"] ?? $0["link"])
+            } ?? string(raw)
+            guard let source, let result = URL(string: source, relativeTo: baseURL)?.absoluteURL,
+                  result.scheme?.lowercased() == "https",
+                  result.user == nil, result.password == nil,
+                  result.host != nil else { return nil }
+            return result
+        }
+
+        var result = Self()
+        result.year = string(field(["year", "releaseYear", "release_year"]))
+        result.rating = string(field(["rating", "score", "contentRating"]))
+        result.status = string(field(["status", "airingStatus"]))
+        result.studio = string(field(["studio", "production", "network"]))
+        if let list = field(["genres", "tags", "categories"]) as? [String] {
+            result.genres = Array(list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count < 50 }.prefix(12))
+        } else if let list = string(field(["genres", "categories"])) {
+            result.genres = Array(list.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }.prefix(12))
+        }
+        result.trailerURL = url(field(["trailer", "trailerURL", "trailerUrl", "preview", "previewURL"]))
+        if let related = field(["related", "recommendations", "similar", "relatedAnime"]) as? [[String: Any]] {
+            var seen = Set<String>()
+            result.related = related.compactMap { entry -> ModuleAnimeItem? in
+                guard let title = string(entry["title"] ?? entry["name"]),
+                      let href = string(entry["href"] ?? entry["url"] ?? entry["link"]),
+                      seen.insert(href).inserted else { return nil }
+                return ModuleAnimeItem(
+                    id: string(entry["id"]) ?? href,
+                    title: title,
+                    href: href,
+                    imageURL: url(entry["image"] ?? entry["poster"] ?? entry["cover"]),
+                    synopsis: string(entry["synopsis"] ?? entry["description"])
+                )
+            }.prefix(12).map { $0 }
+        }
+        return result
+    }
+}
+
+private enum ModuleDetailSection: String, CaseIterable, Identifiable {
+    case episodes = "Episodes"
+    case about = "About"
+    case trailers = "Trailers"
+    case related = "More Like This"
+
+    var id: String { rawValue }
+}
+
 private enum ModuleEpisodeFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case unwatched = "Unwatched"
@@ -4334,6 +4420,10 @@ struct ModuleAnimeDetailsView: View {
     @State private var episodeSearch = ""
     @State private var episodeFilter: ModuleEpisodeFilter = .all
     @State private var synopsisExpanded = false
+    @State private var metadata = ModuleTitleMetadata()
+    @State private var detailSection: ModuleDetailSection = .episodes
+    @State private var selectedSeason: Int?
+    @State private var relatedSelection: ModuleAnimeItem?
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
     @State private var activeLaunch: ModuleEpisodeLaunch?
@@ -4382,7 +4472,13 @@ struct ModuleAnimeDetailsView: View {
                                     in: RoundedRectangle(cornerRadius: 14))
                     }
 
-                    episodeSection
+                    detailSectionTabs
+                    switch detailSection {
+                    case .episodes: episodeSection
+                    case .about: aboutSection
+                    case .trailers: trailersSection
+                    case .related: relatedSection
+                    }
                 }
                 .padding(18)
             }
@@ -4412,6 +4508,13 @@ struct ModuleAnimeDetailsView: View {
             }
             .task {
                 await loadDetailsAndEpisodes()
+            }
+            .sheet(item: $relatedSelection) { related in
+                ModuleAnimeDetailsView(
+                    item: related, runtime: runtime,
+                    sourceID: sourceID, sourceName: sourceName
+                )
+                .preferredColorScheme(.dark)
             }
             .fullScreenCover(item: $activeLaunch, onDismiss: {
                 if let report = playbackSession?.playerFailureDiagnostics {
@@ -4483,8 +4586,32 @@ struct ModuleAnimeDetailsView: View {
             let matchesFilter = episodeFilter == .all ||
                 (episodeFilter == .watched && watched) ||
                 (episodeFilter == .unwatched && !watched)
-            return matchesSearch && matchesFilter
+            let matchesSeason = selectedSeason == nil ||
+                seasonNumber(for: episode) == selectedSeason
+            return matchesSearch && matchesFilter && matchesSeason
         }
+    }
+
+    /// Treat a season as known only if an episode label explicitly names it.
+    /// Flat anime episode lists should not be assigned invented season data.
+    private func seasonNumber(for episode: ModuleAnimeEpisode) -> Int? {
+        let patterns = [
+            #"(?i)(?:season\s*|s)(\d{1,2})\s*(?:e|ep|episode)\s*\d+"#,
+            #"(?i)\b(\d{1,2})x\d{1,3}\b"#
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern),
+                  let match = expression.firstMatch(
+                    in: episode.number, range: NSRange(episode.number.startIndex..., in: episode.number)
+                  ), let range = Range(match.range(at: 1), in: episode.number),
+                  let season = Int(episode.number[range]), season > 0 else { continue }
+            return season
+        }
+        return nil
+    }
+
+    private var availableSeasons: [Int] {
+        Array(Set(episodes.compactMap { seasonNumber(for: $0) })).sorted()
     }
 
     private func hasWatched(_ episode: ModuleAnimeEpisode) -> Bool {
@@ -4501,42 +4628,43 @@ struct ModuleAnimeDetailsView: View {
     }
 
     private var detailsHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             ModuleAnimeArtworkView(url: details?.imageURL ?? item.imageURL)
-                .frame(maxWidth: .infinity)
-                .frame(height: detailTheme == .cinema ? 318 : detailTheme == .anime ? 280 :
-                        detailTheme == .nocturne ? 208 : 246)
-                .clipShape(RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
-                .overlay(alignment: .bottomLeading) {
-                    if detailTheme == .cinema || detailTheme == .anime {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(sourceName.uppercased())
-                                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                                .tracking(1.6)
-                                .foregroundStyle(detailTheme.accent)
-                                .lineLimit(1)
-                            Text(details?.title ?? item.title)
-                                .font(.system(size: detailTheme == .cinema ? 29 : 25, weight: .bold,
-                                              design: detailTheme == .cinema ? .serif : .rounded))
-                                .foregroundStyle(.white)
-                                .lineLimit(3)
-                            Text("\(episodes.count) available episodes")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(19)
-                        .background(LinearGradient(colors: [.black.opacity(0), .black.opacity(0.90)],
-                                                   startPoint: .top, endPoint: .bottom))
-                    }
+                .frame(maxWidth: .infinity, minHeight: 335, maxHeight: 335)
+                .overlay {
+                    LinearGradient(
+                        colors: [.black.opacity(0.02), .black.opacity(0.10), .black.opacity(0.92)],
+                        startPoint: .top, endPoint: .bottom
+                    )
                 }
-
-            if detailTheme != .cinema && detailTheme != .anime {
-                Text(details?.title ?? item.title)
-                    .font(.system(size: detailTheme == .nocturne ? 23 : 27,
-                                  weight: .bold, design: .rounded))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(sourceName.uppercased(), systemImage: "play.rectangle.on.rectangle")
+                            .font(.system(size: 10, weight: .heavy, design: .rounded))
+                            .tracking(1)
+                            .foregroundStyle(detailTheme.accent)
+                            .lineLimit(1)
+                        Text(details?.title ?? item.title)
+                            .font(.system(size: 28, weight: .heavy,
+                                          design: detailTheme == .cinema ? .serif : .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            if let year = metadata.year { Text(year) }
+                            if let rating = metadata.rating { Text(rating) }
+                            if !episodes.isEmpty {
+                                Text("\(episodes.count) episode\(episodes.count == 1 ? "" : "s")")
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
+                .accessibilityElement(children: .combine)
 
             if let continuation {
                 Button {
@@ -4547,18 +4675,51 @@ struct ModuleAnimeDetailsView: View {
                 } label: {
                     Label(
                         "\(continuation.isResume ? "Resume" : "Play") Episode \(continuation.episode.number) · \(continuation.language.uppercased())",
-                        systemImage: "play.circle.fill"
+                        systemImage: "play.fill"
                     )
-                    .fontWeight(.semibold)
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(maxWidth: .infinity, minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(KinetiqPalette.accent)
+                .tint(detailTheme.accent)
                 .disabled(activeLaunch != nil || isLoading)
             } else if !episodes.isEmpty, watchedEpisodeCount == episodes.count {
                 Label("All available episodes watched", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(KinetiqPalette.accent)
+                    .foregroundStyle(detailTheme.accent)
             }
+
+            HStack(spacing: 8) {
+                Button {
+                    animeCollection.toggleFavorite(
+                        sourceID: sourceID, sourceName: sourceName, anime: item
+                    )
+                } label: {
+                    Label(
+                        animeCollection.isFavorite(sourceID: sourceID, animeID: item.id)
+                            ? "My List ✓" : "My List",
+                        systemImage: animeCollection.isFavorite(sourceID: sourceID, animeID: item.id)
+                            ? "checkmark" : "plus"
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.bordered)
+                ShareLink(item: details?.title ?? item.title) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.bordered)
+                if metadata.trailerURL != nil {
+                    Button {
+                        detailSection = .trailers
+                    } label: {
+                        Label("Trailer", systemImage: "film")
+                            .frame(maxWidth: .infinity, minHeight: 32)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .tint(detailTheme.accent)
 
             if let synopsis = details?.synopsis ?? item.synopsis,
                !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -4575,7 +4736,7 @@ struct ModuleAnimeDetailsView: View {
                         }
                     }
                     Text(synopsis)
-                        .font(.system(size: 13))
+                        .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                         .lineSpacing(3)
                         .lineLimit(synopsisExpanded ? nil : 5)
@@ -4584,6 +4745,117 @@ struct ModuleAnimeDetailsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+        }
+    }
+
+    private var availableDetailSections: [ModuleDetailSection] {
+        var sections: [ModuleDetailSection] = [.episodes, .about]
+        if metadata.trailerURL != nil { sections.append(.trailers) }
+        if !metadata.related.isEmpty { sections.append(.related) }
+        return sections
+    }
+
+    private var detailSectionTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 18) {
+                ForEach(availableDetailSections) { section in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            detailSection = section
+                        }
+                    } label: {
+                        VStack(spacing: 9) {
+                            Text(section.rawValue)
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(
+                                    detailSection == section ? .primary : .secondary
+                                )
+                            Capsule()
+                                .fill(detailSection == section ? detailTheme.accent : .clear)
+                                .frame(height: 3)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(detailSection == section ? .isSelected : [])
+                }
+            }
+        }
+        .accessibilityLabel("Title information sections")
+    }
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("About this title").font(.title3.bold())
+            if let synopsis = details?.synopsis ?? item.synopsis {
+                Text(synopsis)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let year = metadata.year { detailsFact("Released", value: year) }
+            if let rating = metadata.rating { detailsFact("Rating", value: rating) }
+            if let status = metadata.status { detailsFact("Status", value: status) }
+            if let studio = metadata.studio { detailsFact("Studio", value: studio) }
+            detailsFact("Source", value: sourceName)
+            if !metadata.genres.isEmpty {
+                Text("Genres").font(.subheadline.weight(.semibold))
+                FlowLayoutForModuleDetails(tags: metadata.genres, color: detailTheme.accent)
+            }
+            Text("Information is supplied by \(sourceName). Fields not provided by this module are omitted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func detailsFact(_ label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 16)
+            Text(value).multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+    }
+
+    private var trailersSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Trailers & Previews").font(.title3.bold())
+            if let trailer = metadata.trailerURL {
+                ModuleTitleTrailerPreview(url: trailer)
+            } else {
+                ContentUnavailableView("No Trailer Available", systemImage: "film",
+                    description: Text("This source hasn't supplied a trailer."))
+            }
+        }
+    }
+
+    private var relatedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("More Like This").font(.title3.bold())
+            LazyVStack(spacing: 10) {
+                ForEach(metadata.related) { related in
+                    Button {
+                        relatedSelection = related
+                    } label: {
+                        HStack(spacing: 12) {
+                            ModuleAnimeArtworkView(url: related.imageURL)
+                                .frame(width: 85, height: 68)
+                                .clipShape(RoundedRectangle(cornerRadius: 9))
+                            Text(related.title)
+                                .font(.subheadline.weight(.semibold))
+                                .multilineTextAlignment(.leading)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                        }
+                        .padding(9)
+                        .background(detailTheme.cardBackground,
+                            in: RoundedRectangle(cornerRadius: detailTheme.cardCornerRadius))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
     }
 
@@ -4603,6 +4875,17 @@ struct ModuleAnimeDetailsView: View {
             }
 
             if !episodes.isEmpty {
+                if availableSeasons.count > 1 {
+                    Picker("Season", selection: $selectedSeason) {
+                        Text("All Seasons").tag(Optional<Int>.none)
+                        ForEach(availableSeasons, id: \.self) { season in
+                            Text("Season \(season)").tag(Optional(season))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(detailTheme.accent)
+                }
+
                 Picker("Episode filter", selection: $episodeFilter) {
                     ForEach(ModuleEpisodeFilter.allCases) { filter in
                         Text(filter.rawValue).tag(filter)
@@ -4697,16 +4980,36 @@ struct ModuleAnimeDetailsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Label(
-                    "Episode \(episode.number)",
-                    systemImage: hasWatched(episode) ? "checkmark.circle.fill" : "play.circle"
-                )
-                .font(.system(size: 14, weight: .semibold))
+                ZStack {
+                    LinearGradient(
+                        colors: [detailTheme.accent.opacity(0.25), Color.black.opacity(0.38)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                    VStack(spacing: 3) {
+                        Image(systemName: hasWatched(episode) ? "checkmark.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 24))
+                        Text("EP \(episode.number)")
+                            .font(.system(size: 10, weight: .heavy, design: .rounded))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(6)
+                }
+                .frame(width: 90, height: 66)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityHidden(true)
 
-                Spacer()
-
-                if episode.subAvailable { episodePlayButton(episode, language: "sub") }
-                if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Episode \(episode.number)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        if episode.subAvailable { episodePlayButton(episode, language: "sub") }
+                        if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Menu {
                     if episode.subAvailable { watchedAction(episode, language: "sub") }
@@ -4819,6 +5122,7 @@ struct ModuleAnimeDetailsView: View {
             )
 
             details = resolvedDetails
+            metadata = ModuleTitleMetadata.decode(detailsResponse, baseURL: runtime.baseURL)
 
             // Prefer the documented series identifier first; only retry
             // with alternative references if that returns no episodes.
@@ -4920,6 +5224,90 @@ struct ModuleAnimeDetailsView: View {
         activeLaunch = ModuleEpisodeLaunch(
             session: session, episode: episode, language: language
         )
+    }
+}
+
+/// Compact, scrollable chips preserve accessibility text without squeezing
+/// long genre names into a two-column layout.
+private struct FlowLayoutForModuleDetails: View {
+    let tags: [String]
+    let color: Color
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(tags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(color.opacity(0.12), in: Capsule())
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+/// A real source-provided trailer can play inline when its URL is directly
+/// playable by AVPlayer. Website links are opened only by explicit user tap.
+private struct ModuleTitleTrailerPreview: View {
+    let url: URL
+    @Environment(\.openURL) private var openURL
+    @State private var trailerPlayer: AVPlayer?
+
+    private var isDirectVideo: Bool {
+        ["mp4", "m4v", "mov", "m3u8"].contains(url.pathExtension.lowercased())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if isDirectVideo {
+                if let trailerPlayer {
+                    VideoPlayer(player: trailerPlayer)
+                        .frame(minHeight: 205)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Button(trailerPlayer.isMuted ? "Unmute Trailer" : "Mute Trailer",
+                           systemImage: trailerPlayer.isMuted ? "speaker.wave.2" : "speaker.slash") {
+                        trailerPlayer.isMuted.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        let player = AVPlayer(url: url)
+                        player.isMuted = true
+                        trailerPlayer = player
+                        player.play()
+                    } label: {
+                        VStack(spacing: 12) {
+                            Image(systemName: "play.rectangle.fill").font(.system(size: 44))
+                            Text("Play Trailer").font(.headline)
+                            Text("Starts muted").font(.caption)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 205)
+                        .background(Color.white.opacity(0.07),
+                            in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label("Open Source Trailer", systemImage: "play.rectangle")
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                Text("The module provided a trailer webpage rather than a playable video file.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onDisappear {
+            trailerPlayer?.pause()
+            trailerPlayer = nil
+        }
     }
 }
 

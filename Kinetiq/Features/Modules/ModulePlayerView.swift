@@ -374,6 +374,9 @@ struct KinetiqModulePlayerView: View {
             .onChange(of: subtitleSettings.language) { _, language in
                 if playback.captionChoice == .settings { playback.refreshCaptions(preference: language) }
             }
+            .onChange(of: subtitleSettings.sourceTimingOffset) { _, _ in
+                playback.externalSubtitles.updatePlaybackTime(playback.currentTime)
+            }
             .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification).receive(on: DispatchQueue.main)) { event in
                 playback.syncCaptionSelection(for: event.object as? AVPlayerItem)
             }
@@ -965,6 +968,32 @@ private struct ModulePlayerOptionsSheet: View {
                     }
                     .disabled(!playback.canSelectSourceSubtitle)
                 }
+
+                sectionLabel("NATIVE PIP SUBTITLES · BETA")
+                if playback.isPreparingNativeBridge {
+                    ProgressView("Preparing native subtitle track…")
+                        .tint(KinetiqPalette.accent)
+                } else if playback.nativeBridgeIsActive {
+                    Label("Temporary native HLS rendition active", systemImage: "checkmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(KinetiqPalette.cyan)
+                    Button("Return to Original Stream") {
+                        playback.disableNativePiPBridge()
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        playback.activateNativePiPBridge()
+                    } label: {
+                        Label("Try Native PiP Subtitles", systemImage: "pip.enter")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(KinetiqPalette.accent)
+                    .disabled(!playback.canPrepareNativePiPBridge)
+                }
+                Text(playback.nativeBridgeStatus)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
             }
 
             Text(playback.pictureInPictureCaptionNotice)
@@ -1430,6 +1459,60 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     let externalSubtitles = ModuleExternalSubtitleController()
     private var subtitleChanges: AnyCancellable?
     @Published private(set) var captionChoice: KinetiqCaptionChoice = .settings
+    @Published private(set) var isPreparingNativeBridge = false
+    @Published private(set) var nativeBridgeStatus =
+        "For on-demand HLS only. Builds a temporary native WebVTT rendition; original playback remains the fallback."
+    private var nativeBridge: NativeHLSSubtitleBridge?
+    private var nativeBridgeTask: Task<Void, Never>?
+    var nativeBridgeIsActive: Bool { nativeBridge != nil }
+    var canPrepareNativePiPBridge: Bool {
+        guard let stream = session.currentStream else { return false }
+        return !isPreparingNativeBridge &&
+            NativeHLSSubtitleBridge.isEligible(stream) &&
+            externalSubtitles.tracks.contains(where: { $0.id == externalSubtitles.selectedTrackID })
+    }
+
+    func activateNativePiPBridge() {
+        guard canPrepareNativePiPBridge,
+              let stream = session.currentStream,
+              let selectedID = externalSubtitles.selectedTrackID,
+              let track = externalSubtitles.tracks.first(where: { $0.id == selectedID })
+        else { return }
+        nativeBridgeTask?.cancel()
+        isPreparingNativeBridge = true
+        nativeBridgeStatus = "Validating on-demand HLS and preparing a synchronized WebVTT track…"
+        let offset = KinetiqSubtitleSettings.shared.sourceTimingOffset
+        nativeBridgeTask = Task { @MainActor [weak self] in
+            defer {
+                self?.isPreparingNativeBridge = false
+                self?.nativeBridgeTask = nil
+            }
+            do {
+                let bridge = try await NativeHLSSubtitleBridge.prepare(
+                    stream: stream, track: track, offset: offset
+                )
+                guard !Task.isCancelled, let self, !self.hasStopped,
+                      self.session.currentStream?.id == stream.id,
+                      self.externalSubtitles.selectedTrackID == selectedID else { return }
+                self.nativeBridgeStatus = "Opening the native subtitle presentation…"
+                self.load(stream, bridge: bridge)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.nativeBridgeStatus =
+                    (error as? LocalizedError)?.errorDescription ??
+                    "Native subtitle preparation failed. Original playback is unchanged."
+            }
+        }
+    }
+
+    func disableNativePiPBridge() {
+        nativeBridgeTask?.cancel()
+        nativeBridgeTask = nil
+        isPreparingNativeBridge = false
+        guard nativeBridge != nil, let stream = session.currentStream else { return }
+        nativeBridgeStatus = "Returned to the original source stream."
+        load(stream)
+    }
 
     // PiP presents an independent AVFoundation video surface. SwiftUI-based
     // SRT/WebVTT overlays do NOT appear there. Native legible options can.
@@ -1465,6 +1548,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     var pictureInPictureCaptionNotice: String {
+        if nativeBridge != nil {
+            return "Native HLS bridge enabled. System PiP should use its selectable WebVTT track if iOS accepts it; confirm on-device before relying on this beta."
+        }
         if let selectedID = externalSubtitles.selectedTrackID,
            let track = externalSubtitles.tracks.first(where: { $0.id == selectedID }) {
             return matchingEmbeddedCaption(for: track) == nil
@@ -1855,10 +1941,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     // MARK: Stream Handoff
 
-    private func load(_ stream: ModuleResolvedStream) {
-        guard !hasStopped, lastStreamID != stream.id else {
+    private func load(_ stream: ModuleResolvedStream, bridge: NativeHLSSubtitleBridge? = nil) {
+        guard !hasStopped,
+              lastStreamID != stream.id || bridge != nil || nativeBridge != nil else {
             return
         }
+        if bridge == nil {
+            nativeBridgeTask?.cancel()
+            nativeBridgeTask = nil
+            isPreparingNativeBridge = false
+        }
+        nativeBridge = bridge
 
         // Save the OLD episode before a new one replaces the player item.
         // Failover between servers for the same episode retains the current
@@ -1964,6 +2057,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         pipStyleItem = nil
         pipStyleApplied = false
         externalSubtitles.configure(tracks: stream.subtitles)
+        if bridge != nil {
+            externalSubtitles.suspendForNativeBridge()
+        }
 
         removeCurrentItemObservers()
 
@@ -2015,7 +2111,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         }
 
         let asset = AVURLAsset(
-            url: stream.url,
+            url: bridge?.playbackURL ?? stream.url,
             options: assetOptions.isEmpty ? nil : assetOptions
         )
 
@@ -2242,6 +2338,15 @@ private final class ModulePlayerPlaybackController: ObservableObject {
               player.currentItem === item,
               let stream = session.currentStream else { return }
 
+        // An experimental localhost rendition must never count as a
+        // provider/server failure. Restore the proven original playback.
+        if nativeBridge != nil {
+            nativeBridgeStatus = "Native PiP presentation failed; restored original video and external subtitles."
+            note("Native subtitle rendition failed; reverting without penalizing the source")
+            load(stream)
+            return
+        }
+
         isHandlingStreamFailure = true
         startupTask?.cancel()
         startupTask = nil
@@ -2413,6 +2518,24 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         selectedAudio = audio.flatMap { item.currentMediaSelection.selectedMediaOption(in: $0) }
         subtitleOptionsItem = item
         if !subtitleOptions.isEmpty { note("Native subtitle tracks: \(subtitleOptions.count)") }
+        if nativeBridge != nil {
+            guard let group = subtitles,
+                  let native = group.options.first(where: {
+                      $0.displayName.contains(NativeHLSSubtitleManifest.trackName)
+                  }) else {
+                nativeBridgeStatus = "The native caption track was not exposed by iOS; restored the original stream."
+                if let stream = session.currentStream { load(stream) }
+                return
+            }
+            player.appliesMediaSelectionCriteriaAutomatically = false
+            item.select(native, in: group)
+            selectedSubtitle = native
+            captionChoice = .source
+            externalSubtitles.suspendForNativeBridge()
+            nativeBridgeStatus = "Native caption track selected. Start PiP to check iOS subtitle rendering."
+            note("Native HLS subtitle option selected for PiP validation")
+            return
+        }
         refreshCaptions(preference: KinetiqSubtitleSettings.shared.language)
     }
 
@@ -2472,6 +2595,14 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     func selectExternalSubtitle(_ track: ModuleRemoteSubtitleTrack) {
         guard canSelectSourceSubtitle, let item = player.currentItem,
               externalSubtitles.tracks.contains(where: { $0.id == track.id }) else { return }
+        if nativeBridge != nil {
+            nativeBridgeStatus = "Switched subtitle source; returned to original video."
+            externalSubtitles.select(track)
+            if let stream = session.currentStream { load(stream) }
+            // The original item's track loader will restore this newly saved
+            // preference. Do not select on the soon-to-be-replaced item.
+            return
+        }
         pipCaptionRestore = nil
         captionChoice = .source
         player.appliesMediaSelectionCriteriaAutomatically = false
@@ -2489,6 +2620,22 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     func refreshCaptions(preference: String) {
         guard !hasStopped, let item = subtitleOptionsItem, item === player.currentItem else { return }
+        if nativeBridge != nil {
+            guard let group = subtitleGroup,
+                  let native = subtitleOptions.first(where: {
+                      $0.displayName.contains(NativeHLSSubtitleManifest.trackName)
+                  }) else { return }
+            player.appliesMediaSelectionCriteriaAutomatically = false
+            if captionChoice == .off {
+                item.select(nil, in: group)
+                selectedSubtitle = nil
+            } else {
+                item.select(native, in: group)
+                selectedSubtitle = native
+                externalSubtitles.suspendForNativeBridge()
+            }
+            return
+        }
         let tracks = externalSubtitles.tracks
         let target = captionChoice.target(
             preference: preference,
@@ -2734,6 +2881,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         guard !hasStopped else { return }
         savePlaybackProgress(force: true)
         hasStopped = true
+
+        nativeBridgeTask?.cancel()
+        nativeBridgeTask = nil
+        nativeBridge = nil
 
         externalSubtitles.stop()
         subtitleOptionsItem = nil
