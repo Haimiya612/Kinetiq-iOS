@@ -4182,6 +4182,7 @@ private enum KinetiqModuleNativeCaptionStyle {
             case .small: target = 4.4
             case .standard: target = 6.0
             case .large: target = 7.5
+            case .extraLarge: target = 9.0
             }
             attributes[kCMTextMarkupAttribute_BaseFontSizePercentageRelativeToVideoHeight as String] = target
         }
