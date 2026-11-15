@@ -123,9 +123,11 @@ struct KinetiqDiscordPresenceSettingsView: View {
                 }
             }
 
-            Section("What to test") {
+            Section {
                 Text("1. Connect and wait for Gateway READY.\n2. Play an anime and check the Rich Presence from another Discord account.\n3. Check episode changes, Sub/Dub, pause/resume, and the anime poster.\n4. Enable PiP, leave Kinetiq, and check whether the activity survives app suspension.\n5. Disconnect and confirm the activity disappears.")
                     .font(.footnote)
+            } header: {
+                Text("What to test")
             } footer: {
                 Text("iOS does not guarantee background WebSocket execution in PiP. There is no local server or desktop dependency. Never paste a session token in GitHub, a chat, or diagnostics.")
             }
