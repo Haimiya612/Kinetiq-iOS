@@ -20,13 +20,58 @@ struct KinetiqPresencePlayback {
     let isPictureInPicture: Bool
 }
 
+/// The six Discord Gateway activity types supported by the Presence Lab UI.
+/// Streaming requires a real Twitch/YouTube URL. Custom Status has a different
+/// presentation from Rich Presence (no artwork or episode progress bar).
+enum KinetiqDiscordActivityType: Int, CaseIterable, Identifiable {
+    case playing = 0
+    case streaming = 1
+    case listening = 2
+    case watching = 3
+    case custom = 4
+    case competing = 5
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .playing: return "Playing"
+        case .streaming: return "Streaming"
+        case .listening: return "Listening"
+        case .watching: return "Watching"
+        case .custom: return "Custom Status"
+        case .competing: return "Competing"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .playing: return "Playing an anime. Discord may show elapsed time instead of a progress bar."
+        case .streaming: return "Streaming is only accepted with a genuine Twitch or YouTube stream URL. Without one, Kinetiq sends Watching."
+        case .listening: return "Listening to an anime. Discord supports an elapsed/total progress bar."
+        case .watching: return "Watching an anime. Recommended for accurate episode playback progress."
+        case .custom: return "A short 🍿 status showing the anime and episode. Discord does not display the normal Rich Presence poster or progress card."
+        case .competing: return "Competing in an anime. The display may be less suitable for media playback."
+        }
+    }
+}
+
 /// Pure presentation mapping, usable without contacting Discord.
 enum KinetiqDiscordActivity {
     static let applicationID = "1571558800387874819"
 
+    static func clock(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        let whole = Int(min(seconds, 359_999))
+        if whole >= 3_600 {
+            return String(format: "%d:%02d:%02d", whole / 3_600, (whole / 60) % 60, whole % 60)
+        }
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
+    }
+
     static func description(for playback: KinetiqPresencePlayback) -> String {
         let title = playback.animeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? "Watching anime" : String(title.prefix(128))
+        return title.isEmpty ? "Anime" : String(title.prefix(128))
     }
 
     static func state(for playback: KinetiqPresencePlayback) -> String {
@@ -40,7 +85,11 @@ enum KinetiqDiscordActivity {
     /// Only plain HTTPS artwork URLs. Never send signed query URLs, private
     /// source headers, cookies, file URLs, or credentials to Discord.
     static func publicArtwork(for playback: KinetiqPresencePlayback) -> String? {
-        guard let url = playback.posterURL,
+        publicArtwork(for: playback.posterURL)
+    }
+
+    static func publicArtwork(for url: URL?) -> String? {
+        guard let url,
               url.scheme?.lowercased() == "https",
               let host = url.host?.lowercased(),
               host != "localhost", !host.hasSuffix(".local"),
@@ -51,26 +100,73 @@ enum KinetiqDiscordActivity {
         return url.absoluteString
     }
 
-    static func payload(for playback: KinetiqPresencePlayback, now: Date = Date()) -> [String: Any] {
+    /// Streaming activities accept only public Twitch/YouTube URLs. Do not
+    /// invent a link or use the anime's private streaming-source URL here.
+    static func validStreamingURL(_ input: String) -> URL? {
+        guard let url = URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              ["twitch.tv", "www.twitch.tv", "youtube.com", "www.youtube.com"].contains(host),
+              url.user == nil, url.password == nil, url.fragment == nil,
+              url.absoluteString.count <= 500 else { return nil }
+        return url
+    }
+
+    static func payload(
+        for playback: KinetiqPresencePlayback,
+        now: Date = Date(),
+        posterOverride: URL? = nil,
+        activityType: KinetiqDiscordActivityType = .watching,
+        streamingURL: URL? = nil
+    ) -> [String: Any] {
+        let validStream = streamingURL.flatMap { validStreamingURL($0.absoluteString) }
+        let effectiveType: KinetiqDiscordActivityType =
+            activityType == .streaming && validStream == nil ? .watching : activityType
+
+        if effectiveType == .custom {
+            let state = String("\(description(for: playback)) · \(state(for: playback))".prefix(128))
+            let customActivity: [String: Any] = [
+                "name": "Custom Status",
+                "type": KinetiqDiscordActivityType.custom.rawValue,
+                "state": state,
+                "emoji": ["name": "🍿"]
+            ]
+            let body: [String: Any] = [
+                "since": 0,
+                "activities": [customActivity],
+                "status": "online",
+                "afk": false
+            ]
+            return ["op": 3, "d": body]
+        }
+
         var activity: [String: Any] = [
-            "name": "Kinetiq",
-            "type": 3, // Watching
+            // Best-effort dynamic label; Discord may override it with the
+            // registered application name (for example, "Kinetiq").
+            "name": description(for: playback),
+            "type": effectiveType.rawValue,
             "application_id": applicationID,
             "details": description(for: playback),
             "state": state(for: playback)
         ]
 
-        if let artwork = publicArtwork(for: playback) {
+        if effectiveType == .streaming, let validStream {
+            activity["url"] = validStream.absoluteString
+        }
+
+        if let artwork = publicArtwork(for: posterOverride) ?? publicArtwork(for: playback) {
             activity["assets"] = [
                 "large_image": artwork,
                 "large_text": description(for: playback)
             ]
         }
         if playback.isPlaying, playback.position.isFinite, playback.position >= 0 {
-            let start = now.timeIntervalSince1970 - playback.position
+            // Discord activity timestamps use Unix *milliseconds*, not seconds.
+            // Seconds made its progress bar appear as 00:01 / 00:01 on iPhone.
+            let start = (now.timeIntervalSince1970 - playback.position) * 1_000
             var timestamps: [String: Int] = ["start": Int(start)]
-            if playback.duration.isFinite, playback.duration > playback.position {
-                timestamps["end"] = Int(start + playback.duration)
+            if playback.duration.isFinite, playback.duration > 0 {
+                timestamps["end"] = Int(start + playback.duration * 1_000)
             }
             activity["timestamps"] = timestamps
         }
@@ -148,9 +244,13 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     }
 
     static let enabledKey = "kinetiq.discordPresenceLab.enabled"
+    static let activityTypeKey = "kinetiq.discordPresenceLab.activityType"
+    static let streamingURLKey = "kinetiq.discordPresenceLab.streamingURL"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var hasCredential: Bool
+    @Published private(set) var activityType: KinetiqDiscordActivityType
+    @Published private(set) var streamingURL: URL?
     @Published private(set) var connection: Connection = .off
     @Published private(set) var message = "No connection has been tested."
     @Published private(set) var connectionStage = "Not started"
@@ -159,30 +259,49 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var safeDiagnostics = "No connection attempt recorded."
     @Published private(set) var lastPreview: KinetiqPresencePlayback?
     @Published private(set) var lastSentAt: Date?
+    @Published private(set) var publicPosterURL: URL?
 
     private var socket: URLSessionWebSocketTask?
     private var listeningTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttemptCount = 0
     private var lastSequence: Int?
     private var generation = 0
     private var lastSignature: String?
     private var lastPublication = Date.distantPast
+    private var lastPublishedPosition: TimeInterval?
+    private var lastPreviewRecordedAt = Date.distantPast
     private var foregroundObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
+    private var lastBackgroundAt: Date?
+    private var artworkLookupTitle: String?
+    private var artworkLookupTask: Task<Void, Never>?
     private var startedAt: Date?
     private var lastGatewayOpcode: Int?
 
     private init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         hasCredential = KinetiqDiscordCredentialStore.exists
+        let savedType = UserDefaults.standard.object(forKey: Self.activityTypeKey) as? Int
+        activityType = savedType.flatMap(KinetiqDiscordActivityType.init(rawValue:)) ?? .watching
+        let savedStreamingURL = UserDefaults.standard.string(forKey: Self.streamingURLKey) ?? ""
+        streamingURL = KinetiqDiscordActivity.validStreamingURL(savedStreamingURL)
         connection = enabled ? .disconnected : .off
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.enabled, self.socket == nil,
-                      self.connection == .interrupted else { return }
-                self.connect()
+                self?.restoreForegroundConnection()
+            }
+        }
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.lastBackgroundAt = Date()
             }
         }
         if enabled && hasCredential {
@@ -194,7 +313,41 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         enabled = value
         UserDefaults.standard.set(value, forKey: Self.enabledKey)
         if value { connect() }
-        else { disconnect(); connection = .off; lastPreview = nil }
+        else {
+            disconnect()
+            connection = .off
+            lastPreview = nil
+            publicPosterURL = nil
+            artworkLookupTitle = nil
+            artworkLookupTask?.cancel()
+            artworkLookupTask = nil
+        }
+    }
+
+    func setActivityType(_ type: KinetiqDiscordActivityType) {
+        guard activityType != type else { return }
+        activityType = type
+        UserDefaults.standard.set(type.rawValue, forKey: Self.activityTypeKey)
+        publishIfNeeded(force: true)
+    }
+
+    @discardableResult
+    func saveStreamingURL(_ input: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            streamingURL = nil
+            UserDefaults.standard.removeObject(forKey: Self.streamingURLKey)
+            publishIfNeeded(force: true)
+            return true
+        }
+        guard let url = KinetiqDiscordActivity.validStreamingURL(trimmed) else {
+            message = "Streaming requires an HTTPS Twitch or YouTube URL. Nothing was changed."
+            return false
+        }
+        streamingURL = url
+        UserDefaults.standard.set(url.absoluteString, forKey: Self.streamingURLKey)
+        publishIfNeeded(force: true)
+        return true
     }
 
     /// Never return the stored token to a view or put it in an observable field.
@@ -222,13 +375,20 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     }
 
     func connect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttemptCount = 0
+        startConnection()
+    }
+
+    private func startConnection() {
         guard enabled else { connection = .off; return }
         guard let token = KinetiqDiscordCredentialStore.read(), !token.isEmpty else {
             connection = .needsCredential
             message = "Enter a fresh token on this device."
             return
         }
-        disconnect()
+        closeTransport()
         guard let url = URL(string: "wss://gateway.discord.gg/?v=10&encoding=json") else { return }
         let session = URLSession(configuration: .ephemeral)
         let task = session.webSocketTask(with: url)
@@ -252,6 +412,16 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     }
 
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttemptCount = 0
+        closeTransport()
+        connection = enabled ? .disconnected : .off
+        message = "Disconnected from Discord."
+        connectionStage = "Disconnected"
+    }
+
+    private func closeTransport() {
         generation += 1
         heartbeatTask?.cancel()
         heartbeatTask = nil
@@ -261,15 +431,15 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         socket = nil
         lastSequence = nil
         lastSignature = nil
+        lastPublishedPosition = nil
         lastSentAt = nil
-        connection = enabled ? .disconnected : .off
-        message = "Disconnected from Discord."
-        connectionStage = "Disconnected"
     }
 
     func record(_ snapshot: KinetiqPresencePlayback) {
         guard enabled else { return }
         lastPreview = snapshot
+        lastPreviewRecordedAt = Date()
+        prepareArtwork(for: snapshot)
         guard connection == .connected else { return }
         publishIfNeeded(force: false)
     }
@@ -277,6 +447,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     func playbackEnded() {
         guard enabled else { return }
         lastPreview = nil
+        publicPosterURL = nil
+        artworkLookupTitle = nil
+        artworkLookupTask?.cancel()
+        artworkLookupTask = nil
         lastSignature = nil
         guard let socket, connection == .connected else { return }
         Task { try? await Self.send(KinetiqDiscordActivity.clearPayload, on: socket) }
@@ -292,25 +466,137 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             episodeTitle: nil, language: "sub", posterURL: nil,
             position: 0, duration: 1200, isPlaying: true, isPictureInPicture: false
         )
+        lastPreviewRecordedAt = Date()
+        publicPosterURL = nil
+        artworkLookupTitle = "Kinetiq Presence Lab"
+        artworkLookupTask?.cancel()
+        artworkLookupTask = nil
         publishIfNeeded(force: true)
     }
 
     private func publishIfNeeded(force: Bool) {
         guard let socket, connection == .connected, let lastPreview else { return }
-        let signature = "\(lastPreview.animeTitle)|\(lastPreview.episodeNumber)|\(lastPreview.language)|\(lastPreview.isPlaying)|\(lastPreview.isPictureInPicture)"
-        if !force, signature == lastSignature,
-           Date().timeIntervalSince(lastPublication) < 30 { return }
+        let now = Date()
+        let age = max(0, now.timeIntervalSince(lastPreviewRecordedAt))
+        let basePosition = lastPreview.position.isFinite ? max(0, lastPreview.position) : 0
+        let advancingPosition = basePosition + (lastPreview.isPlaying ? age : 0)
+        let position = lastPreview.duration.isFinite && lastPreview.duration > 0
+            ? min(advancingPosition, lastPreview.duration) : advancingPosition
+        let adjusted = KinetiqPresencePlayback(
+            animeTitle: lastPreview.animeTitle,
+            episodeNumber: lastPreview.episodeNumber,
+            episodeTitle: lastPreview.episodeTitle,
+            language: lastPreview.language,
+            posterURL: lastPreview.posterURL,
+            position: position,
+            duration: lastPreview.duration,
+            isPlaying: lastPreview.isPlaying,
+            isPictureInPicture: lastPreview.isPictureInPicture
+        )
+        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(activityType.rawValue)|\(streamingURL?.absoluteString ?? "")"
+        let elapsed = now.timeIntervalSince(lastPublication)
+        let expectedUnclamped = (lastPublishedPosition ?? position) + (adjusted.isPlaying ? max(0, elapsed) : 0)
+        let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
+            ? min(expectedUnclamped, adjusted.duration) : expectedUnclamped
+        let seeked = lastPublishedPosition != nil && abs(position - expectedPosition) >= 4
+        if !force, signature == lastSignature, elapsed < 30, !seeked { return }
         lastSignature = signature
-        lastPublication = Date()
-        let payload = KinetiqDiscordActivity.payload(for: lastPreview)
+        lastPublication = now
+        lastPublishedPosition = position
+        let payload = KinetiqDiscordActivity.payload(
+            for: adjusted, now: now, posterOverride: publicPosterURL,
+            activityType: activityType, streamingURL: streamingURL
+        )
+        let connectionGeneration = generation
         Task { @MainActor [weak self] in
             do {
                 try await Self.send(payload, on: socket)
+                guard self?.generation == connectionGeneration else { return }
                 self?.lastSentAt = Date()
                 self?.message = "Activity submitted. Check visibility from another Discord account."
             } catch {
+                guard self?.generation == connectionGeneration else { return }
                 self?.message = "Presence update could not be sent. Reconnect and retry."
             }
+        }
+    }
+
+    /// Prefer the verified public metadata cover when the provider's poster is
+    /// missing or inaccessible. This reuses Kinetiq's existing AniList service;
+    /// no player URL, cookies, or source credentials ever leave the device.
+    private func prepareArtwork(for playback: KinetiqPresencePlayback) {
+        let title = playback.animeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if artworkLookupTitle == title {
+            if publicPosterURL == nil,
+               let safe = KinetiqDiscordActivity.publicArtwork(for: playback) {
+                publicPosterURL = URL(string: safe)
+            }
+            return
+        }
+        artworkLookupTask?.cancel()
+        artworkLookupTask = nil
+        artworkLookupTitle = title
+        publicPosterURL = KinetiqDiscordActivity.publicArtwork(for: playback).flatMap(URL.init(string:))
+        guard !title.isEmpty, title != "Kinetiq Presence Lab" else { return }
+        artworkLookupTask = Task { @MainActor [weak self] in
+            let supplement = await KinetiqAniListMetadataService.shared.lookup(title: title)
+            guard let self, !Task.isCancelled,
+                  self.artworkLookupTitle == title else { return }
+            self.artworkLookupTask = nil
+            // The exact-title metadata matcher rejects ambiguous or wrong-season covers.
+            guard let safe = KinetiqDiscordActivity.publicArtwork(for: supplement?.coverURL),
+                  let url = URL(string: safe), url != self.publicPosterURL else { return }
+            self.publicPosterURL = url
+            self.publishIfNeeded(force: true)
+        }
+    }
+
+    /// PiP can keep media playback active, but iOS may suspend the WebSocket.
+    /// Probe on foreground return; reconnect only when the socket failed.
+    private func restoreForegroundConnection() {
+        guard enabled, hasCredential else { return }
+        guard lastBackgroundAt != nil else {
+            if socket == nil && connection == .interrupted { connect() }
+            return
+        }
+        lastBackgroundAt = nil
+        if socket == nil && connection == .interrupted {
+            connect()
+        } else if let socket, connection == .connected {
+            let connectionGeneration = generation
+            socket.sendPing { [weak self] error in
+                Task { @MainActor [weak self] in
+                    guard let self, self.enabled,
+                          self.generation == connectionGeneration else { return }
+                    if error == nil { self.publishIfNeeded(force: true) }
+                    else { self.connect() }
+                }
+            }
+        }
+    }
+
+    /// Retry transient failures while iOS gives the process execution time.
+    /// Backoff and a finite attempt limit avoid hammering Discord's Gateway.
+    /// When iOS suspends the app, the foreground probe remains the fallback.
+    private func scheduleTransientReconnect() {
+        guard enabled, hasCredential, reconnectTask == nil,
+              reconnectAttemptCount < 5 else { return }
+        let delays = [2, 4, 8, 16, 30]
+        let delay = delays[reconnectAttemptCount]
+        reconnectAttemptCount += 1
+        message = "Connection interrupted. Retrying in \(delay) seconds if iOS permits."
+        reconnectTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) }
+            catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            guard self.enabled, self.hasCredential,
+                  self.connection == .interrupted else { return }
+            if UIApplication.shared.applicationState == .background,
+               self.lastPreview?.isPictureInPicture != true {
+                return
+            }
+            self.startConnection()
         }
     }
 
@@ -348,6 +634,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                     connectionStage = "IDENTIFY sent; awaiting READY"
                 } else if op == 0, packet["t"] as? String == "READY" {
                     connection = .connected
+                    reconnectAttemptCount = 0
                     connectionStage = "Gateway READY received"
                     message = "Gateway READY. Rich Presence and artwork still need peer verification."
                     safeDiagnostics = "Gateway READY received. Rich Presence visibility has not been verified. No credential data is recorded."
@@ -390,6 +677,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             message = "Gateway session ended. Tap Reconnect."
             safeDiagnostics = diagnosticReport(for: task, error: nil)
         }
+        if connection == .interrupted { scheduleTransientReconnect() }
     }
 
     private func diagnosticReport(for task: URLSessionWebSocketTask, error: Error?) -> String {
