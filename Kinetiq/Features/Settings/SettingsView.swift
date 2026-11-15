@@ -328,6 +328,11 @@ struct SettingsView: View {
                     } label: {
                         Label("Anime release calendar", systemImage: "calendar.badge.clock")
                     }
+                    NavigationLink {
+                        KinetiqMetadataSettingsView()
+                    } label: {
+                        Label("Episode metadata & artwork", systemImage: "photo.on.rectangle.angled")
+                    }
                 }
 
                 Section {

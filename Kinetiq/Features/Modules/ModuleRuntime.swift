@@ -1805,6 +1805,7 @@ actor ModuleAnimeArtworkCache {
 /// When artwork is missing or unavailable, always shows real fallback UI.
 struct ModuleAnimeArtworkView: View {
     let url: URL?
+    var contentMode: ContentMode = .fill
     @State private var artwork: UIImage?
 
     var body: some View {
@@ -1822,7 +1823,7 @@ struct ModuleAnimeArtworkView: View {
                 GeometryReader { geometry in
                     Image(uiImage: artwork)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: contentMode)
                         .frame(width: geometry.size.width,
                                height: geometry.size.height)
                         .clipped()
@@ -1855,6 +1856,29 @@ struct ModuleAnimeEpisode: Identifiable {
     let href: String
     let subAvailable: Bool
     let dubAvailable: Bool
+    /// Presentation-only data. Neither the resolver nor watch history uses
+    /// these fields for source identity or playback navigation.
+    let title: String?
+    let imageURL: URL?
+    let synopsis: String?
+    let durationMinutes: Int?
+    let airDate: String?
+
+    init(id: String, number: String, href: String, subAvailable: Bool,
+         dubAvailable: Bool, title: String? = nil, imageURL: URL? = nil,
+         synopsis: String? = nil, durationMinutes: Int? = nil,
+         airDate: String? = nil) {
+        self.id = id
+        self.number = number
+        self.href = href
+        self.subAvailable = subAvailable
+        self.dubAvailable = dubAvailable
+        self.title = title
+        self.imageURL = imageURL
+        self.synopsis = synopsis
+        self.durationMinutes = durationMinutes
+        self.airDate = airDate
+    }
 }
 
 struct ModuleRemoteSubtitleTrack: Identifiable, Sendable {
@@ -2773,7 +2797,8 @@ enum ModuleRuntimeDecoder {
     // MARK: Episodes
 
     static func episodes(
-        from value: Any
+        from value: Any,
+        baseURL: URL? = nil
     ) -> [ModuleAnimeEpisode] {
         dictionaryList(from: value)
             .enumerated()
@@ -2798,18 +2823,30 @@ enum ModuleRuntimeDecoder {
                     return nil
                 }
 
-                let number = string(
+                let suppliedNumber = string(
                     episode,
                     keys: [
                         "number",
                         "episode",
                         "episodeNumber",
                         "episode_number",
-                        "ep",
-                        "title",
-                        "name"
+                        "ep"
                     ]
-                ) ?? "\(index + 1)"
+                )
+
+                let rawTitle = string(
+                    episode,
+                    keys: [
+                        "episodeTitle", "episode_title", "episodeName", "episode_name",
+                        "name", "title", "englishTitle", "english_title"
+                    ]
+                )
+                let number = suppliedNumber
+                    ?? KinetiqEpisodeMetadataMatching.leadingEpisodeNumber(in: rawTitle)
+                    ?? "\(index + 1)"
+                let episodeTitle = KinetiqEpisodeMetadataMatching.displayTitle(
+                    rawTitle, episodeNumber: number
+                )
 
                 let id = string(
                     episode,
@@ -2835,7 +2872,25 @@ enum ModuleRuntimeDecoder {
                         episode,
                         key: "dubAvailable",
                         fallback: false
-                    )
+                    ),
+                    title: episodeTitle,
+                    imageURL: baseURL.flatMap { baseURL in
+                        resolvedURL(string(episode, keys: [
+                            "episodeThumbnail", "episode_thumbnail", "episodeImage",
+                            "episode_image", "thumbnail", "thumbnailUrl", "thumbnailURL",
+                            "thumbnail_url", "thumb", "still", "stillUrl", "still_path",
+                            "image", "imageUrl", "imageURL", "poster", "cover"
+                        ]), baseURL: baseURL)
+                    },
+                    synopsis: string(episode, keys: [
+                        "synopsis", "description", "summary", "overview"
+                    ]).map { String($0.prefix(600)) },
+                    durationMinutes: string(episode, keys: [
+                        "durationMinutes", "duration_minutes", "duration"
+                    ]).flatMap(Int.init),
+                    airDate: string(episode, keys: [
+                        "airDate", "aired", "releaseDate", "release_date"
+                    ])
                 )
             }
     }
@@ -4465,6 +4520,10 @@ struct ModuleAnimeDetailsView: View {
     @State private var episodeFilter: ModuleEpisodeFilter = .all
     @State private var synopsisExpanded = false
     @State private var metadata = ModuleTitleMetadata()
+    @State private var supplementalMetadata: KinetiqSeriesSupplement?
+    @State private var tmdbEpisodeMetadata: [Int: KinetiqEpisodeSupplement] = [:]
+    @AppStorage("kinetiq.metadata.anilistEnabled") private var anilistEnabled = true
+    @AppStorage("kinetiq.metadata.tmdbEnabled") private var tmdbEnabled = false
     @State private var detailSection: ModuleDetailSection = .episodes
     @State private var selectedSeason: Int?
     @State private var relatedSelection: ModuleAnimeItem?
@@ -4553,6 +4612,9 @@ struct ModuleAnimeDetailsView: View {
             }
             .task {
                 await loadDetailsAndEpisodes()
+            }
+            .task(id: supplementalLookupKey) {
+                await loadSupplementalMetadata()
             }
             .sheet(item: $relatedSelection) { related in
                 ModuleAnimeDetailsView(
@@ -4681,7 +4743,11 @@ struct ModuleAnimeDetailsView: View {
 
     private var detailsHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ModuleAnimeArtworkView(url: details?.imageURL ?? item.imageURL)
+            KinetiqDetailArtworkHero(
+                posterURL: details?.imageURL ?? item.imageURL ?? supplementalMetadata?.coverURL,
+                bannerURL: supplementalMetadata?.bannerURL,
+                cornerRadius: detailTheme.cardCornerRadius
+            )
                 .frame(maxWidth: .infinity, minHeight: 335, maxHeight: 335)
                 .overlay {
                     LinearGradient(
@@ -4851,6 +4917,12 @@ struct ModuleAnimeDetailsView: View {
             if let status = metadata.status { detailsFact("Status", value: status) }
             if let studio = metadata.studio { detailsFact("Studio", value: studio) }
             detailsFact("Source", value: sourceName)
+            if let supplementalMetadata {
+                detailsFact("Additional metadata", value: supplementalMetadata.provider)
+            }
+            if !tmdbEpisodeMetadata.isEmpty {
+                detailsFact("Episode information", value: "TMDB")
+            }
             if !metadata.genres.isEmpty {
                 Text("Genres").font(.subheadline.weight(.semibold))
                 FlowLayoutForModuleDetails(tags: metadata.genres, color: detailTheme.accent)
@@ -5030,46 +5102,65 @@ struct ModuleAnimeDetailsView: View {
     private func episodeRow(
         _ episode: ModuleAnimeEpisode
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
+        let index = KinetiqEpisodeMetadataMatching.episodeIndex(episode.number)
+        let tmdbEpisode = index.flatMap { tmdbEpisodeMetadata[$0] }
+        let anilistEpisode = index.flatMap { supplementalMetadata?.episodeDetails[$0] }
+        let title = episode.title ?? tmdbEpisode?.title ?? anilistEpisode?.title
+        let imageURL = episode.imageURL ?? tmdbEpisode?.imageURL ?? anilistEpisode?.imageURL
+        let synopsis = episode.synopsis ?? tmdbEpisode?.synopsis ?? anilistEpisode?.synopsis
+        let duration = episode.durationMinutes ?? tmdbEpisode?.durationMinutes
+        let airDate = episode.airDate ?? tmdbEpisode?.airDate
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 ZStack {
-                    LinearGradient(
-                        colors: [detailTheme.accent.opacity(0.25), Color.black.opacity(0.38)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                    VStack(spacing: 3) {
-                        Image(systemName: hasWatched(episode) ? "checkmark.circle.fill" : "play.circle.fill")
-                            .font(.system(size: 24))
-                        Text("EP \(episode.number)")
-                            .font(.system(size: 10, weight: .heavy, design: .rounded))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
+                    if let imageURL {
+                        ModuleAnimeArtworkView(url: imageURL)
+                    } else {
+                        LinearGradient(
+                            colors: [detailTheme.accent.opacity(0.25), Color.black.opacity(0.38)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                        VStack(spacing: 3) {
+                            Image(systemName: hasWatched(episode)
+                                  ? "checkmark.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 24))
+                            Text("EP \(episode.number)")
+                                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(6)
                     }
-                    .foregroundStyle(.white)
-                    .padding(6)
                 }
-                .frame(width: 90, height: 66)
+                .frame(width: 128, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text("Episode \(episode.number)")
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(2)
-                    HStack(spacing: 6) {
-                        if episode.subAvailable { episodePlayButton(episode, language: "sub") }
-                        if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    if let title {
+                        Text(title)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
+            HStack(spacing: 8) {
+                if episode.subAvailable { episodePlayButton(episode, language: "sub") }
+                if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
+                Spacer(minLength: 0)
                 Menu {
                     if episode.subAvailable { watchedAction(episode, language: "sub") }
                     if episode.dubAvailable { watchedAction(episode, language: "dub") }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 19))
-                        .frame(minWidth: 36, minHeight: 44)
+                        .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(activeLaunch != nil || (!episode.subAvailable && !episode.dubAvailable))
                 .accessibilityLabel("Manage Episode \(episode.number) progress")
@@ -5084,6 +5175,26 @@ struct ModuleAnimeDetailsView: View {
                 .buttonStyle(.plain)
                 .disabled(activeLaunch != nil)
                 .accessibilityLabel("Download options for Episode \(episode.number)")
+            }
+
+            if let synopsis, !synopsis.isEmpty {
+                Text(synopsis)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if duration != nil || airDate != nil {
+                HStack(spacing: 12) {
+                    if let duration, duration > 0 {
+                        Label("\(duration) min", systemImage: "clock")
+                    }
+                    if let airDate {
+                        Label(airDate, systemImage: "calendar")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
 
             if episode.subAvailable { episodeProgressLabel(episode, language: "sub") }
@@ -5154,12 +5265,38 @@ struct ModuleAnimeDetailsView: View {
 
     // MARK: Load Details and Episodes
 
+    private var supplementalLookupKey: String {
+        "\(sourceID)|\(item.id)|\(episodes.count)|\(episodes.first?.id ?? "")|\(episodes.last?.id ?? "")|\(anilistEnabled)|\(tmdbEnabled)"
+    }
+
+    @MainActor
+    private func loadSupplementalMetadata() async {
+        supplementalMetadata = nil
+        tmdbEpisodeMetadata = [:]
+        guard !episodes.isEmpty else { return }
+        let title = details?.title ?? item.title
+        if anilistEnabled {
+            let result = await KinetiqAniListMetadataService.shared.lookup(title: title)
+            guard !Task.isCancelled else { return }
+            supplementalMetadata = result
+        }
+        if tmdbEnabled {
+            let result = await KinetiqTMDBEpisodeService.shared.lookup(
+                title: title, alternativeTitles: supplementalMetadata?.alternativeTitles ?? []
+            )
+            guard !Task.isCancelled else { return }
+            tmdbEpisodeMetadata = result
+        }
+    }
+
     @MainActor
     private func loadDetailsAndEpisodes() async {
         let requestID = UUID()
         activeDetailsRequestID = requestID
         isLoading = true
         episodes = []
+        supplementalMetadata = nil
+        tmdbEpisodeMetadata = [:]
         detailsFailure = nil
         detailsFailureDiagnostics = nil
 
@@ -5218,7 +5355,8 @@ struct ModuleAnimeDetailsView: View {
                     guard !Task.isCancelled,
                           activeDetailsRequestID == requestID else { return }
                     let foundEpisodes = ModuleRuntimeDecoder.episodes(
-                        from: response
+                        from: response,
+                        baseURL: runtime.baseURL
                     )
 
                     if !foundEpisodes.isEmpty {
