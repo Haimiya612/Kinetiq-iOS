@@ -287,6 +287,7 @@ struct KinetiqModulePlayerView: View {
                 }
                 revealControls()
                 displayEmbeddedPlayerIfNeeded()
+                updateDiscordPresence()
             }
             .task {
                 // Begin after presentation, not from the details screen;
@@ -315,6 +316,7 @@ struct KinetiqModulePlayerView: View {
             }
             .onChange(of: session.currentEpisode?.id) { _, _ in
                 loadingStartedAt = Date()
+                updateDiscordPresence()
             }
             .onDisappear {
                 if hasOrientationLease {
@@ -331,7 +333,10 @@ struct KinetiqModulePlayerView: View {
                 } else {
                     session.clearPlayerFailure()
                 }
-                if !pictureInPicture.isActive { playback.stop() }
+                if !pictureInPicture.isActive {
+                    KinetiqDiscordPresenceManager.shared.playbackEnded()
+                    playback.stop()
+                }
             }
             .onChange(of: playback.errorMessage) { _, failure in
                 if let failure {
@@ -381,6 +386,7 @@ struct KinetiqModulePlayerView: View {
                 playback.syncCaptionSelection(for: event.object as? AVPlayerItem)
             }
             .onChange(of: playback.isPlaying) { _, playing in
+                updateDiscordPresence()
                 if playing {
                     scheduleAutoHide()
                 } else {
@@ -401,6 +407,7 @@ struct KinetiqModulePlayerView: View {
                 }
             }
             .onChange(of: pictureInPicture.isActive) { _, active in
+                updateDiscordPresence()
                 pipCaptionRollbackTask?.cancel()
                 pipCaptionRollbackTask = nil
                 if active {
@@ -416,6 +423,11 @@ struct KinetiqModulePlayerView: View {
                     playback.restoreCaptionsAfterPiP()
                     revealControls()
                 }
+            }
+            .onChange(of: playback.currentTime) { _, _ in
+                // The presence manager deduplicates and limits network updates
+                // to a 30-second cadence; never send one per AVPlayer tick.
+                updateDiscordPresence()
             }
         }
         .ignoresSafeArea()
@@ -433,6 +445,22 @@ struct KinetiqModulePlayerView: View {
     }
 
     // MARK: - PiP Caption Handoff (Batch 06B)
+
+    private func updateDiscordPresence() {
+        guard let episode = session.currentEpisode, webPlayerStream == nil,
+              session.currentStream != nil else { return }
+        KinetiqDiscordPresenceManager.shared.record(KinetiqPresencePlayback(
+            animeTitle: session.animeTitle,
+            episodeNumber: episode.number,
+            episodeTitle: episode.title,
+            language: session.selectedLanguage,
+            posterURL: session.animeItem?.imageURL ?? episode.imageURL,
+            position: playback.currentTime,
+            duration: playback.duration,
+            isPlaying: playback.isPlaying,
+            isPictureInPicture: pictureInPicture.isActive
+        ))
+    }
 
     private func startPiPWithCaptions() {
         let eligible = pictureInPicture.isPossible &&
