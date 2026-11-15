@@ -17,10 +17,13 @@ Mark PASS / FAIL / UNAVAILABLE; all items are NOT TESTED initially.
 ## New 06K.10B
 
 - [ ] Downloads tab is usable in all 13 themes with 44-point touch targets.
-- [ ] Unauthorized modules report why offline saving is unavailable.
-- [ ] Authorized MP4 Episode 5 downloads and plays in Airplane Mode.
-- [ ] Authorized HLS VOD episode downloads and plays in Airplane Mode.
-- [ ] Live, embed, unapproved hosts and credential-dependent HLS are gated.
+- [ ] Installed trusted modules offer downloads without adding config.offline.
+- [ ] MP4 Episode 5 downloads and plays in Airplane Mode when the stream is directly available.
+- [ ] HLS VOD episode downloads and plays in Airplane Mode when supported.
+- [ ] Extensionless direct MP4/HLS URLs recognized using the stream's MIME type.
+- [ ] Embedded pages, live-only feeds and unsupported formats explain technical limits.
+- [ ] HLS with source headers/cookies is attempted; record actual provider results.
+- [ ] HTTPS CDN redirects preserve playback without leaking cross-host credentials.
 - [ ] Quality presets display only actual HLS rendition options.
 - [ ] Queued, progress, pause, resume, cancel and retry operate correctly.
 - [ ] Background, locked phone, app restart and system termination recovery.
@@ -34,13 +37,14 @@ Mark PASS / FAIL / UNAVAILABLE; all items are NOT TESTED initially.
       in Local Library.
 - [ ] Offline MP4 with multiple SRT and WebVTT tracks downloads **all** tracks,
       offers each in subtitle menu and displays them without internet.
-- [ ] One broken or unauthorized subtitle URL prevents incomplete downloads.
+- [ ] One broken or invalid subtitle URL prevents incomplete downloads.
 - [ ] Offline HLS with multiple embedded audio and subtitle languages saves
       and exposes every advertised supported media selection.
 - [ ] Native subtitles in offline PiP; external sidecars in offline PiP
       (record supported / unsupported independently).
 - [ ] VoiceOver, Dynamic Type, Reduce Motion and low-storage errors.
 
-An unavailable download from an unapproved third-party module is an expected
-capability result, **not** a successful test of offline playback. Verify with
-an owned/licensed module and real MP4/HLS test assets.
+There is no module-specific offline authorization flag. A direct playable URL
+is still required; an embed-only result is not a downloadable video.
+Verify real MP4/HLS offline playback using a known working direct media source
+before marking the functionality PASS.

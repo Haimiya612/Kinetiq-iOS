@@ -74,29 +74,59 @@ struct KinetiqOfflineRequest {
     let stream: ModuleResolvedStream
     let quality: KinetiqOfflineQuality
     let variant: ModuleVideoQualityOption?
-    let permittedHosts: Set<String>
     let wifiOnly: Bool
 }
 
 enum KinetiqOfflineEligibility {
-    static func format(for stream: ModuleResolvedStream,
-                       permittedHosts: Set<String>) -> KinetiqOfflineFormat? {
+    /// No special module manifest flag is required. If the installed module
+    /// resolves a native playable file or HLS VOD, offer the download action.
+    /// A web embed still needs a source-native direct stream before AVFoundation
+    /// can persist it.
+    static func format(for stream: ModuleResolvedStream) -> KinetiqOfflineFormat? {
         guard stream.url.scheme?.lowercased() == "https",
               stream.url.user == nil, stream.url.password == nil,
-              let host = stream.url.host?.lowercased(),
-              permittedHosts.contains(host), !stream.isWebEmbed else { return nil }
-        let declared = stream.streamType.lowercased()
+              stream.url.host != nil, !stream.isWebEmbed else { return nil }
+        // Source adapters may label a direct stream using a MIME type with
+        // parameters (for example, video/mp4; codecs=...). Treat the actual
+        // container as authoritative without requiring manifest opt-in.
+        let declared = (stream.streamType.components(separatedBy: ";").first ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let ext = stream.url.pathExtension.lowercased()
-        if ext == "m3u8" || ["hls", "application/vnd.apple.mpegurl", "application/x-mpegurl"].contains(declared) {
-            // HLS background sessions cannot reliably forward arbitrary
-            // module request headers or provider cookies to segment hosts.
-            guard stream.headers.isEmpty, stream.cookies.isEmpty else { return nil }
+        if ext == "m3u8" || ["hls", "m3u8", "application/vnd.apple.mpegurl", "application/x-mpegurl"].contains(declared) {
             return .hls
         }
-        if ["mp4", "mov", "m4v"].contains(ext) || ["mp4", "video/mp4", "mov", "m4v"].contains(declared) {
+        if ["mp4", "mov", "m4v"].contains(ext) ||
+            ["mp4", "video/mp4", "mov", "m4v", "video/quicktime", "video/x-m4v"].contains(declared) {
             return .file
         }
         return nil
+    }
+
+    /// AVFoundation can use some source-provided request context when opening
+    /// HLS, although iOS does not guarantee that custom headers reach every
+    /// segment or alternate rendition. Normal player behavior is unchanged.
+    static func hlsAsset(for stream: ModuleResolvedStream) -> AVURLAsset {
+        var options: [String: Any] = [:]
+        if !stream.headers.isEmpty {
+            options["AVURLAssetHTTPHeaderFieldsKey"] = stream.headers
+        }
+        if let userAgent = stream.headers.first(where: {
+            $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame
+        })?.value {
+            options[AVURLAssetHTTPUserAgentKey] = userAgent
+        }
+        if !stream.headers.keys.contains(where: { $0.caseInsensitiveCompare("Cookie") == .orderedSame }) {
+            let cookies = stream.cookies.compactMap { cookie in
+                HTTPCookie(properties: [
+                    .name: cookie.name, .value: cookie.value,
+                    .domain: cookie.domain, .path: cookie.path,
+                    .secure: cookie.isSecure ? "TRUE" : "FALSE"
+                ])
+            }
+            if !cookies.isEmpty { options[AVURLAssetHTTPCookiesKey] = cookies }
+        }
+        return AVURLAsset(url: stream.url, options: options.isEmpty ? nil : options)
     }
 
     static func selectedVariant(_ options: [ModuleVideoQualityOption],
@@ -265,9 +295,8 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
     }
 
     func enqueue(_ request: KinetiqOfflineRequest) async throws {
-        guard let format = KinetiqOfflineEligibility.format(for: request.stream,
-                                                             permittedHosts: request.permittedHosts) else {
-            throw OfflineDownloadError.notPermitted
+        guard let format = KinetiqOfflineEligibility.format(for: request.stream) else {
+            throw OfflineDownloadError.unsupportedStream
         }
         let id = KinetiqOfflineEntry.identity(sourceID: request.sourceID,
             animeID: request.anime.id, episodeID: request.episode.id,
@@ -335,7 +364,7 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
                 guard let hls = session as? AVAssetDownloadURLSession else {
                     throw OfflineDownloadError.sessionUnavailable
                 }
-                let asset = AVURLAsset(url: request.stream.url)
+                let asset = KinetiqOfflineEligibility.hlsAsset(for: request.stream)
                 let configuration = AVAssetDownloadConfiguration(
                     asset: asset,
                     title: "\(title) · Episode \(request.episode.number)"
@@ -387,15 +416,12 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         do {
             for (index, track) in tracks.enumerated() {
                 try Task.checkCancellation()
-                guard track.url.scheme?.lowercased() == "https",
-                      let host = track.url.host?.lowercased(),
-                      request.permittedHosts.contains(host),
-                      ModuleSubtitleRequestPolicy.isAllowed(track.url) else {
-                    throw OfflineDownloadError.subtitleHostNotAuthorized
+                guard ModuleSubtitleRequestPolicy.isAllowed(track.url) else {
+                    throw OfflineDownloadError.invalidSubtitleURL
                 }
                 let urlRequest = try ModuleSubtitleRequestPolicy.request(for: track)
-                // Redirects are rejected by the delegate: the source must
-                // authorize and return the actual caption host directly.
+                // Follow normal HTTPS subtitle redirects, dropping credentials
+                // if a CDN handoff crosses the original subtitle origin.
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.httpShouldSetCookies = false
                 configuration.httpCookieStorage = nil
@@ -404,7 +430,7 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
                 let session = URLSession(configuration: configuration)
                 defer { session.invalidateAndCancel() }
                 let (stream, response) = try await session.bytes(for: urlRequest,
-                    delegate: KinetiqOfflineNoRedirect())
+                    delegate: KinetiqOfflineCaptionRedirectDelegate(track: track))
                 guard let response = response as? HTTPURLResponse,
                       (200...299).contains(response.statusCode),
                       response.expectedContentLength <= Int64(ModuleSubtitleLoader.maximumBytes) else {
@@ -607,31 +633,36 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
 }
 
 enum OfflineDownloadError: LocalizedError {
-    case notPermitted, alreadyExists, lowSpace, storageLimit, sessionUnavailable
-    case tooManySubtitles, subtitleHostNotAuthorized, invalidSubtitles, tooManyHLSSelections
+    case unsupportedStream, alreadyExists, lowSpace, storageLimit, sessionUnavailable
+    case tooManySubtitles, invalidSubtitleURL, invalidSubtitles, tooManyHLSSelections
 
     var errorDescription: String? {
         switch self {
-        case .notPermitted: "The source has not authorized this stream for offline downloading."
+        case .unsupportedStream: "This episode has no directly downloadable MP4 or HLS stream. Try another server."
         case .alreadyExists: "This episode is already in Downloads."
         case .lowSpace: "Less than 250 MB is available. Free storage before downloading."
         case .storageLimit: "Your Kinetiq download storage limit has been reached."
         case .sessionUnavailable: "The background download service is unavailable."
         case .tooManySubtitles: "This episode has more than 24 external subtitle tracks; none were omitted."
-        case .subtitleHostNotAuthorized: "A subtitle host isn't authorized for offline saving. No tracks were omitted."
+        case .invalidSubtitleURL: "A subtitle URL is not a supported HTTPS source. No tracks were omitted."
         case .invalidSubtitles: "A source subtitle could not be safely downloaded or parsed."
         case .tooManyHLSSelections: "The HLS stream advertises too many media selections to save safely."
         }
     }
 }
 
-/// Caption acquisition never follows a redirect to an unapproved host.
-private final class KinetiqOfflineNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// The remote subtitle controller uses this same-origin credential boundary.
+private final class KinetiqOfflineCaptionRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let track: ModuleRemoteSubtitleTrack
+
+    init(track: ModuleRemoteSubtitleTrack) { self.track = track }
+
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
+        guard let url = request.url else { completionHandler(nil); return }
+        completionHandler(try? ModuleSubtitleRequestPolicy.request(for: track, destination: url))
     }
 }
 
@@ -723,27 +754,21 @@ extension KinetiqOfflineDownloadStore: URLSessionDownloadDelegate, AVAssetDownlo
                                 willPerformHTTPRedirection response: HTTPURLResponse,
                                 newRequest request: URLRequest,
                                 completionHandler: @escaping (URLRequest?) -> Void) {
-        // Redirect destinations must also be named by the source's explicit
-        // offline authorization; drop request credentials across hosts.
+        // Accept HTTPS CDN redirects without an extra manifest allowlist.
+        // Never forward source credentials to a different host.
         guard let original = task.originalRequest?.url,
               request.url?.scheme?.lowercased() == "https",
-              let destination = request.url?.host?.lowercased() else {
+              let destination = request.url?.host?.lowercased(),
+              request.url?.user == nil, request.url?.password == nil else {
             completionHandler(nil)
             return
         }
-        Task { @MainActor in
-            guard let id = task.taskDescription,
-                  self.activeRequests[id]?.permittedHosts.contains(destination) == true else {
-                completionHandler(nil)
-                return
+        var next = request
+        if destination != original.host?.lowercased() {
+            for header in ["Authorization", "Cookie", "Referer", "Origin", "X-Api-Key"] {
+                next.setValue(nil, forHTTPHeaderField: header)
             }
-            var next = request
-            if destination != original.host?.lowercased() {
-                for header in ["Authorization", "Cookie", "Referer", "Origin", "X-Api-Key"] {
-                    next.setValue(nil, forHTTPHeaderField: header)
-                }
-            }
-            completionHandler(next)
         }
+        completionHandler(next)
     }
 }

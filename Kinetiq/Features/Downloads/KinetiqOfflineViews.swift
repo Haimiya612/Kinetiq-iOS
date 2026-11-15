@@ -46,12 +46,6 @@ struct KinetiqEpisodeDownloadSheet: View {
                         episodeID: episode.id, language: language)
             .map { $0.state != .failed } ?? false
     }
-    private var canDownload: Bool {
-        guard let record = ModulePackageStore.shared.installedModules[sourceID] else { return false }
-        return ModuleRuntimeTrustStore.isTrusted(record) &&
-            runtime.permitsOfflineDownloads
-    }
-
     var body: some View {
         NavigationStack {
             Form {
@@ -80,16 +74,7 @@ struct KinetiqEpisodeDownloadSheet: View {
                     .pickerStyle(.segmented)
                 }
 
-                if !canDownload {
-                    Section {
-                        Label("Offline saving isn't authorized for this module.",
-                              systemImage: "lock.shield")
-                            .foregroundStyle(.orange)
-                        Text("A trusted module may allow streaming without permission to save files. The publisher must provide an explicit offline authorization policy and approved media hosts.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if resolving {
+                if resolving {
                     Section {
                         HStack(spacing: 12) {
                             ProgressView()
@@ -113,7 +98,7 @@ struct KinetiqEpisodeDownloadSheet: View {
                         } else if let selectedStream {
                             LabeledContent("Server", value: selectedStream.label)
                         }
-                        Text("Only source-authorized, directly playable videos appear here.")
+                        Text("Direct MP4 and HLS streams from your selected module are listed here. Web embeds without a direct video URL cannot be saved using AVFoundation.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Section("Video quality") {
@@ -153,10 +138,10 @@ struct KinetiqEpisodeDownloadSheet: View {
                         Text("Cellular transfers are disabled by default. Background transfers can continue while the app is suspended.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                } else if canDownload {
+                } else {
                     ContentUnavailableView("No eligible video",
                         systemImage: "video.slash",
-                        description: Text("This episode did not provide a source-authorized MP4 or HLS video-on-demand stream."))
+                        description: Text("This episode did not return a direct MP4 or HLS video. Try another episode or server."))
                 }
 
                 Section {
@@ -178,7 +163,7 @@ struct KinetiqEpisodeDownloadSheet: View {
                                 Spacer()
                             }
                         }
-                        .disabled(!canDownload || resolving || enqueuing || selectedStream == nil || started)
+                        .disabled(resolving || enqueuing || selectedStream == nil || started)
                     }
                 }
             }
@@ -210,7 +195,6 @@ struct KinetiqEpisodeDownloadSheet: View {
         variants = []
         streamIndex = 0
         failure = nil
-        guard canDownload else { return }
         resolving = true
         defer { if requestID == id { resolving = false } }
         let session = ModuleEpisodePlaybackSession(
@@ -224,11 +208,10 @@ struct KinetiqEpisodeDownloadSheet: View {
             return
         }
         resolvedStreams = session.availableStreams.filter {
-            KinetiqOfflineEligibility.format(for: $0,
-                permittedHosts: runtime.offlineAllowedStreamHosts) != nil
+            KinetiqOfflineEligibility.format(for: $0) != nil
         }
         if resolvedStreams.isEmpty {
-            failure = "No authorized direct-video or offline HLS option was provided."
+            failure = "This module did not return a directly downloadable MP4 or HLS stream."
             return
         }
         await loadVariants()
@@ -238,10 +221,9 @@ struct KinetiqEpisodeDownloadSheet: View {
     private func loadVariants() async {
         variants = []
         guard let stream = selectedStream,
-              KinetiqOfflineEligibility.format(for: stream,
-                permittedHosts: runtime.offlineAllowedStreamHosts) == .hls else { return }
+              KinetiqOfflineEligibility.format(for: stream) == .hls else { return }
         do {
-            let asset = AVURLAsset(url: stream.url)
+            let asset = KinetiqOfflineEligibility.hlsAsset(for: stream)
             let choices = try await asset.load(.variants)
             guard !Task.isCancelled else { return }
             variants = ModuleVideoQualityCatalog.options(from:
@@ -260,7 +242,7 @@ struct KinetiqEpisodeDownloadSheet: View {
     }
 
     private func beginDownload() {
-        guard canDownload, let stream = selectedStream else { return }
+        guard let stream = selectedStream else { return }
         enqueuing = true
         Task { @MainActor in
             defer { enqueuing = false }
@@ -269,7 +251,7 @@ struct KinetiqEpisodeDownloadSheet: View {
                     sourceID: sourceID, sourceName: sourceName,
                     anime: anime, episode: episode, language: language,
                     stream: stream, quality: quality, variant: selectedVariant,
-                    permittedHosts: runtime.offlineAllowedStreamHosts, wifiOnly: wifiOnly
+                    wifiOnly: wifiOnly
                 ))
                 started = true
                 dismiss()
@@ -321,7 +303,7 @@ struct KinetiqOfflineDownloadsView: View {
                             filter == .all ? "Nothing Downloaded Yet" : "No Matching Downloads",
                             systemImage: "arrow.down.circle",
                             description: Text(filter == .all
-                                ? "Offline episodes from authorized sources will appear here."
+                                ? "Episodes you download from your installed streaming modules will appear here."
                                 : "Choose another filter to view your episodes.")
                         )
                         .frame(minHeight: 250)
@@ -546,7 +528,7 @@ private struct KinetiqOfflinePreferencesView: View {
                     Toggle("Notify when episode is ready", isOn: $notify)
                 }
                 Section {
-                    Text("Downloads are available only for explicitly authorized sources. Storage is kept separately from your personally imported Local Library. Quality options depend on the real video stream.")
+                    Text("Save direct MP4 and HLS episodes from your installed modules. If one server only returns a web page, choose another server with a direct video stream. Your Downloads stay separate from Local Library, and the original Kinetiq player is used offline.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

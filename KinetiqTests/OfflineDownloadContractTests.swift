@@ -23,26 +23,31 @@ final class OfflineDownloadContractTests: XCTestCase {
         XCTAssertEqual(first.count, 64)
     }
 
-    func testOnlyExplicitlyPermittedHTTPSHostsAndNativeVideoQualify() {
-        let allowed: Set<String> = ["media.example.org"]
+    func testDirectHTTPSStreamsDoNotNeedOfflineManifestOptIn() {
         XCTAssertEqual(KinetiqOfflineEligibility.format(
-            for: stream("https://media.example.org/video.mp4?token=private"),
-            permittedHosts: allowed), .file)
+            for: stream("https://media.example.org/video.mp4?token=private")), .file)
         XCTAssertEqual(KinetiqOfflineEligibility.format(
-            for: stream("https://media.example.org/master.m3u8", type: "hls"),
-            permittedHosts: allowed), .hls)
+            for: stream("https://media.example.org/master.m3u8", type: "hls")), .hls)
+        XCTAssertEqual(KinetiqOfflineEligibility.format(
+            for: stream("https://media.example.org/play?id=5", type: "M3U8")), .hls)
+        XCTAssertEqual(KinetiqOfflineEligibility.format(
+            for: stream("https://media.example.org/play?id=5", type: "video/mp4; codecs=avc1")), .file)
+        XCTAssertEqual(KinetiqOfflineEligibility.format(
+            for: stream("https://media.example.org/play?id=5", type: "video/quicktime")), .file)
+        // Legitimate stream CDNs often differ from the source module host.
+        XCTAssertEqual(KinetiqOfflineEligibility.format(
+            for: stream("https://other.example.org/video.mp4")), .file)
         XCTAssertNil(KinetiqOfflineEligibility.format(
-            for: stream("http://media.example.org/video.mp4"), permittedHosts: allowed))
+            for: stream("http://media.example.org/video.mp4")))
         XCTAssertNil(KinetiqOfflineEligibility.format(
-            for: stream("https://other.example.org/video.mp4"), permittedHosts: allowed))
+            for: stream("https://user:secret@media.example.org/video.mp4")))
         XCTAssertNil(KinetiqOfflineEligibility.format(
-            for: stream("https://media.example.org/embed/abcd", type: "embed"), permittedHosts: allowed))
-        XCTAssertNil(KinetiqOfflineEligibility.format(
+            for: stream("https://media.example.org/embed/abcd", type: "embed")))
+        XCTAssertEqual(KinetiqOfflineEligibility.format(
             for: stream("https://media.example.org/master.m3u8", type: "hls",
-                        headers: ["Referer": "https://provider.example.org"]),
-            permittedHosts: allowed))
+                        headers: ["Referer": "https://provider.example.org"])), .hls)
         XCTAssertNil(KinetiqOfflineEligibility.format(
-            for: stream("https://media.example.org/video.mp4"), permittedHosts: []))
+            for: stream("https://media.example.org/page", type: "html")))
     }
 
     func testQualityOnlyChoosesActualAdvertisedVariants() {

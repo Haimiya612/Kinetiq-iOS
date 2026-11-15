@@ -1,35 +1,28 @@
-# Kinetiq offline video contract — 06K.10B candidate
+# Kinetiq offline video contract — 06K.10B.2 direct media downloads
 
 The Downloads tab contains a shared native MP4 and HLS VOD download queue,
 distinct from the user's imported Local Library. Its index never saves a
 remote stream URL, provider credentials, or cookies.
 
-## Source authorization
+## Download eligibility
 
-Existing repository trust grants permission to execute source code, **not**
-permission to save third-party media. The source operator must actually own
-or be authorized to distribute offline copies and publish an offline policy.
+There is **no publisher-specific offline flag**, offline host allowlist,
+authorization URL, or per-module download grant. Any installed
+streaming module may offer episode downloads when it resolves a directly
+playable HTTPS MP4/MOV/M4V or HLS stream, including MIME-typed URLs without
+file extensions. Resolved streaming CDN hosts may
+differ from the module's base host. Cross-host HTTPS redirects drop source
+credentials rather than forwarding them to unrelated destinations.
 
-An eligible video module can add these optional fields under config:
-
-    "offline": {
-      "allowDownloads": true,
-      "authorizationURL": "https://media.example.org/offline-policy",
-      "allowedStreamHosts": ["media.example.org", "cdn.media.example.org"]
-    }
-
-This is only the additional object, not an entire module.json.
-
-- The policy URL must be HTTPS and on the config.baseUrl hostname.
-- Media hosts must be explicitly named; wildcards are not accepted.
-- The installed module must remain trusted.
-- HTTPS direct MP4/MOV/M4V and authorized HLS VOD can be eligible.
-- Web embeds, live streams and DRM-protected media without offline rights
-  cannot be downloaded in this release.
-- HLS media requiring arbitrary stream headers/cookies is currently rejected
-  because segment requests cannot promise to carry this context.
-- A manifest claim alone is **not** verified legal authorization. Developers
-  distributing the module must confirm provider rights before enabling it.
+No extra download permission setting or per-source consent switch is
+introduced by this feature. Web-only embeds without a direct video
+URL, live feeds, and formats unsupported by the native offline APIs cannot
+be saved through this implementation.
+HLS streams with custom headers/cookies are **attempted** using the same
+best-effort AVURLAsset options as streaming; AVFoundation may not propagate
+them to all segments. No success is claimed until an actual download plays
+offline on-device. Users remain responsible for saving only media they may
+lawfully keep.
 
 ## Functional scope
 
@@ -44,7 +37,7 @@ This is only the additional object, not an entire module.json.
   inserted into personally imported Local Library data.
 - **Every source-advertised external SRT/WebVTT track** must be fetched,
   parsed and saved as a local sidecar before the episode is queued. An
-  unauthorized host or failed track makes the entire request fail clearly;
+  invalid URL or failed track makes the entire request fail clearly;
   no available subtitle is silently skipped.
 - For HLS VOD, the native asset configuration requests every reported
   `allMediaSelections` audio/caption combination (bounded to 100). Whether
@@ -56,16 +49,16 @@ This is only the additional object, not an entire module.json.
 
 ## Limits that still need device tests
 
-- Existing modules may not yet declare an authorized offline capability. Test
-  with an owned/licensed module fixture to prove actual offline downloading.
-- Season batch queues, HEVC transcoding/compression and FairPlay offline
-  licenses belong to later work. Quality presets choose actual HLS variants,
-  not an invented transcoded resolution.
+- Test a range of installed modules that return direct MP4/HLS videos;
+  a missing `config.offline` object must not block the download sheet.
+- Season batch queues and HEVC transcoding/compression belong to later work.
+  Quality presets choose actual HLS variants, not an invented transcoded resolution.
 - All available subtitle tracks are requested, but real multi-language HLS
   retention, external caption rendering and captions in offline PiP still
   require iPhone verification against permitted sample media.
 - External caption downloads are bounded to 24 tracks and 2 MiB per track,
-  and currently reject redirects to avoid unapproved-host requests.
+  and follow HTTPS redirects with source credentials stripped on cross-host
+  handoffs.
 - Expiring signed links may require reopening the episode after an app relaunch.
 
 Apple primary references:

@@ -808,9 +808,6 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
     let moduleVersion: String
     let packageSHA256Prefix: String
     let defaultStreamHeaders: [String: String]
-    let offlineAllowedStreamHosts: Set<String>
-
-    var permitsOfflineDownloads: Bool { !offlineAllowedStreamHosts.isEmpty }
 
     private let jsQueue = DispatchQueue(
         label: "com.kinetiq.modules.javascript",
@@ -914,29 +911,6 @@ final class SynthetiqModuleRuntime: @unchecked Sendable {
         )
 
         baseURL = parsedBaseURL
-        // Parse this optional extension independently: an unrelated or
-        // malformed 'offline' value must never break legacy module playback.
-        let payload = (try? JSONSerialization.jsonObject(with: manifestData)) as? [String: Any]
-        let configuration = payload?["config"] as? [String: Any]
-        let offline = configuration?["offline"] as? [String: Any]
-        let authorizationText = offline?["authorizationURL"] as? String ?? ""
-        let hosts = offline?["allowedStreamHosts"] as? [String] ?? []
-        if offline?["allowDownloads"] as? Bool == true,
-           let authorization = URL(string: authorizationText),
-           authorization.scheme?.lowercased() == "https",
-           authorization.host?.lowercased() == parsedBaseURL.host?.lowercased(),
-           authorization.user == nil, authorization.password == nil,
-           !hosts.isEmpty,
-           hosts.count <= 32,
-           hosts.allSatisfy({ host in
-               !host.isEmpty && host.count <= 253 && !host.contains("/") &&
-               !host.contains(":") && !host.contains("*") &&
-               host.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-").contains($0) }
-           }) {
-            offlineAllowedStreamHosts = Set(hosts.map { $0.lowercased() })
-        } else {
-            offlineAllowedStreamHosts = []
-        }
         timeoutMilliseconds = timeout
         maximumHomeResults = homeLimit
         moduleName = record.name
