@@ -226,6 +226,8 @@ struct SettingsView: View {
     @AppStorage(KinetiqEpisodeAlerts.favoritesOnlyKey)
     private var episodeAlertsFavoritesOnly = true
     @State private var episodeAlertStatus: String?
+    @AppStorage(KinetiqEpisodeAlerts.genreRecommendationsKey)
+    private var genreNotificationsEnabled = false
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
 
@@ -320,11 +322,20 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Anime Discovery") {
+                    NavigationLink {
+                        KinetiqAiringCalendarView()
+                    } label: {
+                        Label("Anime release calendar", systemImage: "calendar.badge.clock")
+                    }
+                }
+
                 Section {
                     Toggle("iPhone episode notifications", isOn: $episodeAlertsEnabled)
                         .onChange(of: episodeAlertsEnabled) { _, enabled in
                             guard enabled else {
                                 episodeAlertStatus = "Episode notifications paused."
+                                Task { await KinetiqEpisodeAlerts.clearCalendarAlerts() }
                                 return
                             }
                             Task {
@@ -340,8 +351,10 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                    Toggle("Only titles in Favorites", isOn: $episodeAlertsFavoritesOnly)
+                    Toggle("Only followed or favorited anime", isOn: $episodeAlertsFavoritesOnly)
                         .disabled(!episodeAlertsEnabled)
+                    Toggle("Notify for preferred genres", isOn: $genreNotificationsEnabled)
+                        .disabled(!episodeAlertsEnabled || episodeAlertsFavoritesOnly)
                     Button("Send test alert in 10 seconds", systemImage: "bell.badge") {
                         Task {
                             do {
@@ -359,7 +372,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Episode Notifications")
                 } footer: {
-                    Text("Test alerts are labeled. Real release alerts need verified calendar data; remote push needs signed APNs.")
+                    Text("Calendar alerts use published airtimes and are delivered locally after scheduling. Newly announced dates while the app is closed require a later push service.")
                 }
 
                 // MARK: Modules & Sources
@@ -1117,16 +1130,28 @@ enum KinetiqEpisodeAlerts {
     static let enabledKey = "kinetiq.episodeAlerts.enabled"
     static let favoritesOnlyKey = "kinetiq.episodeAlerts.favoritesOnly"
     static let didOpenEpisode = Notification.Name("kinetiq.episodeAlerts.openEpisode")
+    static let didOpenCalendar = Notification.Name("kinetiq.episodeAlerts.openCalendar")
+    static let genreRecommendationsKey = "kinetiq.episodeAlerts.genreRecommendations"
     struct Route {
         let sourceID: String
         let animeID: String
     }
     private static var pendingRoute: Route?
+    private static var pendingCalendar = false
+    static func takePendingCalendar() -> Bool {
+        defer { pendingCalendar = false }
+        return pendingCalendar
+    }
     static func takePendingRoute() -> Route? {
         defer { pendingRoute = nil }
         return pendingRoute
     }
     static func receiveResponse(userInfo: [AnyHashable: Any]) {
+        if (userInfo["kinetiqCalendar"] as? Bool) == true {
+            pendingCalendar = true
+            NotificationCenter.default.post(name: didOpenCalendar, object: nil)
+            return
+        }
         guard let sourceID = userInfo["sourceID"] as? String,
               let animeID = userInfo["animeID"] as? String,
               !sourceID.isEmpty, !animeID.isEmpty else { return }
@@ -1198,5 +1223,570 @@ enum KinetiqEpisodeAlerts {
                 trigger: UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)
             )
         )
+    }
+}
+// MARK: - 06K.7 · Anime schedule models and verified release provider
+
+struct KinetiqCalendarMedia: Codable, Identifiable {
+    struct Title: Codable { let english: String?; let romaji: String?; let native: String? }
+    struct Cover: Codable { let large: String? }
+    struct StartDate: Codable { let year: Int?; let month: Int?; let day: Int? }
+    let id: Int
+    let title: Title
+    let synonyms: [String]?
+    let genres: [String]?
+    let coverImage: Cover?
+    let isAdult: Bool?
+    let siteUrl: String?
+    let status: String?
+    let startDate: StartDate?
+    var name: String {
+        [title.english, title.romaji, title.native]
+            .compactMap { $0 }.first(where: { !$0.isEmpty }) ?? "Anime"
+    }
+    var names: [String] {
+        [title.english, title.romaji, title.native].compactMap { $0 } + (synonyms ?? [])
+    }
+    var premiereDate: String {
+        guard let d = startDate, let year = d.year else { return "Release date TBA" }
+        if let month = d.month, let day = d.day,
+           let date = Calendar.current.date(from: DateComponents(year: year, month: month, day: day)) {
+            return date.formatted(.dateTime.day().month(.abbreviated).year())
+        }
+        if let month = d.month,
+           let date = Calendar.current.date(from: DateComponents(year: year, month: month, day: 1)) {
+            return date.formatted(.dateTime.month(.wide).year())
+        }
+        return String(year)
+    }
+}
+struct KinetiqCalendarEpisode: Codable, Identifiable {
+    let id: Int
+    let episode: Int
+    let airingAt: Int
+    let media: KinetiqCalendarMedia?
+    var date: Date { Date(timeIntervalSince1970: TimeInterval(airingAt)) }
+}
+private struct KinetiqCalendarResponse: Decodable {
+    struct Payload: Decodable {
+        struct Page: Decodable {
+            struct PageInfo: Decodable { let hasNextPage: Bool? }
+            let pageInfo: PageInfo?
+            let airingSchedules: [KinetiqCalendarEpisode]?
+            let media: [KinetiqCalendarMedia]?
+        }
+        let page: Page?
+        enum CodingKeys: String, CodingKey { case page = "Page" }
+    }
+    struct APIError: Decodable { let message: String? }
+    let data: Payload?
+    let errors: [APIError]?
+}
+enum KinetiqCalendarRelevance {
+    static func key(_ title: String) -> String {
+        let folded = title.folding(options: [.caseInsensitive, .diacriticInsensitive],
+                                   locale: Locale(identifier: "en_US_POSIX"))
+        return String(folded.filter { $0.isLetter || $0.isNumber })
+    }
+    static func isFavorite(_ media: KinetiqCalendarMedia, names: Set<String>) -> Bool {
+        media.names.contains { names.contains(key($0)) }
+    }
+    static func matchesGenre(_ media: KinetiqCalendarMedia, genres: Set<String>) -> Bool {
+        !Set(media.genres ?? []).intersection(genres).isEmpty
+    }
+}
+
+@MainActor
+final class KinetiqCalendarStore: ObservableObject {
+    @Published private(set) var episodes: [KinetiqCalendarEpisode] = []
+    @Published private(set) var premieres: [KinetiqCalendarMedia] = []
+    @Published private(set) var loading = false
+    @Published private(set) var error: String?
+    private var updatedAt: Date?
+
+    private let endpoint = URL(string: "https://graphql.anilist.co")!
+    private static let episodesQuery = """
+    query ($page:Int!, $after:Int!, $before:Int!) {
+      Page(page:$page, perPage:50) {
+        pageInfo { hasNextPage }
+        airingSchedules(airingAt_greater:$after, airingAt_lesser:$before, sort:TIME) {
+          id episode airingAt
+          media { id title { english romaji native } synonyms genres
+                  coverImage { large } isAdult siteUrl status
+                  startDate { year month day } }
+        }
+      }
+    }
+    """
+    private static let premieresQuery = """
+    query {
+      Page(page:1, perPage:40) {
+        media(type:ANIME, status:NOT_YET_RELEASED, sort:START_DATE, isAdult:false) {
+          id title { english romaji native } synonyms genres
+          coverImage { large } isAdult siteUrl status
+          startDate { year month day }
+        }
+      }
+    }
+    """
+
+    func refresh(force: Bool = false) async {
+        guard !loading else { return }
+        if !force, let updatedAt, Date().timeIntervalSince(updatedAt) < 900 { return }
+        loading = true
+        error = nil
+        defer { loading = false }
+        do {
+            let after = Int(Date().timeIntervalSince1970)
+            let before = after + 14 * 86400
+            var found: [KinetiqCalendarEpisode] = []
+            for page in 1...7 {
+                let result = try await send(Self.episodesQuery,
+                                            variables: ["page":page, "after":after, "before":before])
+                guard !Task.isCancelled else { return }
+                guard let content = result.data?.page else { throw URLError(.cannotParseResponse) }
+                found.append(contentsOf: (content.airingSchedules ?? []).filter {
+                    $0.media != nil && $0.media?.isAdult != true && $0.date > Date()
+                })
+                if content.pageInfo?.hasNextPage != true { break }
+            }
+            var seen = Set<Int>()
+            episodes = found.filter { seen.insert($0.id).inserted }
+                .sorted { $0.airingAt < $1.airingAt }
+            updatedAt = Date()
+            do {
+                let result = try await send(Self.premieresQuery, variables: [:])
+                premieres = (result.data?.page?.media ?? []).filter { $0.isAdult != true }
+            } catch {
+                error = "Upcoming premieres are temporarily unavailable."
+            }
+        } catch {
+            error = "Couldn't refresh the airing calendar. Try again when connected."
+        }
+    }
+
+    private func send(_ query: String, variables: [String: Int]) async throws -> KinetiqCalendarResponse {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "query": query, "variables": variables
+        ])
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.httpBody = data
+        request.timeoutInterval = 18
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let decoded = try JSONDecoder().decode(KinetiqCalendarResponse.self, from: responseData)
+        if decoded.errors?.isEmpty == false { throw URLError(.cannotParseResponse) }
+        return decoded
+    }
+}
+
+extension KinetiqEpisodeAlerts {
+    static func clearCalendarAlerts() async {
+        let center = UNUserNotificationCenter.current()
+        let pending: [UNNotificationRequest] = await withCheckedContinuation { continuation in
+            center.getPendingNotificationRequests { items in
+                continuation.resume(returning: items)
+            }
+        }
+        center.removePendingNotificationRequests(withIdentifiers:
+            pending.filter { $0.identifier.hasPrefix("kinetiq.calendar.") }.map(\.identifier)
+        )
+    }
+
+    // Local schedule only. A published airing time is not proof that a
+    // connected video module already has the full episode.
+    static func syncCalendar(
+        events: [KinetiqCalendarEpisode],
+        followed: Set<Int>,
+        favoriteNames: Set<String>,
+        preferredGenres: Set<String>
+    ) async throws -> Int {
+        guard !events.isEmpty else { return 0 }
+        guard UserDefaults.standard.bool(forKey: enabledKey) else {
+            await clearCalendarAlerts()
+            return 0
+        }
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized ||
+              settings.authorizationStatus == .provisional else { return 0 }
+        let favoritesOnly = UserDefaults.standard.object(forKey: favoritesOnlyKey) as? Bool != false
+        let genreOptIn = !favoritesOnly && UserDefaults.standard.bool(forKey: genreRecommendationsKey)
+        let matches = events.filter { item in
+            guard let media = item.media, media.isAdult != true,
+                  item.date.timeIntervalSinceNow > 10 else { return false }
+            let saved = followed.contains(media.id) ||
+                KinetiqCalendarRelevance.isFavorite(media, names: favoriteNames)
+            return saved || (genreOptIn &&
+                KinetiqCalendarRelevance.matchesGenre(media, genres: preferredGenres))
+        }.sorted { $0.airingAt < $1.airingAt }
+        await clearCalendarAlerts()
+        var count = 0
+        for item in matches.prefix(40) {
+            guard !Task.isCancelled, let media = item.media else { break }
+            let content = UNMutableNotificationContent()
+            content.title = String(media.name.prefix(110))
+            content.subtitle = "Episode \(item.episode) · scheduled release"
+            content.body = "Expected airtime: \(item.date.formatted(date: .abbreviated, time: .shortened)). Streaming sources may publish it later."
+            content.sound = .default
+            content.threadIdentifier = "kinetiq.calendar"
+            content.userInfo = ["kinetiqCalendar": true, "mediaID": media.id]
+            try await center.add(UNNotificationRequest(
+                identifier: "kinetiq.calendar.\(media.id).\(item.episode)",
+                content: content,
+                trigger: UNTimeIntervalNotificationTrigger(
+                    timeInterval: max(10, item.date.timeIntervalSinceNow), repeats: false
+                )
+            ))
+            count += 1
+        }
+        return count
+    }
+}
+
+// MARK: - 06K.7 · Anime Calendar (Home and Settings)
+
+@MainActor
+struct KinetiqAiringCalendarView: View {
+    private static let genres = [
+        "Romance","Comedy","Slice of Life","Drama","Action","Adventure",
+        "Fantasy","Mystery","Supernatural","Sci-Fi","Psychological","Sports","Music"
+    ]
+    @StateObject private var calendarStore = KinetiqCalendarStore()
+    @StateObject private var favorites = ModuleAnimeCollectionStore.shared
+    @AppStorage("kinetiq.calendar.followed.v1") private var followedRaw = ""
+    @AppStorage("kinetiq.calendar.genres.v1") private var genresRaw = ""
+    @AppStorage(KinetiqEpisodeAlerts.enabledKey) private var notificationsEnabled = false
+    @AppStorage(KinetiqVisualTheme.storageKey)
+    private var themeRaw = KinetiqVisualTheme.signature.rawValue
+
+    @State private var day = Calendar.current.startOfDay(for: Date())
+    @State private var premieresMode = false
+    @State private var forYou = false
+    @State private var searchText = ""
+    @State private var notificationMessage: String?
+    @State private var openedFavorite: ModuleAnimeCollectionEntry?
+
+    private var theme: KinetiqVisualTheme {
+        KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
+    }
+    private var followed: Set<Int> {
+        Set(followedRaw.split(separator: ",").compactMap { Int($0) })
+    }
+    private var chosenGenres: Set<String> {
+        Set(genresRaw.split(separator: "|").map(String.init))
+    }
+    private var favoriteNames: Set<String> {
+        Set(favorites.favorites.map { KinetiqCalendarRelevance.key($0.title) })
+    }
+    private var days: [Date] {
+        let today = Calendar.current.startOfDay(for: Date())
+        return (0..<14).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) }
+    }
+    private func isRelevant(_ media: KinetiqCalendarMedia) -> Bool {
+        followed.contains(media.id) ||
+        KinetiqCalendarRelevance.isFavorite(media, names: favoriteNames) ||
+        KinetiqCalendarRelevance.matchesGenre(media, genres: chosenGenres)
+    }
+    private func favorite(_ media: KinetiqCalendarMedia) -> ModuleAnimeCollectionEntry? {
+        favorites.favorites.first { item in
+            let key = KinetiqCalendarRelevance.key(item.title)
+            return media.names.contains { KinetiqCalendarRelevance.key($0) == key }
+        }
+    }
+    private var todaysEpisodes: [KinetiqCalendarEpisode] {
+        calendarStore.episodes.filter { event in
+            guard let media = event.media else { return false }
+            return Calendar.current.isDate(event.date, inSameDayAs: day) &&
+                (!forYou || isRelevant(media)) &&
+                (searchText.isEmpty || media.name.localizedCaseInsensitiveContains(searchText))
+        }
+    }
+    private var upcomingTitles: [KinetiqCalendarMedia] {
+        calendarStore.premieres.filter {
+            (!forYou || isRelevant($0)) &&
+            (searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText))
+        }
+    }
+
+    private func follow(_ media: KinetiqCalendarMedia) {
+        var ids = followed
+        if !ids.insert(media.id).inserted { ids.remove(media.id) }
+        followedRaw = ids.sorted().map(String.init).joined(separator: ",")
+    }
+    private func chooseGenre(_ genre: String) {
+        var names = chosenGenres
+        if !names.insert(genre).inserted { names.remove(genre) }
+        genresRaw = names.sorted().joined(separator: "|")
+    }
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 28))
+                        .foregroundStyle(theme.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("UPCOMING ANIME")
+                            .font(.caption2.weight(.heavy))
+                            .tracking(1.4)
+                            .foregroundStyle(theme.accent)
+                        Text("Release calendar")
+                            .font(.system(size: 26, weight: .bold,
+                                          design: theme.isEditorial ? .serif : .rounded))
+                    }
+                }
+                Text("Follow anime you care about. Recommendations use your saved titles and selected genres.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Toggle("Notify me when followed episodes air", isOn: $notificationsEnabled)
+                    .font(.subheadline.weight(.semibold))
+                    .tint(theme.accent)
+                    .padding(12)
+                    .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 13))
+                Picker("Browse", selection: $premieresMode) {
+                    Text("Episode schedule").tag(false)
+                    Text("Coming soon").tag(true)
+                }
+                .pickerStyle(.segmented)
+                HStack(spacing: 10) {
+                    Toggle("For You", isOn: $forYou)
+                        .font(.subheadline.weight(.semibold))
+                        .tint(theme.accent)
+                    Spacer(minLength: 4)
+                    Menu {
+                        ForEach(Self.genres, id: \.self) { genre in
+                            Button {
+                                chooseGenre(genre)
+                            } label: {
+                                Label(genre, systemImage: chosenGenres.contains(genre)
+                                      ? "checkmark.circle.fill" : "heart")
+                            }
+                        }
+                    } label: {
+                        Label(chosenGenres.isEmpty ? "Genres" : "\(chosenGenres.count) genres",
+                              systemImage: "slider.horizontal.3")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 13)
+                            .frame(minHeight: 44)
+                            .background(theme.cardBackground, in: Capsule())
+                    }
+                    .accessibilityLabel("Select preferred genres")
+                }
+                if calendarStore.loading {
+                    ProgressView("Checking release schedules…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                if let error = calendarStore.error {
+                    Label(error, systemImage: "wifi.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if premieresMode {
+                    Text("Upcoming premieres")
+                        .font(.title3.weight(.bold))
+                    Text("Following a series with no announced airtime saves your interest. No notification is scheduled until a verified episode time exists.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if upcomingTitles.isEmpty && !calendarStore.loading {
+                        ContentUnavailableView("No upcoming titles found", systemImage: "sparkles.tv",
+                            description: Text("Try a different genre or refresh the calendar."))
+                    }
+                    ForEach(upcomingTitles) { media in
+                        animeCard(media, episode: nil, releaseDate: nil)
+                    }
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(days, id: \.self) { date in
+                                let selected = Calendar.current.isDate(date, inSameDayAs: day)
+                                Button {
+                                    day = date
+                                } label: {
+                                    VStack(spacing: 5) {
+                                        Text(date.formatted(.dateTime.weekday(.abbreviated)))
+                                            .font(.caption2.weight(.semibold))
+                                        Text(date.formatted(.dateTime.day()))
+                                            .font(.title3.weight(.bold))
+                                        Circle()
+                                            .fill(theme.accent)
+                                            .opacity(calendarStore.episodes.contains(where: {
+                                                Calendar.current.isDate($0.date, inSameDayAs: date)
+                                            }) ? 1 : 0)
+                                            .frame(width: 5, height: 5)
+                                    }
+                                    .foregroundStyle(selected ? Color.white : Color.primary)
+                                    .frame(width: 56, height: 78)
+                                    .background(selected ? theme.accent : theme.cardBackground,
+                                                in: RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
+                            }
+                        }
+                    }
+                    Text(day.formatted(.dateTime.weekday(.wide).day().month(.wide)))
+                        .font(.title3.weight(.bold))
+                    if todaysEpisodes.isEmpty && !calendarStore.loading {
+                        ContentUnavailableView("No episodes listed", systemImage: "calendar",
+                            description: Text("Try another day, or adjust the For You filter."))
+                    }
+                    ForEach(todaysEpisodes) { event in
+                        if let media = event.media {
+                            animeCard(media, episode: event.episode, releaseDate: event.date)
+                        }
+                    }
+                }
+                if let notificationMessage {
+                    Label(notificationMessage, systemImage: "bell")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Airing information: AniList public API. All displayed times use your iPhone's time zone. Broadcast time does not guarantee stream availability in a connected module.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 10)
+            }
+            .padding(.horizontal, 17)
+            .padding(.vertical, 18)
+        }
+        .background(KinetiqExperienceBackground())
+        .navigationTitle("Anime Calendar")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Find an upcoming anime")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task {
+                        await calendarStore.refresh(force: true)
+                        await syncNotifications()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 40, height: 40)
+                }
+                .disabled(calendarStore.loading)
+                .accessibilityLabel("Refresh anime calendar")
+            }
+        }
+        .task {
+            await calendarStore.refresh()
+            await syncNotifications()
+        }
+        .onChange(of: followedRaw) { _, _ in Task { await syncNotifications() } }
+        .onChange(of: genresRaw) { _, _ in Task { await syncNotifications() } }
+        .onChange(of: notificationsEnabled) { _, enabled in
+            Task {
+                if enabled {
+                    do {
+                        let allowed = try await KinetiqEpisodeAlerts.requestPermission()
+                        if allowed { await syncNotifications() }
+                        else {
+                            notificationsEnabled = false
+                            notificationMessage = "Notification permission was denied."
+                        }
+                    } catch {
+                        notificationsEnabled = false
+                        notificationMessage = "Could not request iOS notification permission."
+                    }
+                } else {
+                    await KinetiqEpisodeAlerts.clearCalendarAlerts()
+                    notificationMessage = nil
+                }
+            }
+        }
+        .sheet(item: $openedFavorite) { entry in
+            ModuleSavedAnimeDetailsHost(entry: entry)
+        }
+    }
+
+    private func animeCard(_ media: KinetiqCalendarMedia,
+                           episode: Int?, releaseDate: Date?) -> some View {
+        HStack(alignment: .top, spacing: 13) {
+            AsyncImage(url: media.coverImage?.large.flatMap { URL(string: $0) }) { phase in
+                if let picture = phase.image {
+                    picture.resizable().scaledToFill()
+                } else {
+                    Image(systemName: "film.stack")
+                        .resizable().scaledToFit().padding(22)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 90, height: 125)
+            .background(theme.accent.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(media.name)
+                    .font(.subheadline.weight(.bold))
+                    .lineLimit(3)
+                Text(releaseDate.map {
+                    "Episode \(episode ?? 1) · \($0.formatted(date: .omitted, time: .shortened))"
+                } ?? media.premiereDate)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(theme.accent)
+                Text((media.genres ?? []).prefix(3).joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    Button {
+                        follow(media)
+                    } label: {
+                        Label(followed.contains(media.id) ? "Following" : "Follow",
+                              systemImage: followed.contains(media.id) ? "checkmark" : "plus")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .frame(minHeight: 38)
+                            .background(theme.accent.opacity(0.15), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(followed.contains(media.id)
+                                        ? "Unfollow \(media.name)" : "Follow \(media.name)")
+                    if let entry = favorite(media) {
+                        Button {
+                            openedFavorite = entry
+                        } label: {
+                            Image(systemName: "play.rectangle.fill")
+                                .frame(width: 40, height: 38)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(media.name) from saved module")
+                    } else if let address = media.siteUrl, let url = URL(string: address),
+                              url.scheme == "https" {
+                        Link(destination: url) {
+                            Image(systemName: "info.circle")
+                                .frame(width: 40, height: 38)
+                        }
+                        .accessibilityLabel("Open public anime details")
+                    }
+                }
+                .foregroundStyle(theme.accent)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func syncNotifications() async {
+        guard notificationsEnabled, !calendarStore.episodes.isEmpty else { return }
+        do {
+            let count = try await KinetiqEpisodeAlerts.syncCalendar(
+                events: calendarStore.episodes,
+                followed: followed,
+                favoriteNames: favoriteNames,
+                preferredGenres: chosenGenres
+            )
+            notificationMessage = "\(count) future release alert(s) scheduled."
+        } catch {
+            notificationMessage = "Could not schedule release alerts. Check iOS settings."
+        }
     }
 }

@@ -112,6 +112,7 @@ struct HomeView: View {
     let onModules: () -> Void
     let onContinueWatching: (PlaybackHistoryEntry) -> Void
     let onOpenLibrary: () -> Void
+    let onOpenCalendar: () -> Void
 
     @AppStorage("kinetiq.home.selectedMode.v1")
     private var selectedModeRawValue = HomeMediaMode.video.rawValue
@@ -266,6 +267,15 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Switch to manga")
+
+            Button(action: onOpenCalendar) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Anime calendar")
 
             Button(action: onDiscover) {
                 Image(systemName: "magnifyingglass")

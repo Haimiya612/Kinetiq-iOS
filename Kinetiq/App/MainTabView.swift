@@ -78,6 +78,7 @@ struct MainTabView: View {
     @State private var showingLibrary = false
     @State private var activeSheet: HomeSheet?
     @State private var notificationTitle: ModuleAnimeCollectionEntry?
+    @State private var showingAiringCalendar = false
 
     @State private var draggedTabPosition: CGFloat?
     @State private var dragStartPosition: CGFloat?
@@ -89,12 +90,30 @@ struct MainTabView: View {
 
     var body: some View {
         mainLayout
-            .onAppear(perform: openEpisodeNotification)
+            .onAppear {
+                openEpisodeNotification()
+                if KinetiqEpisodeAlerts.takePendingCalendar() {
+                    showingAiringCalendar = true
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenCalendar)) { _ in
+                showingAiringCalendar = true
+            }
             .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenEpisode)) { _ in
                 openEpisodeNotification()
             }
             .sheet(item: $notificationTitle) { entry in
                 ModuleSavedAnimeDetailsHost(entry: entry)
+            }
+            .sheet(isPresented: $showingAiringCalendar) {
+                NavigationStack {
+                    KinetiqAiringCalendarView()
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showingAiringCalendar = false }
+                            }
+                        }
+                }
             }
     }
 
@@ -208,7 +227,8 @@ struct MainTabView: View {
                     activeSheet = .modules
                 },
                 onContinueWatching: openContinueWatching,
-                onOpenLibrary: openLibrary
+                onOpenLibrary: openLibrary,
+                onOpenCalendar: { showingAiringCalendar = true }
             )
         }
     }
@@ -1641,7 +1661,7 @@ struct ModuleRemoteContinueWatchingShelf: View {
 // MARK: - Resolve Saved Anime Through Its Original Trusted Module
 
 @MainActor
-private struct ModuleSavedAnimeDetailsHost: View {
+struct ModuleSavedAnimeDetailsHost: View {
     let entry: ModuleAnimeCollectionEntry
 
     @StateObject private var sourceStore = ModuleSourceStore.shared
