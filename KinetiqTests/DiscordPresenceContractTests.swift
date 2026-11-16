@@ -146,6 +146,56 @@ final class DiscordPresenceContractTests: XCTestCase {
         XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
     }
 
+    func testSquareArtworkUsesHighQualityAttentionAwareCrop() throws {
+        let original = try XCTUnwrap(URL(string: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/anime.jpg"))
+        let square = try XCTUnwrap(KinetiqDiscordArtworkRenderer.renderedURL(
+            for: original, style: .smartSquare
+        ))
+        let query = try XCTUnwrap(URLComponents(url: square, resolvingAgainstBaseURL: false)?.queryItems)
+        let values = Dictionary(uniqueKeysWithValues: query.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+        XCTAssertEqual(square.host, "wsrv.nl")
+        XCTAssertEqual(values["url"], original.absoluteString)
+        XCTAssertEqual(values["w"], "1024")
+        XCTAssertEqual(values["h"], "1024")
+        XCTAssertEqual(values["fit"], "cover")
+        XCTAssertEqual(values["a"], "attention")
+        XCTAssertEqual(values["output"], "jpg")
+        XCTAssertEqual(values["q"], "94")
+        XCTAssertTrue(KinetiqDiscordArtworkRenderer.isGeneratedURL(square))
+    }
+
+    func testFullPosterFramingAndOriginalFallback() throws {
+        let original = try XCTUnwrap(URL(string: "https://images.example.org/poster.jpg"))
+        let framed = try XCTUnwrap(KinetiqDiscordArtworkRenderer.renderedURL(
+            for: original, style: .fullPoster
+        ))
+        let values = Dictionary(uniqueKeysWithValues: try XCTUnwrap(
+            URLComponents(url: framed, resolvingAgainstBaseURL: false)?.queryItems
+        ).compactMap { item in item.value.map { (item.name, $0) } })
+        XCTAssertEqual(values["fit"], "contain")
+        XCTAssertEqual(values["cbg"], "171717")
+        XCTAssertTrue(KinetiqDiscordArtworkRenderer.isGeneratedURL(framed))
+        XCTAssertEqual(KinetiqDiscordArtworkRenderer.renderedURL(
+            for: original, style: .original
+        ), original)
+    }
+
+    func testImageServiceCannotProxySecretURLsOrArbitraryTransformations() throws {
+        let signedURL = try XCTUnwrap(URL(string: "https://images.example.org/poster.jpg?token=secret"))
+        XCTAssertNil(KinetiqDiscordArtworkRenderer.renderedURL(for: signedURL, style: .smartSquare))
+        let localURL = try XCTUnwrap(URL(string: "https://192.168.0.1/private.jpg"))
+        XCTAssertNil(KinetiqDiscordArtworkRenderer.renderedURL(for: localURL, style: .fullPoster))
+        let arbitrary = try XCTUnwrap(URL(string:
+            "https://wsrv.nl/?url=https://images.example.org/poster.jpg&w=1024&h=1024&fit=cover&a=attention&output=jpg&q=30"
+        ))
+        XCTAssertFalse(KinetiqDiscordArtworkRenderer.isGeneratedURL(arbitrary))
+        XCTAssertFalse(KinetiqDiscordArtworkRenderer.isGeneratedURL(try XCTUnwrap(URL(string:
+            "https://wsrv.nl/?url=https://images.example.org/poster.jpg?token=secret&w=1024&h=1024&fit=cover"
+        ))))
+    }
+
     func testDeveloperPortalAssetStillOverridesResolvedMediaProxy() throws {
         let value = KinetiqDiscordActivity.payload(
             for: playback(), registeredPosterKey: "ALYA_POSTER",

@@ -83,6 +83,81 @@ enum KinetiqDiscordNameStyle: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Discord displays the large artwork in a square. These styles affect the
+/// image's contents, never the Discord profile layout or playback metadata.
+enum KinetiqDiscordArtworkStyle: String, CaseIterable, Identifiable {
+    case smartSquare = "Smart Square"
+    case fullPoster = "Full Poster"
+    case original = "Original HD"
+
+    var id: String { rawValue }
+
+    var explanation: String {
+        switch self {
+        case .smartSquare:
+            return "A crisp, square anime image with an attention-aware crop. Recommended for Discord."
+        case .fullPoster:
+            return "Preserves the entire vertical cover with a dark background at the sides."
+        case .original:
+            return "Sends the original high-resolution cover without external image processing."
+        }
+    }
+}
+
+/// Optional public-image-only transformer. The image service receives an
+/// already-public, credential-free cover URL and returns a cached square JPEG.
+/// No video URLs, session headers or Discord credentials are sent to it.
+enum KinetiqDiscordArtworkRenderer {
+    private static let endpoint = "https://wsrv.nl/"
+
+    static func renderedURL(for original: URL, style: KinetiqDiscordArtworkStyle) -> URL? {
+        guard let source = KinetiqDiscordActivity.publicArtwork(for: original) else { return nil }
+        guard style != .original else { return original }
+        var components = URLComponents(string: endpoint)
+        var items = [
+            URLQueryItem(name: "url", value: source),
+            URLQueryItem(name: "w", value: "1024"),
+            URLQueryItem(name: "h", value: "1024")
+        ]
+        switch style {
+        case .smartSquare:
+            items.append(contentsOf: [
+                URLQueryItem(name: "fit", value: "cover"),
+                URLQueryItem(name: "a", value: "attention"),
+                URLQueryItem(name: "sharp", value: "0.8")
+            ])
+        case .fullPoster:
+            items.append(contentsOf: [
+                URLQueryItem(name: "fit", value: "contain"),
+                URLQueryItem(name: "cbg", value: "171717")
+            ])
+        case .original:
+            break
+        }
+        items.append(contentsOf: [
+            URLQueryItem(name: "output", value: "jpg"),
+            URLQueryItem(name: "q", value: "94")
+        ])
+        components?.queryItems = items
+        guard let rendered = components?.url,
+              rendered.absoluteString.utf8.count <= 1_000 else { return nil }
+        return rendered
+    }
+
+    /// Accept only URLs that our own generator could have produced. Never
+    /// permit arbitrary image-proxy query strings or signed source URLs.
+    static func isGeneratedURL(_ candidate: URL) -> Bool {
+        guard let parts = URLComponents(url: candidate, resolvingAgainstBaseURL: false),
+              parts.scheme == "https", parts.host == "wsrv.nl", parts.path == "/",
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              let source = parts.queryItems?.first(where: { $0.name == "url" })?.value,
+              let original = URL(string: source) else { return false }
+        return [KinetiqDiscordArtworkStyle.smartSquare, .fullPoster].contains {
+            renderedURL(for: original, style: $0) == candidate
+        }
+    }
+}
+
 /// Pure presentation mapping, usable without contacting Discord.
 enum KinetiqDiscordActivity {
     static let applicationID = "1571558800387874819"
@@ -267,6 +342,7 @@ enum KinetiqDiscordExternalArtwork {
     enum Failure: Error {
         case httpStatus(Int)
         case malformedResponse
+        case imageUnavailable
     }
 
     static func proxyIdentifier(from response: Data) -> String? {
@@ -276,7 +352,9 @@ enum KinetiqDiscordExternalArtwork {
     }
 
     static func register(publicURL: URL, credential: String) async throws -> String {
-        guard let safe = KinetiqDiscordActivity.publicArtwork(for: publicURL),
+        guard let safe = KinetiqDiscordActivity.publicArtwork(for: publicURL)
+                ?? (KinetiqDiscordArtworkRenderer.isGeneratedURL(publicURL)
+                        ? publicURL.absoluteString : nil),
               let endpoint = URL(string: "https://discord.com/api/v9/applications/\(KinetiqDiscordActivity.applicationID)/external-assets")
         else { throw Failure.malformedResponse }
 
@@ -292,6 +370,22 @@ enum KinetiqDiscordExternalArtwork {
         configuration.httpShouldSetCookies = false
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
+
+        // Validate generated artwork before asking Discord to proxy it. The
+        // free processor may reject a particular source or be unavailable;
+        // callers then register the original cover automatically.
+        if KinetiqDiscordArtworkRenderer.isGeneratedURL(publicURL) {
+            var imageRequest = URLRequest(url: publicURL)
+            imageRequest.timeoutInterval = 15
+            let (imageData, imageResponse) = try await session.data(for: imageRequest)
+            guard let imageHTTP = imageResponse as? HTTPURLResponse,
+                  imageHTTP.statusCode == 200,
+                  imageHTTP.mimeType?.lowercased().hasPrefix("image/") == true,
+                  (1...4_000_000).contains(imageData.count),
+                  let image = UIImage(data: imageData),
+                  image.size.width >= 512, image.size.height >= 512
+            else { throw Failure.imageUnavailable }
+        }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw Failure.malformedResponse }
         guard http.statusCode == 200 else { throw Failure.httpStatus(http.statusCode) }
@@ -366,11 +460,13 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     static let streamingURLKey = "kinetiq.discordPresenceLab.streamingURL"
     static let nameStyleKey = "kinetiq.discordPresenceLab.nameStyle"
     static let registeredPosterKey = "kinetiq.discordPresenceLab.registeredPosterKey"
+    static let artworkStyleKey = "kinetiq.discordPresenceLab.artworkStyle"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var hasCredential: Bool
     @Published private(set) var activityType: KinetiqDiscordActivityType
     @Published private(set) var nameStyle: KinetiqDiscordNameStyle
+    @Published private(set) var artworkStyle: KinetiqDiscordArtworkStyle
     @Published private(set) var posterAssetKey: String?
     @Published private(set) var streamingURL: URL?
     @Published private(set) var connection: Connection = .off
@@ -383,6 +479,21 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var lastSentAt: Date?
     @Published private(set) var publicPosterURL: URL?
     @Published private(set) var artworkResolutionStatus = "No poster submitted."
+
+    var artworkPreviewURL: URL? { selectedArtworkURL }
+
+    /// Only the selected public artwork URL is handed to Discord. When image
+    /// transformation is cooling down after an error, keep the original art.
+    private var selectedArtworkURL: URL? {
+        guard let publicPosterURL else { return nil }
+        guard let enhanced = KinetiqDiscordArtworkRenderer.renderedURL(
+            for: publicPosterURL, style: artworkStyle
+        ), enhanced != publicPosterURL else { return publicPosterURL }
+        if let retryAt = artworkRetryAfter[enhanced.absoluteString], retryAt > Date() {
+            return publicPosterURL
+        }
+        return enhanced
+    }
 
     private var socket: URLSessionWebSocketTask?
     private var listeningTask: Task<Void, Never>?
@@ -415,6 +526,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         activityType = savedType.flatMap(KinetiqDiscordActivityType.init(rawValue:)) ?? .watching
         nameStyle = UserDefaults.standard.string(forKey: Self.nameStyleKey)
             .flatMap(KinetiqDiscordNameStyle.init(rawValue:)) ?? .kinetiq
+        artworkStyle = UserDefaults.standard.string(forKey: Self.artworkStyleKey)
+            .flatMap(KinetiqDiscordArtworkStyle.init(rawValue:)) ?? .smartSquare
         posterAssetKey = UserDefaults.standard.string(forKey: Self.registeredPosterKey)
             .flatMap(KinetiqDiscordActivity.registeredAssetKey)
         let savedStreamingURL = UserDefaults.standard.string(forKey: Self.streamingURLKey) ?? ""
@@ -468,6 +581,15 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         guard nameStyle != style else { return }
         nameStyle = style
         UserDefaults.standard.set(style.rawValue, forKey: Self.nameStyleKey)
+        publishIfNeeded(force: true)
+    }
+
+    func setArtworkStyle(_ style: KinetiqDiscordArtworkStyle) {
+        guard artworkStyle != style else { return }
+        artworkStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Self.artworkStyleKey)
+        // Switching style changes the artwork registration key, but not the
+        // underlying public anime cover or playback state.
         publishIfNeeded(force: true)
     }
 
@@ -663,7 +785,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             isPlaying: lastPreview.isPlaying,
             isPictureInPicture: lastPreview.isPictureInPicture
         )
-        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(registeredMediaProxy ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
+        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(registeredMediaProxy ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(artworkStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
         let elapsed = now.timeIntervalSince(lastPublication)
         let expectedUnclamped = (lastPublishedPosition ?? position) + (adjusted.isPlaying ? max(0, elapsed) : 0)
         let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
@@ -677,7 +799,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             for: adjusted, now: now, posterOverride: publicPosterURL,
             activityType: activityType, streamingURL: streamingURL,
             nameStyle: nameStyle, registeredPosterKey: posterAssetKey,
-            mediaProxyPoster: artworkRegistrationURL == publicPosterURL ? registeredMediaProxy : nil
+            mediaProxyPoster: artworkRegistrationURL == selectedArtworkURL ? registeredMediaProxy : nil
         )
         let connectionGeneration = generation
         Task { @MainActor [weak self] in
@@ -699,8 +821,9 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     /// back off rather than retrying on every player's time observation.
     private func ensureRegisteredPoster() {
         guard posterAssetKey == nil, activityType != .custom else { return }
-        guard let url = publicPosterURL,
-              KinetiqDiscordActivity.publicArtwork(for: url) != nil else {
+        guard let url = selectedArtworkURL,
+              KinetiqDiscordActivity.publicArtwork(for: url) != nil
+                || KinetiqDiscordArtworkRenderer.isGeneratedURL(url) else {
             artworkRegistrationTask?.cancel()
             artworkRegistrationTask = nil
             artworkRegistrationURL = nil
@@ -721,7 +844,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         let key = url.absoluteString
         if let entry = artworkCache[key], entry.expiresAt > Date() {
             registeredMediaProxy = entry.identifier
-            artworkResolutionStatus = "Discord media proxy resolved (cached). Verify on another account."
+            artworkResolutionStatus = "Discord media proxy resolved (cached). \(artworkStyle.rawValue)."
             return
         }
         if let retryAfter = artworkRetryAfter[key], retryAfter > Date() {
@@ -732,7 +855,9 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             artworkResolutionStatus = "Discord credential unavailable."
             return
         }
-        artworkResolutionStatus = "Requesting Discord media-proxy artwork…"
+        artworkResolutionStatus = url == publicPosterURL
+            ? "Registering original anime artwork…"
+            : "Preparing 1024 × 1024 artwork and registering with Discord…"
         artworkRegistrationTask = Task { @MainActor [weak self] in
             do {
                 let identifier = try await KinetiqDiscordExternalArtwork.register(
@@ -753,6 +878,14 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                       self.artworkRegistrationURL == url else { return }
                 self.artworkRegistrationTask = nil
                 self.artworkRetryAfter[key] = Date().addingTimeInterval(5 * 60)
+                if KinetiqDiscordArtworkRenderer.isGeneratedURL(url) {
+                    // A transformation failure must never remove artwork from
+                    // an activity that already succeeded with the original.
+                    self.artworkResolutionStatus = "Artwork enhancement unavailable. Using the original anime poster."
+                    self.ensureRegisteredPoster()
+                    self.publishIfNeeded(force: true)
+                    return
+                }
                 if case let KinetiqDiscordExternalArtwork.Failure.httpStatus(code) = error {
                     self.artworkResolutionStatus = "Discord image registration returned HTTP \(code). Will retry later."
                 } else {

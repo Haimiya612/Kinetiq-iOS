@@ -25,6 +25,10 @@ struct KinetiqDiscordPresenceSettingsView: View {
         Binding(get: { presence.nameStyle }, set: { presence.setNameStyle($0) })
     }
 
+    private var artworkStyleBinding: Binding<KinetiqDiscordArtworkStyle> {
+        Binding(get: { presence.artworkStyle }, set: { presence.setArtworkStyle($0) })
+    }
+
     var body: some View {
         Form {
             Section {
@@ -240,7 +244,42 @@ struct KinetiqDiscordPresenceSettingsView: View {
             }
 
             Section("Anime artwork · experimental") {
-                Text("Kinetiq now requests a Discord media-proxy identifier for each public anime poster, preferring AniList artwork where available. Unlike an ordinary image URL, Discord can recognize the resulting mp:external asset. This endpoint and personal Gateway method are unofficial, so visibility is not guaranteed.")
+                Text("Kinetiq automatically selects high-resolution anime covers and registers them with Discord's media proxy. Choose how each cover fits Discord's square activity thumbnail. The personal Gateway method remains unofficial.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Picker("Artwork quality", selection: artworkStyleBinding) {
+                    ForEach(KinetiqDiscordArtworkStyle.allCases) { style in
+                        Text(style.rawValue).tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Text(presence.artworkStyle.explanation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                if let previewURL = presence.artworkPreviewURL {
+                    HStack(alignment: .center, spacing: 14) {
+                        ModuleAnimeArtworkView(url: previewURL)
+                            .frame(width: 100, height: 100)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .accessibilityLabel("Selected square Discord artwork")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Discord artwork preview")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Square presentation · 1024 × 1024 when enhanced")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Discord controls the thumbnail's displayed size.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Text("Smart Square and Full Poster use the public wsrv.nl image service for resizing. Only the public cover URL is shared; no video URL, account credential or playback data is sent to that service. Original HD does not use the image service. If processing fails, Kinetiq automatically returns to the original poster.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
