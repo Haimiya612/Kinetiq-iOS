@@ -457,7 +457,7 @@ struct KinetiqModulePlayerView: View {
             posterURL: session.animeItem?.imageURL ?? episode.imageURL,
             position: playback.currentTime,
             duration: playback.duration,
-            isPlaying: playback.isPlaying,
+            isPlaying: playback.isPlayingForPresence,
             isPictureInPicture: pictureInPicture.isActive
         ))
     }
@@ -1673,6 +1673,17 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     @Published private(set) var player = AVPlayer()
     @Published private(set) var isPlaying = false
+    /// Rich Presence must not report a pause during a +10s seek or buffering.
+    /// The player's explicit play/pause intent remains independent from its
+    /// transient AVPlayer time-control status and the actual player UI.
+    var isPlayingForPresence: Bool {
+        !hasStopped && player.currentItem != nil &&
+            KinetiqPresencePlaybackIntent.isPlaying(
+                requestedPlayback: wantsToPlay,
+                hasStartedCurrentItem: startedCurrentItem,
+                playerReportsPlaying: isPlaying
+            )
+    }
     @Published private(set) var isBuffering = true
     @Published private(set) var hasFinishedPresentingFirstFrame = false
     private var sawFirstVideoFrame = false
@@ -2853,6 +2864,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             do {
                 try await Task.sleep(for: .seconds(minutes * 60))
                 guard !Task.isCancelled, let self else { return }
+                self.wantsToPlay = false
                 self.player.pause()
                 self.sleepTimerMinutes = nil
             } catch {

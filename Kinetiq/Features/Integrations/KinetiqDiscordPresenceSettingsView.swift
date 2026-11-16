@@ -10,6 +10,8 @@ struct KinetiqDiscordPresenceSettingsView: View {
     @State private var tokenSavedNotice = false
     @State private var streamingURLInput = ""
     @State private var streamingURLNotice = ""
+    @State private var posterAssetInput = ""
+    @State private var posterAssetNotice = ""
 
     private var enabledBinding: Binding<Bool> {
         Binding(get: { presence.enabled }, set: { presence.setEnabled($0) })
@@ -17,6 +19,10 @@ struct KinetiqDiscordPresenceSettingsView: View {
 
     private var activityTypeBinding: Binding<KinetiqDiscordActivityType> {
         Binding(get: { presence.activityType }, set: { presence.setActivityType($0) })
+    }
+
+    private var nameStyleBinding: Binding<KinetiqDiscordNameStyle> {
+        Binding(get: { presence.nameStyle }, set: { presence.setNameStyle($0) })
     }
 
     var body: some View {
@@ -141,7 +147,12 @@ struct KinetiqDiscordPresenceSettingsView: View {
                         }
                     }
                     .padding(.vertical, 4)
-                    if presence.publicPosterURL != nil {
+                    if let assetKey = presence.posterAssetKey {
+                        Label("Testing Developer Portal asset: \(assetKey)", systemImage: "photo")
+                            .font(.caption)
+                        Text("The uploaded asset key takes priority over the dynamic anime poster until you clear it.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if presence.publicPosterURL != nil {
                         Label("Public poster available; Discord display still needs testing",
                               systemImage: "photo")
                             .font(.caption)
@@ -210,12 +221,54 @@ struct KinetiqDiscordPresenceSettingsView: View {
             }
 
             Section("Rich Presence appearance") {
-                Text("Playing, Listening, Watching, and Competing request the anime title as the activity name. Discord may instead show the registered application name, such as “Kinetiq.” You can change that name in the Discord Developer Portal if needed.")
+                Picker("Activity heading", selection: nameStyleBinding) {
+                    ForEach(KinetiqDiscordNameStyle.allCases) { style in
+                        Text("\(presence.activityType.title) \(style.rawValue)").tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+                LabeledContent("Requested heading", value:
+                    presence.activityType == .custom
+                        ? "Custom Status"
+                        : "\(presence.activityType.title) \(presence.nameStyle.rawValue)")
+                Text("Kinetiq stays in the heading; the anime title, episode name and language stay in the activity details. Discord may override the heading with its registered application name.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("The elapsed/total progress is sent in milliseconds. The progress bar works best with Listening and Watching. Posters use public HTTPS covers, with AniList metadata as a fallback; Discord decides whether to render the external image.")
+                Text("The elapsed/total progress is sent in milliseconds. The progress bar works best with Listening and Watching.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Anime artwork · experimental") {
+                Text("By default Kinetiq sends the public anime cover URL (with AniList artwork as a fallback). Discord's Social SDK supports external URLs, but the experimental personal Gateway connection may ignore them.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                TextField("Developer Portal asset key (optional)", text: $posterAssetInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("Discord Rich Presence uploaded image asset key")
+
+                Button("Apply image asset test", systemImage: "photo.on.rectangle") {
+                    posterAssetNotice = presence.savePosterAssetKey(posterAssetInput)
+                        ? (presence.posterAssetKey == nil
+                            ? "Dynamic anime posters restored."
+                            : "Uploaded asset selected. Verify it on another Discord account.")
+                        : "Use only letters, digits, hyphens or underscores (1–64 characters)."
+                }
+                if let key = presence.posterAssetKey {
+                    LabeledContent("Current asset", value: key)
+                    Button("Use automatic anime posters") {
+                        posterAssetInput = ""
+                        _ = presence.savePosterAssetKey("")
+                        posterAssetNotice = "Dynamic anime posters restored."
+                    }
+                }
+                if !posterAssetNotice.isEmpty {
+                    Text(posterAssetNotice).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("For the asset test, first upload an image under your Discord application's Rich Presence assets and enter its asset name here. This is optional and does not upload artwork from Kinetiq.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section {
@@ -233,6 +286,7 @@ struct KinetiqDiscordPresenceSettingsView: View {
         .background(KinetiqExperienceBackground())
         .onAppear {
             streamingURLInput = presence.streamingURL?.absoluteString ?? ""
+            posterAssetInput = presence.posterAssetKey ?? ""
         }
         .onDisappear { credentialInput = "" }
     }

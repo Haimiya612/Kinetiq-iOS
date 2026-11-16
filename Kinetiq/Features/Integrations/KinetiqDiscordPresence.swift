@@ -20,6 +20,20 @@ struct KinetiqPresencePlayback {
     let isPictureInPicture: Bool
 }
 
+/// A seek can temporarily put AVPlayer in `.paused` or `.waitingToPlayAtSpecifiedRate`
+/// even though the viewer never pressed Pause. Discord should describe the
+/// viewer's playback intent, once the stream has actually started, instead of
+/// treating these short-lived AVPlayer status changes as deliberate pauses.
+enum KinetiqPresencePlaybackIntent {
+    static func isPlaying(
+        requestedPlayback: Bool,
+        hasStartedCurrentItem: Bool,
+        playerReportsPlaying: Bool
+    ) -> Bool {
+        requestedPlayback && (hasStartedCurrentItem || playerReportsPlaying)
+    }
+}
+
 /// The six Discord Gateway activity types supported by the Presence Lab UI.
 /// Streaming requires a real Twitch/YouTube URL. Custom Status has a different
 /// presentation from Rich Presence (no artwork or episode progress bar).
@@ -56,6 +70,19 @@ enum KinetiqDiscordActivityType: Int, CaseIterable, Identifiable {
     }
 }
 
+/// The activity type supplies Discord's verb (Watching, Listening, etc.).
+/// The name supplies the remaining words displayed in the profile heading.
+enum KinetiqDiscordNameStyle: String, CaseIterable, Identifiable {
+    case kinetiq = "Kinetiq"
+    case onKinetiq = "on Kinetiq"
+    case viaKinetiq = "via Kinetiq"
+    case withKinetiq = "with Kinetiq"
+    case inKinetiq = "in Kinetiq"
+    case fromKinetiq = "from Kinetiq"
+
+    var id: String { rawValue }
+}
+
 /// Pure presentation mapping, usable without contacting Discord.
 enum KinetiqDiscordActivity {
     static let applicationID = "1571558800387874819"
@@ -79,7 +106,15 @@ enum KinetiqDiscordActivity {
         let label = number.isEmpty ? "Episode" : "Episode \(number)"
         let language = playback.language.lowercased() == "dub" ? "DUB" : "SUB"
         let suffix = playback.isPlaying ? "" : " · Paused"
-        return String("\(label) · \(language)\(suffix)".prefix(128))
+        // Use a descriptive episode title only when the source actually knows
+        // one. Generic names like "Episode 3" would just repeat the number.
+        let episodeTitle = KinetiqEpisodeMetadataMatching.displayTitle(
+            playback.episodeTitle, episodeNumber: number
+        )
+        let trailing = " · \(language)\(suffix)"
+        let available = max(0, 128 - trailing.count)
+        let detail = episodeTitle.map { "\(label): \($0)" } ?? label
+        return String(detail.prefix(available)) + trailing
     }
 
     /// Only plain HTTPS artwork URLs. Never send signed query URLs, private
@@ -112,12 +147,25 @@ enum KinetiqDiscordActivity {
         return url
     }
 
+    /// Developer Portal Rich Presence asset names must not be confused with
+    /// external URLs. A known uploaded asset can be used to test whether the
+    /// Gateway renders an image at all, independently of the anime cover URL.
+    static func registeredAssetKey(_ input: String) -> String? {
+        let key = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard (1...64).contains(key.count), key.utf8.allSatisfy({ byte in
+            (97...122).contains(byte) || (48...57).contains(byte) || byte == 45 || byte == 95
+        }) else { return nil }
+        return key
+    }
+
     static func payload(
         for playback: KinetiqPresencePlayback,
         now: Date = Date(),
         posterOverride: URL? = nil,
         activityType: KinetiqDiscordActivityType = .watching,
-        streamingURL: URL? = nil
+        streamingURL: URL? = nil,
+        nameStyle: KinetiqDiscordNameStyle = .kinetiq,
+        registeredPosterKey: String? = nil
     ) -> [String: Any] {
         let validStream = streamingURL.flatMap { validStreamingURL($0.absoluteString) }
         let effectiveType: KinetiqDiscordActivityType =
@@ -141,9 +189,9 @@ enum KinetiqDiscordActivity {
         }
 
         var activity: [String: Any] = [
-            // Best-effort dynamic label; Discord may override it with the
-            // registered application name (for example, "Kinetiq").
-            "name": description(for: playback),
+            // Keep the application in the heading, not the anime title.
+            // Discord may still override this with its registered app name.
+            "name": nameStyle.rawValue,
             "type": effectiveType.rawValue,
             "application_id": applicationID,
             "details": description(for: playback),
@@ -154,7 +202,12 @@ enum KinetiqDiscordActivity {
             activity["url"] = validStream.absoluteString
         }
 
-        if let artwork = publicArtwork(for: posterOverride) ?? publicArtwork(for: playback) {
+        if let registered = registeredPosterKey.flatMap(registeredAssetKey) {
+            activity["assets"] = [
+                "large_image": registered,
+                "large_text": description(for: playback)
+            ]
+        } else if let artwork = publicArtwork(for: posterOverride) ?? publicArtwork(for: playback) {
             activity["assets"] = [
                 "large_image": artwork,
                 "large_text": description(for: playback)
@@ -246,10 +299,14 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     static let enabledKey = "kinetiq.discordPresenceLab.enabled"
     static let activityTypeKey = "kinetiq.discordPresenceLab.activityType"
     static let streamingURLKey = "kinetiq.discordPresenceLab.streamingURL"
+    static let nameStyleKey = "kinetiq.discordPresenceLab.nameStyle"
+    static let registeredPosterKey = "kinetiq.discordPresenceLab.registeredPosterKey"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var hasCredential: Bool
     @Published private(set) var activityType: KinetiqDiscordActivityType
+    @Published private(set) var nameStyle: KinetiqDiscordNameStyle
+    @Published private(set) var posterAssetKey: String?
     @Published private(set) var streamingURL: URL?
     @Published private(set) var connection: Connection = .off
     @Published private(set) var message = "No connection has been tested."
@@ -285,6 +342,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         hasCredential = KinetiqDiscordCredentialStore.exists
         let savedType = UserDefaults.standard.object(forKey: Self.activityTypeKey) as? Int
         activityType = savedType.flatMap(KinetiqDiscordActivityType.init(rawValue:)) ?? .watching
+        nameStyle = UserDefaults.standard.string(forKey: Self.nameStyleKey)
+            .flatMap(KinetiqDiscordNameStyle.init(rawValue:)) ?? .kinetiq
+        posterAssetKey = UserDefaults.standard.string(forKey: Self.registeredPosterKey)
+            .flatMap(KinetiqDiscordActivity.registeredAssetKey)
         let savedStreamingURL = UserDefaults.standard.string(forKey: Self.streamingURLKey) ?? ""
         streamingURL = KinetiqDiscordActivity.validStreamingURL(savedStreamingURL)
         connection = enabled ? .disconnected : .off
@@ -329,6 +390,29 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         activityType = type
         UserDefaults.standard.set(type.rawValue, forKey: Self.activityTypeKey)
         publishIfNeeded(force: true)
+    }
+
+    func setNameStyle(_ style: KinetiqDiscordNameStyle) {
+        guard nameStyle != style else { return }
+        nameStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Self.nameStyleKey)
+        publishIfNeeded(force: true)
+    }
+
+    @discardableResult
+    func savePosterAssetKey(_ input: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            posterAssetKey = nil
+            UserDefaults.standard.removeObject(forKey: Self.registeredPosterKey)
+            publishIfNeeded(force: true)
+            return true
+        }
+        guard let key = KinetiqDiscordActivity.registeredAssetKey(trimmed) else { return false }
+        posterAssetKey = key
+        UserDefaults.standard.set(key, forKey: Self.registeredPosterKey)
+        publishIfNeeded(force: true)
+        return true
     }
 
     @discardableResult
@@ -493,7 +577,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             isPlaying: lastPreview.isPlaying,
             isPictureInPicture: lastPreview.isPictureInPicture
         )
-        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(activityType.rawValue)|\(streamingURL?.absoluteString ?? "")"
+        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
         let elapsed = now.timeIntervalSince(lastPublication)
         let expectedUnclamped = (lastPublishedPosition ?? position) + (adjusted.isPlaying ? max(0, elapsed) : 0)
         let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
@@ -505,7 +589,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         lastPublishedPosition = position
         let payload = KinetiqDiscordActivity.payload(
             for: adjusted, now: now, posterOverride: publicPosterURL,
-            activityType: activityType, streamingURL: streamingURL
+            activityType: activityType, streamingURL: streamingURL,
+            nameStyle: nameStyle, registeredPosterKey: posterAssetKey
         )
         let connectionGeneration = generation
         Task { @MainActor [weak self] in

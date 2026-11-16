@@ -2162,7 +2162,8 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
          subtitleTracks: [ModuleRemoteSubtitleTrack]) {
         let episode = ModuleAnimeEpisode(id: entry.episodeID,
             number: entry.episodeNumber, href: entry.episodeID,
-            subAvailable: true, dubAvailable: true)
+            subAvailable: entry.language == "sub", dubAvailable: entry.language == "dub",
+            title: entry.episodeTitle)
         self.sourceID = entry.sourceID
         self.sourceName = entry.sourceName
         self.animeTitle = entry.animeTitle
@@ -2171,7 +2172,9 @@ final class ModuleEpisodePlaybackSession: ObservableObject, Identifiable {
         self.episodes = [episode]
         self.currentEpisode = episode
         self.currentEpisodeIndex = 0
-        self.currentEpisodeTitle = "\(entry.animeTitle) -- Episode \(entry.episodeNumber)"
+        let episodeLabel = "\(entry.animeTitle) -- Episode \(entry.episodeNumber)"
+        self.currentEpisodeTitle = entry.episodeTitle.map { "\(episodeLabel): \($0)" }
+            ?? episodeLabel
         self.selectedLanguage = entry.language
         self.runtime = nil
         let stream = ModuleResolvedStream(title: self.currentEpisodeTitle,

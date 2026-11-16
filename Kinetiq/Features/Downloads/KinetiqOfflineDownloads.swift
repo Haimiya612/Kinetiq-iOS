@@ -43,6 +43,7 @@ struct KinetiqOfflineEntry: Identifiable, Codable {
     let animeTitle: String
     let episodeID: String
     let episodeNumber: String
+    var episodeTitle: String? = nil
     let language: String
     let artworkURL: String?
     let format: KinetiqOfflineFormat
@@ -165,6 +166,10 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
     private let hlsCellID = "com.kinetiq.offline.hls.cell.v1"
 
     private var sessions: [String: URLSession] = [:]
+    // Retain the concrete HLS session. Looking up an AVAssetDownloadURLSession
+    // through the erased URLSession dictionary should never be needed when
+    // starting an offline asset task.
+    private var hlsSessions: [String: AVAssetDownloadURLSession] = [:]
     private var tasks: [String: URLSessionTask] = [:]
     private var activeRequests: [String: KinetiqOfflineRequest] = [:]
     private var backgroundCompletions: [String: () -> Void] = [:]
@@ -210,13 +215,18 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             config.isDiscretionary = false
             config.sessionSendsLaunchEvents = true
             config.httpMaximumConnectionsPerHost = 3
-            let session: URLSession = hls
-                ? AVAssetDownloadURLSession(configuration: config,
-                                            assetDownloadDelegate: self,
-                                            delegateQueue: .main)
-                : URLSession(configuration: config, delegate: self,
-                             delegateQueue: .main)
-            sessions[identifier] = session
+            if hls {
+                let session = AVAssetDownloadURLSession(
+                    configuration: config, assetDownloadDelegate: self,
+                    delegateQueue: .main
+                )
+                hlsSessions[identifier] = session
+                sessions[identifier] = session
+            } else {
+                sessions[identifier] = URLSession(
+                    configuration: config, delegate: self, delegateQueue: .main
+                )
+            }
         }
     }
 
@@ -294,6 +304,16 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         return entries.first(where: { $0.id == id })
     }
 
+    func isBackgroundSessionAvailable(format: KinetiqOfflineFormat,
+                                      wifiOnly: Bool) -> Bool {
+        switch format {
+        case .file:
+            return sessions[wifiOnly ? directWiFiID : directCellID] != nil
+        case .hls:
+            return hlsSessions[wifiOnly ? hlsWiFiID : hlsCellID] != nil
+        }
+    }
+
     func enqueue(_ request: KinetiqOfflineRequest) async throws {
         guard let format = KinetiqOfflineEligibility.format(for: request.stream) else {
             throw OfflineDownloadError.unsupportedStream
@@ -311,6 +331,15 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         if let available, available < 250_000_000 { throw OfflineDownloadError.lowSpace }
 
         let title = String(request.anime.title.prefix(200))
+        let sessionID = format == .hls
+            ? (request.wifiOnly ? hlsWiFiID : hlsCellID)
+            : (request.wifiOnly ? directWiFiID : directCellID)
+        // Validate before downloading subtitles or committing a failed entry.
+        // A direct background session and an HLS asset session are different
+        // services; only the latter can create AVAssetDownloadTasks.
+        guard isBackgroundSessionAvailable(format: format, wifiOnly: request.wifiOnly) else {
+            throw OfflineDownloadError.sessionUnavailable
+        }
         // Capture every source-advertised external SRT/VTT track before
         // declaring this episode queued. An incomplete set is an error,
         // never a silently successful download.
@@ -321,6 +350,8 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             animeID: String(request.anime.id.prefix(1500)), animeTitle: title,
             episodeID: String(request.episode.id.prefix(1500)),
             episodeNumber: String(request.episode.number.prefix(80)),
+            episodeTitle: KinetiqEpisodeMetadataMatching.displayTitle(
+                request.episode.title, episodeNumber: request.episode.number),
             language: request.language, artworkURL: request.anime.imageURL?.absoluteString,
             format: format,
             quality: request.variant.map { "\(request.quality.rawValue) · \($0.title)" } ?? "Original source",
@@ -336,10 +367,6 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         activeRequests[id] = request
 
         do {
-            let sessionID = format == .hls
-                ? (request.wifiOnly ? hlsWiFiID : hlsCellID)
-                : (request.wifiOnly ? directWiFiID : directCellID)
-            guard let session = sessions[sessionID] else { throw OfflineDownloadError.sessionUnavailable }
             let task: URLSessionTask
             switch format {
             case .file:
@@ -359,9 +386,12 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
                                             forHTTPHeaderField: "Cookie")
                     }
                 }
+                guard let session = sessions[sessionID] else {
+                    throw OfflineDownloadError.sessionUnavailable
+                }
                 task = session.downloadTask(with: urlRequest)
             case .hls:
-                guard let hls = session as? AVAssetDownloadURLSession else {
+                guard let hls = hlsSessions[sessionID] else {
                     throw OfflineDownloadError.sessionUnavailable
                 }
                 let asset = KinetiqOfflineEligibility.hlsAsset(for: request.stream)

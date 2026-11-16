@@ -70,6 +70,15 @@ final class OfflineDownloadContractTests: XCTestCase {
             [], quality: .high, customID: nil))
     }
 
+    @MainActor
+    func testFileAndHLSHaveRetainedBackgroundSessionsForBothNetworkPolicies() {
+        let store = KinetiqOfflineDownloadStore.shared
+        for format in [KinetiqOfflineFormat.file, .hls] {
+            XCTAssertTrue(store.isBackgroundSessionAvailable(format: format, wifiOnly: true))
+            XCTAssertTrue(store.isBackgroundSessionAvailable(format: format, wifiOnly: false))
+        }
+    }
+
     func testOfflineIndexStoresNoStreamCredentials() throws {
         let entry = KinetiqOfflineEntry(
             id: String(repeating: "a", count: 64),
@@ -87,6 +96,7 @@ final class OfflineDownloadContractTests: XCTestCase {
         XCTAssertFalse(saved.contains("token="))
         XCTAssertFalse(saved.contains("cookie="))
         XCTAssertEqual(try JSONDecoder().decode([KinetiqOfflineEntry].self, from: data)[0].episodeNumber, "5")
+        XCTAssertNil(try JSONDecoder().decode([KinetiqOfflineEntry].self, from: data)[0].episodeTitle)
     }
 
     @MainActor
@@ -105,6 +115,7 @@ final class OfflineDownloadContractTests: XCTestCase {
         XCTAssertEqual(session.sourceID, "original-source")
         XCTAssertEqual(session.sourceName, "Original Source")
         XCTAssertEqual(session.currentEpisode?.id, "episode-5")
+        XCTAssertNil(session.currentEpisode?.title)
         XCTAssertEqual(session.currentStream?.streamType, "mp4")
         XCTAssertEqual(session.currentStream?.url.scheme, "file")
         XCTAssertEqual(session.availableStreams.count, 1)
@@ -129,5 +140,27 @@ final class OfflineDownloadContractTests: XCTestCase {
             from: JSONEncoder().encode(entry))
         XCTAssertEqual(restored.subtitleTracks.count, 2)
         XCTAssertEqual(restored.subtitleTracks.map(\.format), ["vtt", "srt"])
+    }
+
+    @MainActor
+    func testEpisodeTitleSurvivesOfflinePersistenceAndPlayback() throws {
+        let entry = KinetiqOfflineEntry(
+            id: String(repeating: "c", count: 64),
+            sourceID: "source", sourceName: "Anikage",
+            animeID: "jjk", animeTitle: "Jujutsu Kaisen",
+            episodeID: "episode-1", episodeNumber: "1",
+            episodeTitle: "Ryomen Sukuna", language: "sub",
+            artworkURL: nil, format: .file, quality: "Original",
+            createdAt: .now, state: .ready, progress: 1,
+            localPath: "/video.mp4", bytes: 42, resumeSeconds: 0, error: nil
+        )
+        let decoded = try JSONDecoder().decode(KinetiqOfflineEntry.self,
+            from: JSONEncoder().encode(entry))
+        XCTAssertEqual(decoded.episodeTitle, "Ryomen Sukuna")
+        let session = ModuleEpisodePlaybackSession(offline: decoded,
+            url: URL(fileURLWithPath: "/video.mp4"), subtitleTracks: [])
+        XCTAssertEqual(session.currentEpisode?.title, "Ryomen Sukuna")
+        XCTAssertTrue(session.currentEpisode?.subAvailable == true)
+        XCTAssertFalse(session.currentEpisode?.dubAvailable == true)
     }
 }

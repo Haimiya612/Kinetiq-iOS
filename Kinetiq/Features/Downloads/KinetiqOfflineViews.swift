@@ -20,6 +20,7 @@ struct KinetiqEpisodeDownloadSheet: View {
     @State private var streamIndex = 0
     @State private var variants: [ModuleVideoQualityOption] = []
     @State private var failure: String?
+    @State private var downloadFailure: String?
     @State private var started = false
     @State private var enqueuing = false
     @State private var requestID = UUID()
@@ -59,6 +60,11 @@ struct KinetiqEpisodeDownloadSheet: View {
                                 .font(.headline).lineLimit(2)
                             Text("Episode \(episode.number)")
                                 .font(.subheadline).foregroundStyle(.secondary)
+                            if let title = KinetiqEpisodeMetadataMatching.displayTitle(
+                                episode.title, episodeNumber: episode.number) {
+                                Text(title).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
                             Label(sourceName, systemImage: "play.rectangle.on.rectangle")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -144,6 +150,15 @@ struct KinetiqEpisodeDownloadSheet: View {
                         description: Text("This episode did not return a direct MP4 or HLS video. Try another episode or server."))
                 }
 
+                if let downloadFailure {
+                    Section("Download couldn't start") {
+                        Label(downloadFailure, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text("Choose another server or try the download again. Your selected video source remains available for retry.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     if alreadyQueued {
                         Label("This episode is already in Downloads",
@@ -195,6 +210,7 @@ struct KinetiqEpisodeDownloadSheet: View {
         variants = []
         streamIndex = 0
         failure = nil
+        downloadFailure = nil
         resolving = true
         defer { if requestID == id { resolving = false } }
         let session = ModuleEpisodePlaybackSession(
@@ -243,6 +259,7 @@ struct KinetiqEpisodeDownloadSheet: View {
 
     private func beginDownload() {
         guard let stream = selectedStream else { return }
+        downloadFailure = nil
         enqueuing = true
         Task { @MainActor in
             defer { enqueuing = false }
@@ -256,7 +273,7 @@ struct KinetiqEpisodeDownloadSheet: View {
                 started = true
                 dismiss()
             } catch {
-                failure = error.localizedDescription
+                downloadFailure = error.localizedDescription
             }
         }
     }
@@ -406,6 +423,10 @@ struct KinetiqOfflineDownloadsView: View {
                 Text(entry.animeTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
                 Text("Episode \(entry.episodeNumber) · \(entry.language.uppercased())")
                     .font(.caption).foregroundStyle(.secondary)
+                if let episodeTitle = entry.episodeTitle {
+                    Text(episodeTitle).font(.caption2)
+                        .foregroundStyle(.secondary).lineLimit(2)
+                }
                 Text(entry.sourceName + " · " + entry.quality)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 if entry.state == .downloading {

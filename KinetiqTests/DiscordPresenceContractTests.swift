@@ -26,11 +26,11 @@ final class DiscordPresenceContractTests: XCTestCase {
         let body = try XCTUnwrap(value["d"] as? [String: Any])
         let activity = try XCTUnwrap((body["activities"] as? [[String: Any]])?.first)
         XCTAssertEqual(activity["type"] as? Int, 3)
-        XCTAssertEqual(activity["name"] as? String, "Blue Box Season 2")
+        XCTAssertEqual(activity["name"] as? String, "Kinetiq")
         XCTAssertEqual(activity["application_id"] as? String,
                        KinetiqDiscordActivity.applicationID)
         XCTAssertEqual(activity["details"] as? String, "Blue Box Season 2")
-        XCTAssertEqual(activity["state"] as? String, "Episode 3 · SUB")
+        XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
         let poster = try XCTUnwrap(activity["assets"] as? [String: String])
         XCTAssertEqual(poster["large_image"], "https://img.example.org/posters/blue-box.jpg")
         let timestamps = try XCTUnwrap(activity["timestamps"] as? [String: Int])
@@ -59,6 +59,32 @@ final class DiscordPresenceContractTests: XCTestCase {
                 XCTAssertEqual(activity["url"] as? String, "https://twitch.tv/kinetiq")
             }
         }
+    }
+
+    func testHeadingStylesKeepKinetiqNameAndAnimeInDetails() throws {
+        for style in KinetiqDiscordNameStyle.allCases {
+            let value = KinetiqDiscordActivity.payload(for: playback(), nameStyle: style)
+            let activity = try XCTUnwrap(
+                ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(activity["name"] as? String, style.rawValue)
+            XCTAssertEqual(activity["details"] as? String, "Blue Box Season 2")
+            XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
+        }
+    }
+
+    func testRegisteredArtOverridesRemotePosterWithoutChangingMetadata() throws {
+        let value = KinetiqDiscordActivity.payload(for: playback(),
+            nameStyle: .onKinetiq, registeredPosterKey: "ALYA_POSTER")
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        XCTAssertEqual(activity["name"] as? String, "on Kinetiq")
+        let assets = try XCTUnwrap(activity["assets"] as? [String: String])
+        XCTAssertEqual(assets["large_image"], "alya_poster")
+        XCTAssertNil(KinetiqDiscordActivity.registeredAssetKey("../../secret"))
+        XCTAssertNil(KinetiqDiscordActivity.registeredAssetKey("https://example.org/image.png"))
+        XCTAssertNil(KinetiqDiscordActivity.registeredAssetKey(String(repeating: "a", count: 65)))
     }
 
     func testStreamingNeedsGenuineTwitchOrYouTubeURL() throws {
@@ -117,7 +143,61 @@ final class DiscordPresenceContractTests: XCTestCase {
         let body = value["d"] as? [String: Any]
         let activity = (body?["activities"] as? [[String: Any]])?.first
         XCTAssertNil(activity?["timestamps"])
-        XCTAssertEqual(activity?["state"] as? String, "Episode 3 · SUB · Paused")
+        XCTAssertEqual(activity?["state"] as? String, "Episode 3: A New Promise · SUB · Paused")
+    }
+
+    func testSeekingAndTemporaryBufferingDoNotAppearAsUserPauses() {
+        // AVPlayer can temporarily stop reporting .playing on each +10s seek.
+        // A stream already playing is still considered playing while the
+        // player's requested state is Play, even if its observed status lags.
+        XCTAssertTrue(KinetiqPresencePlaybackIntent.isPlaying(
+            requestedPlayback: true,
+            hasStartedCurrentItem: true,
+            playerReportsPlaying: false
+        ))
+        XCTAssertTrue(KinetiqPresencePlaybackIntent.isPlaying(
+            requestedPlayback: true,
+            hasStartedCurrentItem: false,
+            playerReportsPlaying: true
+        ))
+        XCTAssertFalse(KinetiqPresencePlaybackIntent.isPlaying(
+            requestedPlayback: true,
+            hasStartedCurrentItem: false,
+            playerReportsPlaying: false
+        ), "An episode that never started must not claim to be playing")
+        XCTAssertFalse(KinetiqPresencePlaybackIntent.isPlaying(
+            requestedPlayback: false,
+            hasStartedCurrentItem: true,
+            playerReportsPlaying: true
+        ), "Pressing Pause must win even before AVPlayer catches up")
+    }
+
+    func testEpisodeTitleFallsBackForGenericTitlesAndReservesLanguageSuffix() {
+        let generic = KinetiqPresencePlayback(
+            animeTitle: "Anime", episodeNumber: "1", episodeTitle: "Episode 1",
+            language: "sub", posterURL: nil, position: 2, duration: 20,
+            isPlaying: true, isPictureInPicture: false
+        )
+        XCTAssertEqual(KinetiqDiscordActivity.state(for: generic), "Episode 1 · SUB")
+
+        let prefixed = KinetiqPresencePlayback(
+            animeTitle: "Anime", episodeNumber: "3", episodeTitle: "Episode 3: A New Promise",
+            language: "sub", posterURL: nil, position: 2, duration: 20,
+            isPlaying: true, isPictureInPicture: false
+        )
+        XCTAssertEqual(KinetiqDiscordActivity.state(for: prefixed),
+                       "Episode 3: A New Promise · SUB")
+
+        let long = KinetiqPresencePlayback(
+            animeTitle: "Anime", episodeNumber: "2",
+            episodeTitle: String(repeating: "A Very Long Episode Title ", count: 6),
+            language: "dub", posterURL: nil, position: 4, duration: 90,
+            isPlaying: false, isPictureInPicture: false
+        )
+        let value = KinetiqDiscordActivity.state(for: long)
+        XCTAssertLessThanOrEqual(value.count, 128)
+        XCTAssertTrue(value.hasPrefix("Episode 2: "))
+        XCTAssertTrue(value.hasSuffix(" · DUB · Paused"))
     }
 
     func testSignedOrPrivateArtworkIsNeverSent() {
