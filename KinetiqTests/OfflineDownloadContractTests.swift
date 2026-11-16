@@ -3,6 +3,67 @@ import Foundation
 @testable import Kinetiq
 
 final class OfflineDownloadContractTests: XCTestCase {
+    private func savedEntry(format: KinetiqOfflineFormat, path: String,
+                            captions: [KinetiqSavedSubtitleTrack] = []) -> KinetiqOfflineEntry {
+        KinetiqOfflineEntry(
+            id: String(repeating: "d", count: 64),
+            sourceID: "source", sourceName: "Source", animeID: "anime",
+            animeTitle: "Blue Box", episodeID: "episode-1", episodeNumber: "1",
+            language: "sub", artworkURL: nil, format: format, quality: "Original",
+            createdAt: .now, state: .ready, progress: 1,
+            localPath: path, bytes: 256, resumeSeconds: 0, error: nil,
+            subtitleTracks: captions
+        )
+    }
+
+    func testOfflineAuditRejectsMissingAndDamagedVideoFiles() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kinetiq-offline-audit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let video = folder.appendingPathComponent("episode.mp4")
+        let entry = savedEntry(format: .file, path: video.path)
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try Data().write(to: video)
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try Data("<!doctype html>".utf8).write(to: video)
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try Data([0, 0, 0, 16] + Array("ftypisom".utf8)).write(to: video)
+        XCTAssertNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+    }
+
+    func testOfflineAuditRequiresEverySavedSubtitleToBeIntact() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kinetiq-offline-captions-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let video = folder.appendingPathComponent("episode.mp4")
+        let subtitle = folder.appendingPathComponent("eng.vtt")
+        let bytes = Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello".utf8)
+        try Data([0, 0, 0, 16] + Array("ftypisom".utf8)).write(to: video)
+        let caption = KinetiqSavedSubtitleTrack(label: "English", language: "en",
+            format: "vtt", localPath: subtitle.path, bytes: Int64(bytes.count))
+        let entry = savedEntry(format: .file, path: video.path, captions: [caption])
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try bytes.write(to: subtitle)
+        XCTAssertNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try Data("WEBVTT".utf8).write(to: subtitle)
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+    }
+
+    func testOfflineAuditRequiresANonemptyHLSPackage() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kinetiq-offline-hls-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let package = folder.appendingPathComponent("episode.movpkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let entry = savedEntry(format: .hls, path: package.path)
+        XCTAssertNotNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+        try Data([1, 2, 3]).write(to: package.appendingPathComponent("segment.ts"))
+        XCTAssertNil(KinetiqOfflineFileAudit.failureReason(for: entry))
+    }
+
     private func stream(_ url: String, type: String = "mp4",
                         headers: [String: String] = [:]) -> ModuleResolvedStream {
         ModuleResolvedStream(title: "Episode", label: "Server",

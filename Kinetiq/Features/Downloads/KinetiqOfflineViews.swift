@@ -513,6 +513,7 @@ private struct KinetiqOfflinePreferencesView: View {
     @AppStorage("kinetiq.offline.defaultQuality") private var quality = KinetiqOfflineQuality.original.rawValue
     @AppStorage("kinetiq.offline.notifyCompletion") private var notify = true
     @State private var confirmCleanup = false
+    @State private var validationNotice: String?
     @StateObject private var store = KinetiqOfflineDownloadStore.shared
 
     var body: some View {
@@ -540,6 +541,18 @@ private struct KinetiqOfflinePreferencesView: View {
                     LabeledContent("Offline video storage",
                         value: ByteCountFormatter.string(fromByteCount: store.totalBytes,
                             countStyle: .file))
+                    Button("Verify saved downloads", systemImage: "checkmark.shield") {
+                        let invalidCount = store.validateSavedDownloads()
+                        validationNotice = invalidCount == 0
+                            ? "All saved videos and their subtitle files passed the local check."
+                            : "\(invalidCount) incomplete download(s) moved to Failed. Reopen those episodes to download them again."
+                    }
+                    .disabled(!store.entries.contains(where: { $0.state == .ready }))
+                    if let validationNotice {
+                        Text(validationNotice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Button("Delete all completed downloads", role: .destructive) {
                         confirmCleanup = true
                     }

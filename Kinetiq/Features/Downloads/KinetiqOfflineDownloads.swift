@@ -145,6 +145,61 @@ enum KinetiqOfflineEligibility {
     }
 }
 
+/// A finished transfer must have a real local video and every caption that was
+/// promised at enqueue time. Never silently hide missing sidecar tracks.
+enum KinetiqOfflineFileAudit {
+    static func failureReason(for entry: KinetiqOfflineEntry,
+                              files: FileManager = .default) -> String? {
+        guard let path = entry.localPath, !path.isEmpty else {
+            return "The saved video is no longer on this device. Reopen the episode to download it again."
+        }
+        var isDirectory: ObjCBool = false
+        guard files.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            return "The saved video is no longer on this device. Reopen the episode to download it again."
+        }
+        switch entry.format {
+        case .file:
+            guard !isDirectory.boolValue,
+                  let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+                return "The saved video file cannot be opened. Reopen the episode to download it again."
+            }
+            let prefix = (try? handle.read(upToCount: 8)) ?? Data()
+            try? handle.close()
+            guard prefix.count == 8,
+                  ["ftyp", "moov", "free", "wide", "mdat"]
+                      .contains(String(decoding: prefix[4..<8], as: UTF8.self)) else {
+                return "The saved video is incomplete or damaged. Reopen the episode to download it again."
+            }
+        case .hls:
+            guard isDirectory.boolValue,
+                  let enumerator = files.enumerator(at: URL(fileURLWithPath: path),
+                       includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else {
+                return "The downloaded HLS package is missing. Reopen the episode to download it again."
+            }
+            var containsContent = false
+            for case let child as URL in enumerator {
+                guard let values = try? child.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else { continue }
+                if values.isRegularFile == true, (values.fileSize ?? 0) > 0 {
+                    containsContent = true
+                    break
+                }
+            }
+            guard containsContent else {
+                return "The downloaded HLS package is empty. Reopen the episode to download it again."
+            }
+        }
+        for subtitle in entry.subtitleTracks {
+            guard let attrs = try? files.attributesOfItem(atPath: subtitle.localPath),
+                  (attrs[.type] as? FileAttributeType) == .typeRegular,
+                  (attrs[.size] as? NSNumber)?.int64Value == subtitle.bytes,
+                  subtitle.bytes > 0 else {
+                return "A saved subtitle track is missing or incomplete. Reopen the episode to download the complete version."
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - Persistent background-download coordinator
 
 /// Only non-secret identifiers, metadata and local filesystem paths are
@@ -194,9 +249,9 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             entries = saved.prefix(1_000).map { record in
                 var entry = record
                 if entry.state == .ready,
-                   (entry.localPath == nil || !FileManager.default.fileExists(atPath: entry.localPath!)) {
+                   let failure = KinetiqOfflineFileAudit.failureReason(for: entry) {
                     entry.state = .failed
-                    entry.error = "The saved video is no longer on this device."
+                    entry.error = failure
                 }
                 return entry
             }
@@ -256,6 +311,31 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             let entry = entries[index]
             if entry.state == .downloading || entry.state == .queued || entry.state == .paused {
                 guard let task = tasks[entry.id] else {
+                    // A completed MP4 can already be on disk when the OS has
+                    // retired its background task but the completion callback
+                    // was never delivered to the app process.
+                    if entry.format == .file {
+                        var candidate = entry
+                        if candidate.localPath == nil {
+                            let file = supportDirectory.appendingPathComponent("files")
+                                .appendingPathComponent(entry.id).appendingPathExtension("mp4")
+                            candidate.localPath = file.path
+                        }
+                        if KinetiqOfflineFileAudit.failureReason(for: candidate) == nil,
+                           let path = candidate.localPath {
+                            entries[index].localPath = path
+                            let file = URL(fileURLWithPath: path)
+                            let mediaBytes = Int64((try? file.resourceValues(
+                                forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                            entries[index].bytes = mediaBytes + candidate.subtitleTracks.reduce(0) {
+                                $0 + $1.bytes
+                            }
+                            entries[index].progress = 1
+                            entries[index].state = .ready
+                            entries[index].error = nil
+                            continue
+                        }
+                    }
                     entries[index].state = .failed
                     entries[index].error = "Background transfer no longer exists. Reopen the episode to retry."
                     continue
@@ -564,9 +644,28 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         for id in entries.filter({ $0.state == .ready }).map(\.id) { remove(id) }
     }
 
+    /// An on-device audit is useful after a Files-app cleanup or an interrupted
+    /// iOS restore. It checks bytes on disk without contacting a source module.
+    @discardableResult
+    func validateSavedDownloads() -> Int {
+        var invalidCount = 0
+        for index in entries.indices where entries[index].state == .ready {
+            if let failure = KinetiqOfflineFileAudit.failureReason(for: entries[index]) {
+                entries[index].state = .failed
+                entries[index].error = failure
+                invalidCount += 1
+            }
+        }
+        if invalidCount > 0 { persist() }
+        return invalidCount
+    }
+
     func playbackURL(for entry: KinetiqOfflineEntry) -> URL? {
-        guard entry.state == .ready, let path = entry.localPath,
-              FileManager.default.fileExists(atPath: path) else { return nil }
+        guard entry.state == .ready, let path = entry.localPath else { return nil }
+        if let failure = KinetiqOfflineFileAudit.failureReason(for: entry) {
+            update(entry.id) { $0.state = .failed; $0.error = failure }
+            return nil
+        }
         return URL(fileURLWithPath: path)
     }
 
@@ -579,11 +678,12 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         guard progress.isFinite else { return }
         guard let existing = entries.first(where: { $0.id == id }),
               existing.state == .downloading,
+              progress > existing.progress,
               progress - existing.progress >= 0.01 || progress >= 1 else { return }
         update(id) {
             guard $0.state == .downloading else { return }
             let fraction = min(1, max(0, progress))
-            $0.progress = fraction
+            $0.progress = max($0.progress, fraction)
         }
     }
 
@@ -618,7 +718,8 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             entries[index].error = (error as NSError).code == NSURLErrorCancelled
                 ? "Download canceled."
                 : "Download interrupted. Reopen the episode to retry if its link expired."
-        } else if let path = old.localPath, FileManager.default.fileExists(atPath: path) {
+        } else if old.localPath != nil,
+                  KinetiqOfflineFileAudit.failureReason(for: old) == nil {
             entries[index].state = .ready
             entries[index].progress = 1
             entries[index].error = nil

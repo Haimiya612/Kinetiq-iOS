@@ -47,6 +47,13 @@ enum KinetiqDiscordActivityType: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
+    /// Store the numeric Gateway type, not the translated display title.
+    /// Listening and Competing must survive app relaunches and reconnects.
+    static func restored(from defaults: UserDefaults, key: String) -> Self {
+        let value = defaults.object(forKey: key) as? Int
+        return value.flatMap(Self.init(rawValue:)) ?? .watching
+    }
+
     var title: String {
         switch self {
         case .playing: return "Playing"
@@ -64,7 +71,7 @@ enum KinetiqDiscordActivityType: Int, CaseIterable, Identifiable {
         case .streaming: return "Streaming is only accepted with a genuine Twitch or YouTube stream URL. Without one, Kinetiq sends Watching."
         case .listening: return "Listening to an anime. Discord supports an elapsed/total progress bar."
         case .watching: return "Watching an anime. Recommended for accurate episode playback progress."
-        case .custom: return "A short 🍿 status showing the anime and episode. Discord does not display the normal Rich Presence poster or progress card."
+        case .custom: return "Write your own status, such as Streaming, without a stream URL. Optionally add a Kinetiq heading or the anime title. Discord Custom Status has no Rich Presence poster or progress card."
         case .competing: return "Competing in an anime. The display may be less suitable for media playback."
         }
     }
@@ -79,8 +86,113 @@ enum KinetiqDiscordNameStyle: String, CaseIterable, Identifiable {
     case withKinetiq = "with Kinetiq"
     case inKinetiq = "in Kinetiq"
     case fromKinetiq = "from Kinetiq"
+    case empty = ""
 
     var id: String { rawValue }
+}
+
+enum KinetiqDiscordHeadingMode: String, CaseIterable, Identifiable {
+    case kinetiq = "Kinetiq heading"
+    case anime = "Anime title"
+    case animeAndKinetiq = "Anime + Kinetiq"
+    case animePipeKinetiq = "Anime | Kinetiq"
+    case alternating = "Alternate automatically"
+
+    var id: String { rawValue }
+}
+
+/// The second half of an automatic rotation; existing users retain anime-only.
+enum KinetiqDiscordRotationTarget: String, CaseIterable, Identifiable {
+    case anime = "Anime title"
+    case animeAndKinetiq = "Anime + Kinetiq"
+    case animePipeKinetiq = "Anime | Kinetiq"
+
+    var id: String { rawValue }
+
+    var headingMode: KinetiqDiscordHeadingMode {
+        switch self {
+        case .anime: return .anime
+        case .animeAndKinetiq: return .animeAndKinetiq
+        case .animePipeKinetiq: return .animePipeKinetiq
+        }
+    }
+}
+
+/// Pure formatting rules shared by the UI, payload builder and contract tests.
+enum KinetiqDiscordHeadingPolicy {
+    static func interval(_ seconds: Int) -> Int {
+        min(60, max(5, (seconds / 5) * 5))
+    }
+
+    static func name(for playback: KinetiqPresencePlayback,
+                     mode: KinetiqDiscordHeadingMode,
+                     style: KinetiqDiscordNameStyle,
+                     alternateShowsAnime: Bool,
+                     rotationTarget: KinetiqDiscordRotationTarget = .anime,
+                     allowEmptyHeading: Bool = false) -> String {
+        let title = playback.animeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let original = style == .empty && !allowEmptyHeading ? "Kinetiq" : style.rawValue
+        let resolved = mode == .alternating
+            ? (alternateShowsAnime ? rotationTarget.headingMode : .kinetiq)
+            : mode
+        let heading: String
+        switch resolved {
+        case .kinetiq:
+            heading = original
+        case .anime:
+            heading = title.isEmpty ? original : String(title.prefix(128))
+        case .animeAndKinetiq:
+            heading = combine(title: title, suffix: original, separator: " ")
+        case .animePipeKinetiq:
+            heading = combine(title: title, suffix: "Kinetiq", separator: " | ")
+        case .alternating:
+            heading = original
+        }
+        return heading.isEmpty && !allowEmptyHeading ? "Kinetiq" : heading
+    }
+
+    /// Reserve space for the suffix so even long anime names retain branding.
+    private static func combine(title: String, suffix: String, separator: String) -> String {
+        guard !title.isEmpty else { return suffix }
+        guard !suffix.isEmpty else { return String(title.prefix(128)) }
+        let titleLimit = max(0, 128 - separator.count - suffix.count)
+        return String(title.prefix(titleLimit)) + separator + suffix
+    }
+
+    static func customStatus(_ template: String, for playback: KinetiqPresencePlayback) -> String {
+        let clean = template.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        guard !clean.isEmpty else {
+            return String("\(KinetiqDiscordActivity.description(for: playback)) · \(KinetiqDiscordActivity.state(for: playback))".prefix(128))
+        }
+        return String(clean
+            .replacingOccurrences(of: "{anime}", with: KinetiqDiscordActivity.description(for: playback))
+            .replacingOccurrences(of: "{episode}", with: playback.episodeNumber)
+            .replacingOccurrences(of: "{language}", with: playback.language.uppercased())
+            .prefix(128))
+    }
+
+    /// Discord type 4 displays `state`, not the Rich Presence activity `name`.
+    /// Compose the user's chosen custom phrase with an optional heading while
+    /// retaining the old automatic anime/episode text for an empty template.
+    static func customStatusWithHeading(
+        _ template: String, for playback: KinetiqPresencePlayback,
+        mode: KinetiqDiscordHeadingMode,
+        style: KinetiqDiscordNameStyle,
+        alternateShowsAnime: Bool,
+        rotationTarget: KinetiqDiscordRotationTarget = .anime
+    ) -> String {
+        let base = customStatus(template, for: playback)
+        guard !template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return base
+        }
+        let suffix = name(for: playback, mode: mode, style: style,
+                          alternateShowsAnime: alternateShowsAnime,
+                          rotationTarget: rotationTarget, allowEmptyHeading: true)
+        return String((suffix.isEmpty ? base : "\(base) \(suffix)").prefix(128))
+    }
 }
 
 /// Discord displays the large artwork in a square. These styles affect the
@@ -258,14 +370,21 @@ enum KinetiqDiscordActivity {
         streamingURL: URL? = nil,
         nameStyle: KinetiqDiscordNameStyle = .kinetiq,
         registeredPosterKey: String? = nil,
-        mediaProxyPoster: String? = nil
+        mediaProxyPoster: String? = nil,
+        headingMode: KinetiqDiscordHeadingMode = .kinetiq,
+        alternateShowsAnime: Bool = false,
+        rotationTarget: KinetiqDiscordRotationTarget = .anime,
+        customStatusText: String = ""
     ) -> [String: Any] {
         let validStream = streamingURL.flatMap { validStreamingURL($0.absoluteString) }
         let effectiveType: KinetiqDiscordActivityType =
             activityType == .streaming && validStream == nil ? .watching : activityType
 
         if effectiveType == .custom {
-            let state = String("\(description(for: playback)) · \(state(for: playback))".prefix(128))
+            let state = KinetiqDiscordHeadingPolicy.customStatusWithHeading(
+                customStatusText, for: playback, mode: headingMode,
+                style: nameStyle, alternateShowsAnime: alternateShowsAnime,
+                rotationTarget: rotationTarget)
             let customActivity: [String: Any] = [
                 "name": "Custom Status",
                 "type": KinetiqDiscordActivityType.custom.rawValue,
@@ -282,9 +401,11 @@ enum KinetiqDiscordActivity {
         }
 
         var activity: [String: Any] = [
-            // Keep the application in the heading, not the anime title.
-            // Discord may still override this with its registered app name.
-            "name": nameStyle.rawValue,
+            // Discord may override the requested heading with its application name.
+            "name": KinetiqDiscordHeadingPolicy.name(for: playback,
+                mode: headingMode, style: nameStyle,
+                alternateShowsAnime: alternateShowsAnime,
+                rotationTarget: rotationTarget),
             "type": effectiveType.rawValue,
             "application_id": applicationID,
             "details": description(for: playback),
@@ -493,6 +614,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     static let activityTypeKey = "kinetiq.discordPresenceLab.activityType"
     static let streamingURLKey = "kinetiq.discordPresenceLab.streamingURL"
     static let nameStyleKey = "kinetiq.discordPresenceLab.nameStyle"
+    static let headingModeKey = "kinetiq.discordPresenceLab.headingMode"
+    static let rotationTargetKey = "kinetiq.discordPresenceLab.rotationTarget"
+    static let rotationIntervalKey = "kinetiq.discordPresenceLab.rotationInterval"
+    static let customStatusKey = "kinetiq.discordPresenceLab.customStatus"
     static let registeredPosterKey = "kinetiq.discordPresenceLab.registeredPosterKey"
     static let artworkStyleKey = "kinetiq.discordPresenceLab.artworkStyle"
 
@@ -500,6 +625,11 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var hasCredential: Bool
     @Published private(set) var activityType: KinetiqDiscordActivityType
     @Published private(set) var nameStyle: KinetiqDiscordNameStyle
+    @Published private(set) var headingMode: KinetiqDiscordHeadingMode
+    @Published private(set) var rotationTarget: KinetiqDiscordRotationTarget
+    @Published private(set) var rotationIntervalSeconds: Int
+    @Published private(set) var customStatusText: String
+    @Published private(set) var rotationShowsAnimeTitle = false
     @Published private(set) var artworkStyle: KinetiqDiscordArtworkStyle
     @Published private(set) var posterAssetKey: String?
     @Published private(set) var streamingURL: URL?
@@ -546,6 +676,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private var lastSeekObservedAt: Date?
     private var presenceSendAttempts: [Date] = []
     private var presenceSendTask: Task<Void, Never>?
+    private var headingRotationTask: Task<Void, Never>?
     private var scheduledPresenceTask: Task<Void, Never>?
     private var scheduledPresenceAt: Date?
     private var pendingForcedPublication = false
@@ -567,10 +698,19 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         hasCredential = KinetiqDiscordCredentialStore.exists
-        let savedType = UserDefaults.standard.object(forKey: Self.activityTypeKey) as? Int
-        activityType = savedType.flatMap(KinetiqDiscordActivityType.init(rawValue:)) ?? .watching
+        activityType = KinetiqDiscordActivityType.restored(
+            from: .standard, key: Self.activityTypeKey
+        )
         nameStyle = UserDefaults.standard.string(forKey: Self.nameStyleKey)
             .flatMap(KinetiqDiscordNameStyle.init(rawValue:)) ?? .kinetiq
+        headingMode = UserDefaults.standard.string(forKey: Self.headingModeKey)
+            .flatMap(KinetiqDiscordHeadingMode.init(rawValue:)) ?? .kinetiq
+        rotationTarget = UserDefaults.standard.string(forKey: Self.rotationTargetKey)
+            .flatMap(KinetiqDiscordRotationTarget.init(rawValue:)) ?? .anime
+        rotationIntervalSeconds = KinetiqDiscordHeadingPolicy.interval(
+            UserDefaults.standard.object(forKey: Self.rotationIntervalKey) as? Int ?? 30
+        )
+        customStatusText = UserDefaults.standard.string(forKey: Self.customStatusKey) ?? ""
         artworkStyle = UserDefaults.standard.string(forKey: Self.artworkStyleKey)
             .flatMap(KinetiqDiscordArtworkStyle.init(rawValue:)) ?? .smartSquare
         posterAssetKey = UserDefaults.standard.string(forKey: Self.registeredPosterKey)
@@ -619,6 +759,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         guard activityType != type else { return }
         activityType = type
         UserDefaults.standard.set(type.rawValue, forKey: Self.activityTypeKey)
+        refreshHeadingRotation(restart: true)
         publishIfNeeded(force: true)
     }
 
@@ -627,6 +768,98 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         nameStyle = style
         UserDefaults.standard.set(style.rawValue, forKey: Self.nameStyleKey)
         publishIfNeeded(force: true)
+    }
+
+    func setHeadingMode(_ mode: KinetiqDiscordHeadingMode) {
+        guard headingMode != mode else { return }
+        headingMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.headingModeKey)
+        rotationShowsAnimeTitle = false
+        refreshHeadingRotation(restart: true)
+        publishIfNeeded(force: true)
+    }
+
+    func setRotationTarget(_ target: KinetiqDiscordRotationTarget) {
+        guard rotationTarget != target else { return }
+        rotationTarget = target
+        UserDefaults.standard.set(target.rawValue, forKey: Self.rotationTargetKey)
+        publishIfNeeded(force: true)
+    }
+
+    func setRotationInterval(_ seconds: Int) {
+        let value = KinetiqDiscordHeadingPolicy.interval(seconds)
+        guard rotationIntervalSeconds != value else { return }
+        rotationIntervalSeconds = value
+        UserDefaults.standard.set(value, forKey: Self.rotationIntervalKey)
+        refreshHeadingRotation(restart: true)
+    }
+
+    func setCustomStatusText(_ text: String) {
+        let value = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(128))
+        guard customStatusText != value else { return }
+        customStatusText = value
+        UserDefaults.standard.set(value, forKey: Self.customStatusKey)
+        refreshHeadingRotation(restart: true)
+        if activityType == .custom { publishIfNeeded(force: true) }
+    }
+
+    var requestedHeading: String {
+        guard let lastPreview else {
+            if activityType == .custom {
+                return customStatusText.isEmpty ? "Custom Status" : customStatusText
+            }
+            return activityType.title + " " + (nameStyle == .empty ? "Kinetiq" : nameStyle.rawValue)
+        }
+        if activityType == .custom {
+            return KinetiqDiscordHeadingPolicy.customStatusWithHeading(
+                customStatusText, for: lastPreview, mode: headingMode,
+                style: nameStyle, alternateShowsAnime: rotationShowsAnimeTitle,
+                rotationTarget: rotationTarget)
+        }
+        let type = activityType == .streaming && streamingURL == nil
+            ? KinetiqDiscordActivityType.watching : activityType
+        return type.title + " " + KinetiqDiscordHeadingPolicy.name(
+            for: lastPreview, mode: headingMode, style: nameStyle,
+            alternateShowsAnime: rotationShowsAnimeTitle,
+            rotationTarget: rotationTarget
+        )
+    }
+
+    /// Cosmetic changes never bypass the existing seek/transport rate limit.
+    /// A queued position update always takes precedence over heading rotation.
+    private func refreshHeadingRotation(restart: Bool = false) {
+        if restart {
+            headingRotationTask?.cancel()
+            headingRotationTask = nil
+        }
+        guard enabled, connection == .connected,
+              (activityType != .custom || !customStatusText.isEmpty),
+              headingMode == .alternating, lastPreview?.isPlaying == true else {
+            headingRotationTask?.cancel()
+            headingRotationTask = nil
+            return
+        }
+        guard headingRotationTask == nil else { return }
+        headingRotationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do { try await Task.sleep(for: .seconds(self.rotationIntervalSeconds)) }
+                catch { return }
+                guard !Task.isCancelled, self.enabled,
+                      self.connection == .connected,
+                      self.headingMode == .alternating,
+                      (self.activityType != .custom || !self.customStatusText.isEmpty),
+                      self.lastPreview?.isPlaying == true else { return }
+                let settlingSeek = self.lastSeekObservedAt.map {
+                    Date().timeIntervalSince($0) < 2
+                } ?? false
+                guard self.presenceSendTask == nil,
+                      self.scheduledPresenceTask == nil,
+                      !self.pendingForcedPublication, !settlingSeek else { continue }
+                self.rotationShowsAnimeTitle.toggle()
+                self.publishIfNeeded(force: false)
+            }
+        }
     }
 
     func setArtworkStyle(_ style: KinetiqDiscordArtworkStyle) {
@@ -750,6 +983,9 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private func closeTransport() {
         generation += 1
+        headingRotationTask?.cancel()
+        headingRotationTask = nil
+        rotationShowsAnimeTitle = false
         scheduledPresenceTask?.cancel()
         scheduledPresenceTask = nil
         scheduledPresenceAt = nil
@@ -789,10 +1025,12 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             lastSeekObservedAt = now
         } else if previousPlaybackSample?.key != sampleKey {
             lastSeekObservedAt = nil
+            rotationShowsAnimeTitle = false
         }
         previousPlaybackSample = (sampleKey, snapshot.position, now, snapshot.isPlaying)
         lastPreview = snapshot
         lastPreviewRecordedAt = now
+        refreshHeadingRotation()
         prepareArtwork(for: snapshot)
         guard connection == .connected else { return }
         publishIfNeeded(force: false)
@@ -808,6 +1046,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         lastSeekObservedAt = nil
         playbackSyncStatus = "Playback ended."
         lastPreview = nil
+        refreshHeadingRotation()
         publicPosterURL = nil
         artworkRegistrationTask?.cancel()
         artworkRegistrationTask = nil
@@ -879,7 +1118,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             isPlaying: lastPreview.isPlaying,
             isPictureInPicture: lastPreview.isPictureInPicture
         )
-        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(registeredMediaProxy ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(artworkStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
+        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(registeredMediaProxy ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(headingMode.rawValue)|\(rotationTarget.rawValue)|\(rotationShowsAnimeTitle)|\(customStatusText)|\(artworkStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
         let elapsed = now.timeIntervalSince(lastPublication)
         let expectedUnclamped = (lastPublishedPosition ?? position) + (adjusted.isPlaying ? max(0, elapsed) : 0)
         let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
@@ -919,7 +1158,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             for: adjusted, now: now, posterOverride: publicPosterURL,
             activityType: activityType, streamingURL: streamingURL,
             nameStyle: nameStyle, registeredPosterKey: posterAssetKey,
-            mediaProxyPoster: artworkRegistrationURL == selectedArtworkURL ? registeredMediaProxy : nil
+            mediaProxyPoster: artworkRegistrationURL == selectedArtworkURL ? registeredMediaProxy : nil,
+            headingMode: headingMode, alternateShowsAnime: rotationShowsAnimeTitle,
+            rotationTarget: rotationTarget,
+            customStatusText: customStatusText
         )
         presenceSendAttempts.removeAll { now.timeIntervalSince($0) >= KinetiqPresenceSyncPolicy.rollingWindow }
         presenceSendAttempts.append(now)
@@ -940,6 +1182,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 self.failedPublicationRetryAt = .distantPast
                 self.playbackSyncStatus = "Latest activity submitted."
                 self.message = "Activity submitted. Check visibility from another Discord account."
+                self.refreshHeadingRotation()
             } catch {
                 guard let self, self.generation == connectionGeneration else { return }
                 self.failedPublicationRetryAt = Date().addingTimeInterval(10)
@@ -1168,6 +1411,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                     connectionStage = "Gateway READY received"
                     message = "Gateway READY. Rich Presence and artwork still need peer verification."
                     safeDiagnostics = "Gateway READY received. Rich Presence visibility has not been verified. No credential data is recorded."
+                    refreshHeadingRotation()
                     publishIfNeeded(force: true)
                 } else if op == 9 {
                     connection = .interrupted

@@ -7,10 +7,11 @@ import XCTest
 final class DiscordPresenceContractTests: XCTestCase {
     private func playback(
         poster: String? = "https://img.example.org/posters/blue-box.jpg",
-        playing: Bool = true
+        playing: Bool = true,
+        animeTitle: String = "Blue Box Season 2"
     ) -> KinetiqPresencePlayback {
         KinetiqPresencePlayback(
-            animeTitle: "Blue Box Season 2", episodeNumber: "3",
+            animeTitle: animeTitle, episodeNumber: "3",
             episodeTitle: "A New Promise", language: "sub",
             posterURL: poster.flatMap(URL.init(string:)),
             position: 120, duration: 1_440, isPlaying: playing,
@@ -67,10 +68,206 @@ final class DiscordPresenceContractTests: XCTestCase {
             let activity = try XCTUnwrap(
                 ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
             )
-            XCTAssertEqual(activity["name"] as? String, style.rawValue)
+            XCTAssertEqual(activity["name"] as? String,
+                           style == .empty ? "Kinetiq" : style.rawValue)
             XCTAssertEqual(activity["details"] as? String, "Blue Box Season 2")
             XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
         }
+    }
+
+    func testAnimeTitleHeadingPreservesPosterEpisodeAndPlaybackClock() throws {
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(), now: Date(timeIntervalSince1970: 2_000),
+            activityType: .listening, nameStyle: .viaKinetiq, headingMode: .anime
+        )
+        let body = try XCTUnwrap(value["d"] as? [String: Any])
+        let activity = try XCTUnwrap((body["activities"] as? [[String: Any]])?.first)
+        XCTAssertEqual(activity["name"] as? String, "Blue Box Season 2")
+        XCTAssertEqual(activity["type"] as? Int, KinetiqDiscordActivityType.listening.rawValue)
+        XCTAssertEqual(activity["details"] as? String, "Blue Box Season 2")
+        XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
+        XCTAssertEqual((activity["assets"] as? [String: String])?["large_image"],
+                       "https://img.example.org/posters/blue-box.jpg")
+        XCTAssertEqual((activity["timestamps"] as? [String: Int])?["start"], 1_880_000)
+    }
+
+    func testAlternatingHeadingKeepsTheSelectedKinetiqWording() throws {
+        for style in KinetiqDiscordNameStyle.allCases {
+            for useAnime in [false, true] {
+                let value = KinetiqDiscordActivity.payload(
+                    for: playback(), activityType: .competing, nameStyle: style,
+                    headingMode: .alternating, alternateShowsAnime: useAnime
+                )
+                let activity = try XCTUnwrap(
+                    ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+                )
+                XCTAssertEqual(activity["name"] as? String,
+                               useAnime ? "Blue Box Season 2" :
+                               (style == .empty ? "Kinetiq" : style.rawValue))
+                XCTAssertEqual(activity["type"] as? Int, 5)
+            }
+        }
+        XCTAssertEqual(KinetiqDiscordHeadingPolicy.interval(1), 5)
+        XCTAssertEqual(KinetiqDiscordHeadingPolicy.interval(27), 25)
+        XCTAssertEqual(KinetiqDiscordHeadingPolicy.interval(60), 60)
+        XCTAssertEqual(KinetiqDiscordHeadingPolicy.interval(100), 60)
+    }
+
+    func testAnimePlusKinetiqUsesEachOriginalHeadingStyleAndKeepsRichCard() throws {
+        for style in KinetiqDiscordNameStyle.allCases {
+            let value = KinetiqDiscordActivity.payload(
+                for: playback(), now: Date(timeIntervalSince1970: 2_000),
+                activityType: .watching, nameStyle: style,
+                headingMode: .animeAndKinetiq
+            )
+            let activity = try XCTUnwrap(
+                ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+            )
+            let expected = style == .empty
+                ? "Blue Box Season 2" : "Blue Box Season 2 \(style.rawValue)"
+            XCTAssertEqual(activity["name"] as? String, expected)
+            XCTAssertEqual(activity["type"] as? Int, 3)
+            XCTAssertEqual(activity["details"] as? String, "Blue Box Season 2")
+            XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
+            XCTAssertEqual((activity["assets"] as? [String: String])?["large_image"],
+                           "https://img.example.org/posters/blue-box.jpg")
+            XCTAssertEqual((activity["timestamps"] as? [String: Int])?["start"], 1_880_000)
+        }
+    }
+
+    func testAnimePipeKinetiqUsesVerticalBarIndependentOfSuffixStyle() throws {
+        for style in KinetiqDiscordNameStyle.allCases {
+            let value = KinetiqDiscordActivity.payload(
+                for: playback(), activityType: .listening, nameStyle: style,
+                headingMode: .animePipeKinetiq
+            )
+            let activity = try XCTUnwrap(
+                ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(activity["name"] as? String, "Blue Box Season 2 | Kinetiq")
+            XCTAssertEqual(activity["type"] as? Int, 2)
+            XCTAssertNotNil(activity["timestamps"])
+            XCTAssertNotNil(activity["assets"])
+        }
+    }
+
+    func testRotationCanAlternateIntoAnimeWithKinetiqOrPipe() throws {
+        let expected: [(KinetiqDiscordRotationTarget, String)] = [
+            (.anime, "Blue Box Season 2"),
+            (.animeAndKinetiq, "Blue Box Season 2 with Kinetiq"),
+            (.animePipeKinetiq, "Blue Box Season 2 | Kinetiq")
+        ]
+        for (target, alternateName) in expected {
+            for showAnime in [false, true] {
+                let value = KinetiqDiscordActivity.payload(
+                    for: playback(), activityType: .watching, nameStyle: .withKinetiq,
+                    headingMode: .alternating, alternateShowsAnime: showAnime,
+                    rotationTarget: target
+                )
+                let activity = try XCTUnwrap(
+                    ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+                )
+                XCTAssertEqual(activity["name"] as? String,
+                               showAnime ? alternateName : "with Kinetiq")
+            }
+            XCTAssertEqual(KinetiqDiscordRotationTarget(rawValue: target.rawValue), target)
+        }
+    }
+
+    func testLongAnimeTitleTruncatesBeforeKinetiqSuffix() throws {
+        let title = String(repeating: "Very Long Anime Title ", count: 12)
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(animeTitle: title), nameStyle: .withKinetiq,
+            headingMode: .animeAndKinetiq
+        )
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        let name = try XCTUnwrap(activity["name"] as? String)
+        XCTAssertEqual(name.count, 128)
+        XCTAssertTrue(name.hasSuffix(" with Kinetiq"))
+    }
+
+    func testSavedActivityTypeRestoresListeningAndCompeting() throws {
+        let suite = "kinetiq-discord-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = "test.discord.activity"
+        XCTAssertEqual(KinetiqDiscordActivityType.restored(from: defaults, key: key), .watching)
+        for type in [KinetiqDiscordActivityType.listening, .competing, .playing] {
+            defaults.set(type.rawValue, forKey: key)
+            XCTAssertEqual(KinetiqDiscordActivityType.restored(from: defaults, key: key), type)
+        }
+        defaults.set(999, forKey: key)
+        XCTAssertEqual(KinetiqDiscordActivityType.restored(from: defaults, key: key), .watching)
+    }
+
+    func testCustomStatusSupportsCurrentAnimeAndEpisodeWithoutRichCard() throws {
+        let template = "Enjoying {anime} episode {episode} in {language}"
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(), activityType: .custom, nameStyle: .empty,
+            customStatusText: template
+        )
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        XCTAssertEqual(activity["state"] as? String,
+                       "Enjoying Blue Box Season 2 episode 3 in SUB")
+        XCTAssertEqual(activity["type"] as? Int, 4)
+        XCTAssertNil(activity["assets"])
+        XCTAssertNil(activity["timestamps"])
+        XCTAssertFalse(KinetiqDiscordHeadingPolicy.customStatus("   ", for: playback()).isEmpty)
+        XCTAssertEqual(KinetiqDiscordHeadingPolicy.customStatus(
+            String(repeating: "a", count: 300), for: playback()).count, 128)
+    }
+
+    func testCustomStatusCanSayStreamingWithoutURLOrKinetiqSuffix() throws {
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(), activityType: .custom, nameStyle: .empty,
+            customStatusText: "Streaming"
+        )
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        XCTAssertEqual(activity["type"] as? Int, 4)
+        XCTAssertEqual(activity["state"] as? String, "Streaming")
+        XCTAssertNil(activity["url"])
+        XCTAssertNil(activity["timestamps"])
+        XCTAssertNil(activity["assets"])
+    }
+
+    func testCustomStatusRespectsExistingKinetiqStylesAndAnimeRotation() throws {
+        for style in KinetiqDiscordNameStyle.allCases {
+            let value = KinetiqDiscordActivity.payload(
+                for: playback(), activityType: .custom, nameStyle: style,
+                headingMode: .kinetiq, customStatusText: "Streaming"
+            )
+            let activity = try XCTUnwrap(
+                ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+            )
+            let expected = style == .empty ? "Streaming" : "Streaming \(style.rawValue)"
+            XCTAssertEqual(activity["state"] as? String, expected)
+        }
+        for showAnime in [false, true] {
+            let value = KinetiqDiscordActivity.payload(
+                for: playback(), activityType: .custom, nameStyle: .withKinetiq,
+                headingMode: .alternating, alternateShowsAnime: showAnime,
+                customStatusText: "Streaming"
+            )
+            let activity = try XCTUnwrap(
+                ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(activity["state"] as? String,
+                           showAnime ? "Streaming Blue Box Season 2" : "Streaming with Kinetiq")
+        }
+        let pipe = KinetiqDiscordActivity.payload(
+            for: playback(), activityType: .custom, nameStyle: .withKinetiq,
+            headingMode: .animePipeKinetiq, customStatusText: "Streaming"
+        )
+        let custom = try XCTUnwrap(
+            ((pipe["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        XCTAssertEqual(custom["state"] as? String, "Streaming Blue Box Season 2 | Kinetiq")
     }
 
     func testRegisteredArtOverridesRemotePosterWithoutChangingMetadata() throws {
