@@ -1480,7 +1480,8 @@ struct ModuleGlobalFavoritesView: View {
         }
         .sheet(item: $sourceSearchEntry) { entry in
             KinetiqCrossSourceSearchChooser(title: entry.title,
-                                            originalSourceID: entry.sourceID)
+                                            originalSourceID: entry.sourceID,
+                                            entry: entry)
         }
     }
 
@@ -1622,6 +1623,7 @@ struct ModuleGlobalFavoritesView: View {
 struct KinetiqCrossSourceSearchChooser: View {
     let title: String
     let originalSourceID: String?
+    var entry: ModuleAnimeCollectionEntry? = nil
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var sources = ModuleSourceStore.shared
@@ -1655,6 +1657,19 @@ struct KinetiqCrossSourceSearchChooser: View {
                     } label: {
                         Label("Find on All Sources", systemImage: "square.stack.3d.up")
                             .font(.subheadline.weight(.semibold))
+                    }
+                }
+
+                if let entry {
+                    Section("Source Passport") {
+                        NavigationLink {
+                            KinetiqSourcePassportView(entry: entry)
+                        } label: {
+                            Label("Connect matching editions or local files",
+                                  systemImage: "person.text.rectangle")
+                        }
+                        Text("Confirm links yourself. Your original module, favorites and playback history stay unchanged.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -1841,7 +1856,8 @@ struct ModuleSavedAnimeDetailsHost: View {
         }
         .sheet(isPresented: $showingAlternateSources) {
             KinetiqCrossSourceSearchChooser(title: entry.title,
-                                            originalSourceID: entry.sourceID)
+                                            originalSourceID: entry.sourceID,
+                                            entry: entry)
         }
     }
 

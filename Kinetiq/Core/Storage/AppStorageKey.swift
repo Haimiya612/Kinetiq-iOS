@@ -56,16 +56,40 @@ final class PlaybackHistoryStore: ObservableObject {
     static let shared = PlaybackHistoryStore()
 
     @Published private(set) var entries: [PlaybackHistoryEntry] = []
+    /// Completion marks are separate from resume history. A finished video
+    /// used to disappear from `entries`, making it look never watched later.
+    @Published private(set) var completedMediaIDs: Set<String> = []
 
     private let defaults: UserDefaults
     private let storageKey = AppStorageKey.playbackHistory
+    private let completedKey = "kinetiq.library.completedMediaIDs.v1"
     private let minimumSavedPosition: Double = 8
     private let completionThreshold: Double = 0.97
     private let maximumEntries = 30
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        completedMediaIDs = Set((defaults.stringArray(forKey: completedKey) ?? [])
+            .filter { !$0.isEmpty && $0.count <= 255 }.prefix(4_000))
         load()
+    }
+
+    func hasCompleted(mediaID: String) -> Bool {
+        completedMediaIDs.contains(mediaID)
+    }
+
+    func markWatched(mediaID: String) {
+        guard !mediaID.isEmpty, mediaID.count <= 255 else { return }
+        completedMediaIDs.insert(mediaID)
+        if completedMediaIDs.count > 4_000 {
+            completedMediaIDs = Set(completedMediaIDs.sorted().prefix(4_000))
+        }
+        defaults.set(completedMediaIDs.sorted(), forKey: completedKey)
+    }
+
+    func unmarkWatched(mediaID: String) {
+        guard completedMediaIDs.remove(mediaID) != nil else { return }
+        defaults.set(completedMediaIDs.sorted(), forKey: completedKey)
     }
 
     var continueWatching: [PlaybackHistoryEntry] {
@@ -105,6 +129,7 @@ final class PlaybackHistoryStore: ObservableObject {
         let safePosition = min(position, duration)
 
         if safePosition / duration >= completionThreshold {
+            markWatched(mediaID: mediaID)
             remove(mediaID: mediaID)
             return
         }

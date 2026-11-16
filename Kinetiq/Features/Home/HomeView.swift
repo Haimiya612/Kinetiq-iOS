@@ -2975,10 +2975,12 @@ struct DiscoverView: View {
     @State private var completedSources = 0
     @State private var sourceCount = 0
     @State private var failures = 0
+    @State private var failedSourceNames: [String] = []
     @State private var selectedHit: KinetiqUnifiedSearchHit?
     @State private var selectedSavedTitle: ModuleAnimeCollectionEntry?
     @State private var selectedSource: ModuleSourceOption?
     @State private var showingLibrary = false
+    @State private var showingCompass = false
     @State private var requestedMediaID: String?
     @State private var localFiles: [URL] = []
 
@@ -3035,7 +3037,7 @@ struct DiscoverView: View {
             .filter { seen.insert($0.id).inserted }
             .map { $0 }
     }
-    private var showFiles: Bool { scope == .files }
+    private var showFiles: Bool { scope == .files || scope == .all }
     private var showOnline: Bool { scope == .all || scope == .online }
 
     var body: some View {
@@ -3110,11 +3112,23 @@ struct DiscoverView: View {
                     }
             }
         }
+        .sheet(isPresented: $showingCompass) {
+            KinetiqSmartDiscoveryView()
+        }
     }
 
     private var searchToolbar: some View {
         VStack(spacing: 12) {
             HStack(spacing: 9) {
+                Button {
+                    showingCompass = true
+                } label: {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(theme.accent)
+                        .frame(width: 32, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open Kinetiq Compass smart search")
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField("Search media and sources", text: $searchText)
@@ -3230,7 +3244,7 @@ struct DiscoverView: View {
             Text("Find your next story")
                 .font(.system(size: theme.isEditorial ? 28 : 26, weight: .bold,
                               design: theme.isEditorial ? .serif : .rounded))
-            Text("Search your trusted streaming modules. Choose Your files to find videos imported to this iPhone.")
+            Text("Search every trusted streaming module and your imported files together. Tap the sparkles for Compass recommendations and your unwatched backlog.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3409,9 +3423,16 @@ struct DiscoverView: View {
                     .foregroundStyle(.secondary)
             }
             if submittedQuery == query && sourceCount > 0 && !searching && failures > 0 {
-                Text("\(failures) source(s) couldn't return results. Other results remain available.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(failures) source(s) couldn't return results. Their titles were not counted as empty results.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(failedSourceNames.joined(separator: " · "))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button("Retry all sources", systemImage: "arrow.clockwise") {
+                        runOnlineSearch()
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
         }
     }
@@ -3464,7 +3485,7 @@ struct DiscoverView: View {
             in: .userDomainMask)[0].appendingPathComponent("KinetiqMedia", isDirectory: true)
         let candidates = (try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: nil)) ?? []
-        let formats: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm"]
+        let formats: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg"]
         localFiles = candidates.filter { formats.contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
@@ -3491,6 +3512,7 @@ struct DiscoverView: View {
         completedSources = 0
         sourceCount = 0
         failures = 0
+        failedSourceNames = []
     }
 
     /// Modules advertise no universal searchResults pagination contract.
@@ -3582,6 +3604,7 @@ struct DiscoverView: View {
         } catch {
             guard !Task.isCancelled, searchToken == token else { return }
             failures += 1
+            failedSourceNames.append(source.title)
         }
     }
 

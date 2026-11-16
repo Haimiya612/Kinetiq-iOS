@@ -1140,6 +1140,22 @@ The audit compared eight GitHub repositories, repository manifests/indexes, sele
 
 <!-- KINETIQ_8_REPO_ROADMAP_2026_11_08_END -->
 
+## All-in-one integration candidate — 2026-11-16
+
+- [x] Candidate source files: Kinetiq Compass (explicit metadata rules, not LLM),
+  local imported unwatched inventory, untouched-favorites radar, opt-in
+  Source Passport links, Travel Vault local-file audit, All-scope local files.
+- [x] Retain existing 06O season downloading / 06P1 exhaustive source search
+  and keep experimental Discord token routing exactly as supplied.
+- [ ] Gate: Xcode iOS simulator compile + `KinetiqCompassContractTests` and
+  existing regression tests on the integrated commit.
+- [ ] Gate: iPhone playback, PiP, offline Airplane Mode, real modules, and
+  Discord status visual verification on that same build.
+- [ ] Future: true AI assistant, verified cross-edition playback handoff,
+  privacy-first sync and device-appropriate re-encoding.
+
+See [All-in-One Experience handoff](ALL_IN_ONE_EXPERIENCE_2026_11_16.md).
+
 # Reference Research
 
 The following public sources inform Kinetiq's product and architecture

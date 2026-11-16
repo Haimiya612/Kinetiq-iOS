@@ -324,6 +324,11 @@ struct SettingsView: View {
 
                 Section("Anime Discovery") {
                     NavigationLink {
+                        KinetiqSmartDiscoveryView()
+                    } label: {
+                        Label("Kinetiq Compass & unwatched files", systemImage: "sparkles")
+                    }
+                    NavigationLink {
                         KinetiqAiringCalendarView()
                     } label: {
                         Label("Anime release calendar", systemImage: "calendar.badge.clock")

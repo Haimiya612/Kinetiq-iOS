@@ -519,6 +519,7 @@ struct KinetiqOfflineDownloadsView: View {
     @StateObject private var store = KinetiqOfflineDownloadStore.shared
     @State private var filter: KinetiqOfflineFilter = .all
     @State private var showingSettings = false
+    @State private var showingTravelVault = false
     @State private var playback: KinetiqOfflineEntry?
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var themeRaw = KinetiqVisualTheme.signature.rawValue
@@ -570,6 +571,9 @@ struct KinetiqOfflineDownloadsView: View {
             .sheet(isPresented: $showingSettings) {
                 KinetiqOfflinePreferencesView()
             }
+            .sheet(isPresented: $showingTravelVault) {
+                NavigationStack { KinetiqTravelVaultView() }
+            }
             .fullScreenCover(item: $playback) { entry in
                 if let url = store.playbackURL(for: entry) {
                     KinetiqOfflinePlayerDestination(entry: entry, url: url,
@@ -592,6 +596,15 @@ struct KinetiqOfflineDownloadsView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                showingTravelVault = true
+            } label: {
+                Image(systemName: "airplane")
+                    .font(.title3)
+                    .frame(width: 44, height: 44)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .accessibilityLabel("Open Travel Vault offline checks")
             Button {
                 showingSettings = true
             } label: {
