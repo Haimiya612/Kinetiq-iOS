@@ -1297,6 +1297,7 @@ struct ModuleGlobalFavoritesView: View {
     @State private var search = ""
     @State private var inProgressOnly = false
     @State private var selectedEntry: ModuleAnimeCollectionEntry?
+    @State private var sourceSearchEntry: ModuleAnimeCollectionEntry?
 
     private var filtered: [ModuleAnimeCollectionEntry] {
         let value = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1432,6 +1433,8 @@ struct ModuleGlobalFavoritesView: View {
                                     }
                                     .buttonStyle(.plain)
 
+                                    sourceSearchButton(entry)
+
                                     Button {
                                         collection.toggleFavorite(
                                             sourceID: entry.sourceID,
@@ -1475,6 +1478,24 @@ struct ModuleGlobalFavoritesView: View {
         .sheet(item: $selectedEntry) { entry in
             ModuleSavedAnimeDetailsHost(entry: entry)
         }
+        .sheet(item: $sourceSearchEntry) { entry in
+            KinetiqCrossSourceSearchChooser(title: entry.title,
+                                            originalSourceID: entry.sourceID)
+        }
+    }
+
+    private func sourceSearchButton(_ entry: ModuleAnimeCollectionEntry) -> some View {
+        Button {
+            sourceSearchEntry = entry
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(KinetiqPalette.accent)
+                .frame(width: 44, height: 44)
+                .background(theme.cardBackground, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Find \(entry.title) on another source")
     }
 
     private func favoriteSpotlight(_ entry: ModuleAnimeCollectionEntry) -> some View {
@@ -1523,6 +1544,10 @@ struct ModuleGlobalFavoritesView: View {
         .contentShape(RoundedRectangle(cornerRadius: theme == .cinema ? 7 : 24))
         .buttonStyle(.plain)
         .accessibilityLabel("Open \(entry.title)")
+        .overlay(alignment: .topTrailing) {
+            sourceSearchButton(entry)
+                .padding(10)
+        }
     }
 
     private var posterGrid: some View {
@@ -1566,6 +1591,7 @@ struct ModuleGlobalFavoritesView: View {
                                 .lineLimit(1)
                         }
                         Spacer()
+                        sourceSearchButton(entry)
                         Button {
                             collection.toggleFavorite(
                                 sourceID: entry.sourceID,
@@ -1588,6 +1614,92 @@ struct ModuleGlobalFavoritesView: View {
         }
     }
 }
+// MARK: - Source search from Favorites, collections, and title details
+
+/// This is a search/navigation choice, not a cross-provider identity merge.
+/// The saved favorite and its source-specific playback history are untouched.
+@MainActor
+struct KinetiqCrossSourceSearchChooser: View {
+    let title: String
+    let originalSourceID: String?
+
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var sources = ModuleSourceStore.shared
+    @StateObject private var packages = ModulePackageStore.shared
+
+    private var trustedVideoSources: [ModuleSourceOption] {
+        sources.availableSources.filter { source in
+            guard source.module.contentType?.lowercased() == "video",
+                  let record = packages.installedModule(for: source) else { return false }
+            return ModuleRuntimeTrustStore.isTrusted(record) &&
+                FileManager.default.fileExists(atPath: record.entryScriptPath) &&
+                FileManager.default.fileExists(atPath: record.manifestPath)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(3)
+                    Text("Your saved favorite and watch progress stay attached to their original module. Choose and verify an alternate result before playing it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Search all installed, trusted sources") {
+                    NavigationLink {
+                        DiscoverView(initialQuery: title, searchesAllSourcesOnOpen: true)
+                    } label: {
+                        Label("Find on All Sources", systemImage: "square.stack.3d.up")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                }
+
+                Section("Search one source") {
+                    if trustedVideoSources.isEmpty {
+                        Text("No trusted video modules are ready. Install and approve a module in Settings first.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(trustedVideoSources) { source in
+                            NavigationLink {
+                                DiscoverView(initialQuery: title,
+                                             searchesAllSourcesOnOpen: true,
+                                             initialSourceID: source.id)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "play.rectangle")
+                                        .foregroundStyle(KinetiqPalette.accent)
+                                    Text(source.title)
+                                        .lineLimit(2)
+                                    Spacer(minLength: 0)
+                                    if source.id == originalSourceID {
+                                        Text("Saved source")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Change Source")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await sources.loadSavedRepositoriesIfNeeded() }
+        }
+        .presentationDetents([.large])
+    }
+}
+
 // MARK: - Remote Continue Watching on Home
 
 @MainActor
@@ -1685,6 +1797,7 @@ struct ModuleSavedAnimeDetailsHost: View {
     @StateObject private var packageStore = ModulePackageStore.shared
     @State private var runtime: SynthetiqModuleRuntime?
     @State private var loadingError: String?
+    @State private var showingAlternateSources = false
 
     var body: some View {
         Group {
@@ -1702,6 +1815,12 @@ struct ModuleSavedAnimeDetailsHost: View {
                     } description: {
                         Text(loadingError)
                     } actions: {
+                        Button {
+                            showingAlternateSources = true
+                        } label: {
+                            Label("Find Another Source", systemImage: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderedProminent)
                         NavigationLink {
                             ModuleSourcesView()
                         } label: {
@@ -1719,6 +1838,10 @@ struct ModuleSavedAnimeDetailsHost: View {
         }
         .task(id: entry.id) {
             await prepareRuntime()
+        }
+        .sheet(isPresented: $showingAlternateSources) {
+            KinetiqCrossSourceSearchChooser(title: entry.title,
+                                            originalSourceID: entry.sourceID)
         }
     }
 

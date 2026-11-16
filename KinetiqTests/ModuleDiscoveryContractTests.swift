@@ -9,6 +9,22 @@ import XCTest
 final class ModuleDiscoveryContractTests: XCTestCase {
     private let baseURL = URL(string: "https://example.org/")!
 
+    func testAllSourceSearchKeepsEveryReturnedMatchingTitle() {
+        let payload: [[String: Any]] = [
+            ["id": "same-id", "href": "/anime/roshidere", "title": "Roshidere"],
+            ["id": "same-id", "href": "/anime/roshidere-alt", "title": "Roshidere"],
+            ["id": "third", "href": "/anime/roshidere-english", "title": "Alya Sometimes Hides Her Feelings in Russian"]
+        ]
+        let decoded = ModuleRuntimeDecoder.searchResults(
+            from: payload, baseURL: baseURL, maximumResults: Int.max
+        )
+        XCTAssertEqual(decoded.count, payload.count)
+        XCTAssertEqual(decoded[0].title, decoded[1].title)
+        XCTAssertEqual(decoded[0].id, decoded[1].id)
+        XCTAssertNotEqual(decoded[0].href, decoded[1].href)
+        XCTAssertEqual(KinetiqCrossSourceSearchPolicy.maximumConcurrentSources, 4)
+    }
+
     @MainActor
     func testCalendarAlertRoutesDirectlyToAllSourceLookup() {
         let payload: [AnyHashable: Any] = [

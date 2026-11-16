@@ -718,7 +718,7 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
             entries[index].error = (error as NSError).code == NSURLErrorCancelled
                 ? "Download canceled."
                 : "Download interrupted. Reopen the episode to retry if its link expired."
-        } else if old.localPath != nil,
+        } else if let path = old.localPath,
                   KinetiqOfflineFileAudit.failureReason(for: old) == nil {
             entries[index].state = .ready
             entries[index].progress = 1

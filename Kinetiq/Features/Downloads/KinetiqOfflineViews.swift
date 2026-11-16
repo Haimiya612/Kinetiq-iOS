@@ -4,6 +4,235 @@ import AVKit
 
 // MARK: - Episode download flow
 
+/// A batch is deliberately bounded. Preparing a season resolves each episode
+/// through its installed module; it does not bulk-fetch or store stream URLs.
+enum KinetiqOfflineBatchPolicy {
+    static let maximumEpisodes = 60
+
+    static func supports(_ episode: ModuleAnimeEpisode, language: String) -> Bool {
+        switch language {
+        case "sub": return episode.subAvailable
+        case "dub": return episode.dubAvailable
+        default: return false
+        }
+    }
+}
+
+// MARK: - Season download flow
+
+@MainActor
+struct KinetiqSeasonDownloadSheet: View {
+    let anime: ModuleAnimeItem
+    let episodes: [ModuleAnimeEpisode]
+    let scopeName: String
+    let sourceID: String
+    let sourceName: String
+    let runtime: SynthetiqModuleRuntime
+
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var downloads = KinetiqOfflineDownloadStore.shared
+    @State private var language = "sub"
+    @State private var isPreparing = false
+    @State private var finished = false
+    @State private var stopped = false
+    @State private var processed = 0
+    @State private var queued = 0
+    @State private var skipped = 0
+    @State private var failures: [String] = []
+    @State private var preparationTask: Task<Void, Never>?
+
+    @AppStorage("kinetiq.offline.defaultQuality")
+    private var qualityRaw = KinetiqOfflineQuality.original.rawValue
+    @AppStorage("kinetiq.offline.customVariant")
+    private var customVariantID = ""
+    @AppStorage("kinetiq.offline.wifiOnly")
+    private var wifiOnly = true
+
+    private var quality: KinetiqOfflineQuality {
+        KinetiqOfflineQuality(rawValue: qualityRaw) ?? .original
+    }
+
+    private var eligibleCount: Int {
+        episodes.filter { KinetiqOfflineBatchPolicy.supports($0, language: language) }.count
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Download selection") {
+                    LabeledContent("Title", value: anime.title)
+                    LabeledContent("Selection", value: scopeName)
+                    LabeledContent("Episodes", value: "\(episodes.count)")
+                    LabeledContent("Available in \(language.uppercased())", value: "\(eligibleCount)")
+                    Label(sourceName, systemImage: "play.rectangle.on.rectangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !isPreparing && !finished {
+                    Section("Episode language") {
+                        Picker("Version", selection: $language) {
+                            Text("Sub").tag("sub")
+                            Text("Dub").tag("dub")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    Section("Download preferences") {
+                        Picker("Quality", selection: $qualityRaw) {
+                            ForEach(KinetiqOfflineQuality.allCases) { option in
+                                Text(option.rawValue).tag(option.rawValue)
+                            }
+                        }
+                        if quality == .custom {
+                            Text("Uses the custom resolution chosen in Episode Downloads when that exact variant is offered; otherwise saves the original.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Toggle("Wi-Fi only", isOn: $wifiOnly)
+                        Text("Quality is applied to each episode's advertised HLS variants. MP4 files cannot be re-encoded by this setting. Custom quality falls back to Original when the saved variant is unavailable.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if isPreparing || finished {
+                    Section("Batch preparation") {
+                        ProgressView(value: Double(processed), total: Double(max(1, episodes.count)))
+                        LabeledContent("Episodes checked", value: "\(processed) / \(episodes.count)")
+                        LabeledContent("Added to download queue", value: "\(queued)")
+                        LabeledContent("Already queued or unavailable in \(language.uppercased())", value: "\(skipped)")
+                        LabeledContent("Resolution / enqueue failures", value: "\(failures.count)")
+                        if isPreparing {
+                            Button("Stop preparing remaining episodes", role: .cancel) {
+                                preparationTask?.cancel()
+                            }
+                        } else {
+                            Label(stopped ? "Stopped preparing remaining episodes" : "Batch preparation finished",
+                                  systemImage: stopped ? "stop.circle" : "checkmark.circle")
+                        }
+                        Text("Episodes already added to Downloads keep transferring in the background. This screen only prepares their queue; it does not mean the videos have finished downloading.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !failures.isEmpty {
+                        Section("Episodes that need attention") {
+                            ForEach(Array(failures.enumerated()), id: \.offset) { _, message in
+                                Text(message).font(.caption)
+                            }
+                        }
+                    }
+                } else if episodes.count > KinetiqOfflineBatchPolicy.maximumEpisodes {
+                    Section {
+                        Label("This selection contains more than \(KinetiqOfflineBatchPolicy.maximumEpisodes) episodes. Select one season or a smaller source list before downloading.",
+                              systemImage: "exclamationmark.triangle")
+                    }
+                } else {
+                    Section {
+                        Button {
+                            isPreparing = true
+                            preparationTask = Task { await prepareBatch() }
+                        } label: {
+                            Label("Queue \(eligibleCount) Episodes", systemImage: "arrow.down.circle.fill")
+                                .frame(maxWidth: .infinity)
+                                .font(.headline)
+                        }
+                        .disabled(eligibleCount == 0)
+                    }
+                    Section {
+                        Text("Only use downloads when the source permits saving its media. Each episode resolves separately; a broken source cannot be converted into a working download by batching it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Download \(scopeName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onDisappear { preparationTask?.cancel() }
+        }
+        .presentationDetents([.large])
+    }
+
+    private func chosenVariant(for stream: ModuleResolvedStream) async -> ModuleVideoQualityOption? {
+        guard quality != .original,
+              KinetiqOfflineEligibility.format(for: stream) == .hls else { return nil }
+        let asset = KinetiqOfflineEligibility.hlsAsset(for: stream)
+        guard let advertised = try? await asset.load(.variants) else { return nil }
+        let options = ModuleVideoQualityCatalog.options(from:
+            advertised.prefix(ModuleVideoQualityCatalog.maximumVariants).compactMap { variant in
+                guard let video = variant.videoAttributes else { return nil }
+                return ModuleVideoQualityVariant(
+                    width: Double(video.presentationSize.width),
+                    height: Double(video.presentationSize.height),
+                    peakBitRate: variant.peakBitRate
+                )
+            }
+        )
+        return KinetiqOfflineEligibility.selectedVariant(
+            options, quality: quality, customID: customVariantID
+        )
+    }
+
+    private func prepareBatch() async {
+        defer {
+            stopped = Task.isCancelled
+            isPreparing = false
+            finished = true
+            preparationTask = nil
+        }
+        for episode in episodes {
+            if Task.isCancelled { break }
+            defer { processed += 1 }
+
+            guard KinetiqOfflineBatchPolicy.supports(episode, language: language) else {
+                skipped += 1
+                continue
+            }
+            if let existing = downloads.entry(sourceID: sourceID, animeID: anime.id,
+                                              episodeID: episode.id, language: language),
+               existing.state != .failed {
+                skipped += 1
+                continue
+            }
+
+            let session = ModuleEpisodePlaybackSession(
+                animeTitle: anime.title, episodes: [episode], runtime: runtime,
+                sourceID: sourceID, animeItem: anime
+            )
+            let resolved = await session.play(episode: episode, language: language)
+            if Task.isCancelled { break }
+            guard resolved else {
+                let explanation = session.playbackError ?? "The module could not resolve a playable stream"
+                failures.append("Episode \(episode.number): \(ModulePlaybackDiagnostics.redact(explanation, limit: 180))")
+                continue
+            }
+            guard let stream = session.availableStreams.first(where: {
+                KinetiqOfflineEligibility.format(for: $0) != nil
+            }) else {
+                failures.append("Episode \(episode.number): No directly downloadable MP4/HLS stream")
+                continue
+            }
+            let variant = await chosenVariant(for: stream)
+            if Task.isCancelled { break }
+            do {
+                try await downloads.enqueue(KinetiqOfflineRequest(
+                    sourceID: sourceID, sourceName: sourceName,
+                    anime: anime, episode: episode, language: language,
+                    stream: stream, quality: quality, variant: variant,
+                    wifiOnly: wifiOnly
+                ))
+                queued += 1
+            } catch {
+                failures.append("Episode \(episode.number): \(ModulePlaybackDiagnostics.redact(error.localizedDescription, limit: 180))")
+            }
+        }
+    }
+}
+
 struct KinetiqEpisodeDownloadSheet: View {
     let anime: ModuleAnimeItem
     let episode: ModuleAnimeEpisode

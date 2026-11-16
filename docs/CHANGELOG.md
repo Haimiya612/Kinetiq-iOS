@@ -1,5 +1,43 @@
 # Kinetiq Changelog
 
+## Unreleased — Batch 06P1 cross-source search and Favorites source choice (16 November 2026)
+
+Prepared against the same `b5e832c` iOS source baseline as Batch 06O.
+This delivery contains the 06O season changes too; CI and iPhone checks are pending.
+
+- Replace sequential all-module search with a rolling pool of at most four
+  concurrently resolving trusted module sources, canceling stale requests.
+- Show every valid item returned by each module, including identical titles
+  and duplicate module IDs; remove the artificial 48-result search cap and
+  10-result saved-title search cap. The runtime's response-size and trust
+  limits stay enforced.
+- Offer Favorites source switching from list, poster grid and spotlight, plus
+  a title-details action and fallback when its original module is unavailable.
+- Allow searching all trusted installed video modules or one chosen module;
+  alternate results require explicit selection before playback.
+- Preserve the original favorite, downloaded items and source-specific watch
+  positions. **Cross-source progress merging is not implemented here.**
+- Add a decoder regression test for repeated titles and IDs.
+
+Details: `docs/BATCH_06P1_SOURCE_SEARCH.md`.
+
+## Unreleased — Batch 06O season queue and roadmap reconciliation (16 November 2026)
+
+Prepared against `b5e832ca0d8d1f6720f06f89df07b6108c81f358`.
+Swift CI compilation and physical iPhone acceptance are **pending**.
+
+- Add `Download Season N` when a module explicitly labels seasons, or
+  `Download All Listed Episodes` for a flat episode catalogue.
+- Prepare up to 60 episode queue entries using existing per-episode resolver,
+  background MP4/HLS transfers, source identity, language, quality, and
+  subtitle handling. Show skipped/failed entries by episode; stopping batch
+  preparation does not cancel already queued downloads.
+- Add a focused season language/limit contract test and document device tests.
+- Reconcile duplicated phase/batch tasks with the current public source;
+  refresh the stale README and add a repository-wide audit record.
+- Propose storage-efficient native offline playback and optional transcoding;
+  **no new compression codec or ZIP-video feature is claimed as implemented**.
+
 ## Unreleased — Batch 03G (7 November 2026)
 
 Prepared against `d065edd9f23347f9f37bbdbb6e9d185909a2ab5c`. Xcode and iPhone verification are pending.

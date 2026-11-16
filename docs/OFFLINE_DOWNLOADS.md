@@ -27,6 +27,15 @@ lawfully keep.
 ## Functional scope
 
 - Per-episode download sheet with sub/dub and real available HLS qualities.
+- Bounded season download sheet reached from an anime's Episodes section.
+  Explicit season identifiers download that season; a flat module episode
+  list offers **All Listed Episodes** instead of inventing season numbers.
+  For each episode the app checks the requested Sub/Dub availability, skips
+  existing nonfailed entries, resolves a separate native MP4/HLS stream, then
+  enqueues it using the ordinary download store. The batch is bounded to
+  60 entries and may be stopped without cancelling already queued transfers.
+  All failures are reported by episode; this operation **prepares a queue**,
+  not a promise that every download has finished successfully.
 - Background URLSession transfers for direct MP4 and AVAssetDownloadURLSession
   for HLS VOD; task identifiers are opaque and contain no stream secrets.
 - Progress, queue, pause/resume, cancel, in-session retry, deletion,
@@ -51,7 +60,14 @@ lawfully keep.
 
 - Test a range of installed modules that return direct MP4/HLS videos;
   a missing `config.offline` object must not block the download sheet.
-- Season batch queues and HEVC transcoding/compression belong to later work.
+- Season queue-preparation code is now present but needs CI and iPhone tests,
+  especially background/resume, source rate limits and bulk storage pressure.
+  Queued requests are persisted individually; an unfinished **season resolver**
+  does not automatically restart after the process is killed.
+- HEVC/AV1 transcoding and a Kinetiq offline container remain separate future
+  work. Repacking MP4/HLS media as ZIP generally provides negligible savings.
+  A storage-saving preset should use an available lower-bitrate rendition or a
+  separately validated, on-device transcode with explicit quality/size tradeoffs.
   Quality presets choose actual HLS variants, not an invented transcoded resolution.
 - All available subtitle tracks are requested, but real multi-language HLS
   retention, external caption rendering and captions in offline PiP still

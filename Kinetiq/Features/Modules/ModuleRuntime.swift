@@ -4531,6 +4531,8 @@ struct ModuleAnimeDetailsView: View {
     @State private var selectedSeason: Int?
     @State private var relatedSelection: ModuleAnimeItem?
     @State private var downloadEpisode: ModuleAnimeEpisode?
+    @State private var showingSeasonDownloads = false
+    @State private var showingAlternateSources = false
 
     @State private var playbackSession: ModuleEpisodePlaybackSession?
     @State private var activeLaunch: ModuleEpisodeLaunch?
@@ -4633,6 +4635,19 @@ struct ModuleAnimeDetailsView: View {
                 )
                 .preferredColorScheme(.dark)
             }
+            .sheet(isPresented: $showingSeasonDownloads) {
+                KinetiqSeasonDownloadSheet(
+                    anime: details ?? item, episodes: seasonDownloadEpisodes,
+                    scopeName: seasonDownloadLabel, sourceID: sourceID,
+                    sourceName: sourceName, runtime: runtime
+                )
+                .preferredColorScheme(.dark)
+            }
+            .sheet(isPresented: $showingAlternateSources) {
+                KinetiqCrossSourceSearchChooser(title: details?.title ?? item.title,
+                                                originalSourceID: sourceID)
+                    .preferredColorScheme(.dark)
+            }
             .fullScreenCover(item: $activeLaunch, onDismiss: {
                 if let report = playbackSession?.playerFailureDiagnostics {
                     lastPlaybackDiagnostics = report
@@ -4729,6 +4744,21 @@ struct ModuleAnimeDetailsView: View {
 
     private var availableSeasons: [Int] {
         Array(Set(episodes.compactMap { seasonNumber(for: $0) })).sorted()
+    }
+
+    /// Use only explicit season labels. When a module provides a flat list,
+    /// offer all listed episodes instead of guessing that they are Season 1.
+    private var effectiveDownloadSeason: Int? {
+        selectedSeason ?? (availableSeasons.count == 1 ? availableSeasons.first : nil)
+    }
+
+    private var seasonDownloadEpisodes: [ModuleAnimeEpisode] {
+        guard let season = effectiveDownloadSeason else { return episodes }
+        return episodes.filter { seasonNumber(for: $0) == season }
+    }
+
+    private var seasonDownloadLabel: String {
+        effectiveDownloadSeason.map { "Season \($0)" } ?? "All Listed Episodes"
     }
 
     private func hasWatched(_ episode: ModuleAnimeEpisode) -> Bool {
@@ -4840,6 +4870,17 @@ struct ModuleAnimeDetailsView: View {
                     .buttonStyle(.bordered)
                 }
             }
+            .tint(detailTheme.accent)
+
+            Button {
+                showingAlternateSources = true
+            } label: {
+                Label("Watch with another source / Search all modules",
+                      systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 38)
+            }
+            .buttonStyle(.bordered)
             .tint(detailTheme.accent)
 
             if let synopsis = details?.synopsis ?? item.synopsis,
@@ -5012,6 +5053,17 @@ struct ModuleAnimeDetailsView: View {
                     .pickerStyle(.menu)
                     .tint(detailTheme.accent)
                 }
+
+                Button {
+                    showingSeasonDownloads = true
+                } label: {
+                    Label("Download \(seasonDownloadLabel) (\(seasonDownloadEpisodes.count))",
+                          systemImage: "square.and.arrow.down.on.square")
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                }
+                .buttonStyle(.bordered)
+                .tint(detailTheme.accent)
+                .disabled(activeLaunch != nil || seasonDownloadEpisodes.isEmpty)
 
                 Picker("Episode filter", selection: $episodeFilter) {
                     ForEach(ModuleEpisodeFilter.allCases) { filter in

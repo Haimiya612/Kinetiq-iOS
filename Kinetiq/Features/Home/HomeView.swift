@@ -2924,9 +2924,16 @@ struct KinetiqAnimeSourceLookupSheet: View {
 }
 
 private struct KinetiqUnifiedSearchHit: Identifiable {
+    // Each accepted provider result has its own row, even when title, href or
+    // ID repeats. Never collapse results across different source modules.
+    let id = UUID()
     let source: ModuleSourceOption
     let item: ModuleAnimeItem
-    var id: String { source.id + "|" + item.id }
+}
+
+enum KinetiqCrossSourceSearchPolicy {
+    // Bound active module runtimes; each may issue its own network requests.
+    static let maximumConcurrentSources = 4
 }
 
 @MainActor
@@ -2963,6 +2970,7 @@ struct DiscoverView: View {
     @State private var searchToken: UUID?
     @State private var searchJobs: [Task<Void, Never>] = []
     @State private var pendingSources: [ModuleSourceOption] = []
+    @State private var activeSearchWorkers = 0
     @State private var batchInFlight = false
     @State private var completedSources = 0
     @State private var sourceCount = 0
@@ -2975,12 +2983,13 @@ struct DiscoverView: View {
     @State private var localFiles: [URL] = []
 
     init(initialQuery: String = "", searchesAllSourcesOnOpen: Bool = false,
-         fallbackQueries: [String] = []) {
+         fallbackQueries: [String] = [], initialSourceID: String? = nil) {
         self.searchesAllSourcesOnOpen = searchesAllSourcesOnOpen
         self.prefilledQuery = initialQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         self.fallbackQueries = Array(fallbackQueries.prefix(2))
         _searchText = State(initialValue: initialQuery)
         _scope = State(initialValue: searchesAllSourcesOnOpen ? .online : .all)
+        _scopedSourceID = State(initialValue: initialSourceID)
     }
 
     private var theme: KinetiqVisualTheme {
@@ -3024,7 +3033,7 @@ struct DiscoverView: View {
             .filter { $0.title.localizedCaseInsensitiveContains(query) ||
                       $0.sourceName.localizedCaseInsensitiveContains(query) }
             .filter { seen.insert($0.id).inserted }
-            .prefix(10).map { $0 }
+            .map { $0 }
     }
     private var showFiles: Bool { scope == .files }
     private var showOnline: Bool { scope == .all || scope == .online }
@@ -3317,6 +3326,11 @@ struct DiscoverView: View {
                     ProgressView()
                 }
             }
+            if submittedQuery == query && !liveMatches.isEmpty {
+                Text("\(liveMatches.count) results · \(completedSources)/\(sourceCount) sources checked. Kinetiq shows every valid result returned; modules may apply their own limits.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if !hasQuery { EmptyView() }
             else if submittedQuery != query {
                 Button {
@@ -3460,6 +3474,7 @@ struct DiscoverView: View {
         searchJobs = []
         searchToken = nil
         pendingSources = []
+        activeSearchWorkers = 0
         batchInFlight = false
         completedSources = sourceCount
     }
@@ -3469,6 +3484,7 @@ struct DiscoverView: View {
         searchJobs = []
         searchToken = nil
         pendingSources = []
+        activeSearchWorkers = 0
         batchInFlight = false
         submittedQuery = ""
         liveMatches = []
@@ -3477,8 +3493,8 @@ struct DiscoverView: View {
         failures = 0
     }
 
-    /// Modules advertise no universal searchResults pagination contract,
-    /// so reveal more trusted sources as users scroll, not invented pages.
+    /// Modules advertise no universal searchResults pagination contract.
+    /// Query every trusted selected source without suppressing duplicate titles.
     private func runOnlineSearch() {
         cancelSearch()
         guard hasQuery else { return }
@@ -3497,80 +3513,76 @@ struct DiscoverView: View {
     }
 
     private func loadNextSearchBatch() {
-        guard !batchInFlight, !pendingSources.isEmpty,
-              let token = searchToken, submittedQuery == query else { return }
-        batchInFlight = true
-        let size = min(3, pendingSources.count)
-        let batch = Array(pendingSources.prefix(size))
-        pendingSources.removeFirst(size)
+        guard let token = searchToken, submittedQuery == query else { return }
         let term = submittedQuery
-        let worker = Task { @MainActor in
-            for source in batch {
+        while activeSearchWorkers < KinetiqCrossSourceSearchPolicy.maximumConcurrentSources,
+              !pendingSources.isEmpty {
+            let source = pendingSources.removeFirst()
+            activeSearchWorkers += 1
+            batchInFlight = true
+            let worker = Task { @MainActor in
+                await searchOneSource(source, term: term, token: token)
                 guard !Task.isCancelled, searchToken == token,
                       submittedQuery == term else { return }
-                guard let record = packages.installedModule(for: source),
-                      ModuleRuntimeTrustStore.isTrusted(record) else {
-                    completedSources += 1
-                    continue
-                }
-                do {
-                    let runtime = try SynthetiqModuleRuntime(record: record)
-                    let payload = try await runtime.call(
-                        handler: "searchResults", arguments: [term]
-                    )
-                    guard !Task.isCancelled, searchToken == token,
-                          submittedQuery == term else { return }
-                    var decoded = ModuleRuntimeDecoder.searchResults(
-                        from: payload, baseURL: runtime.baseURL,
-                        maximumResults: min(runtime.maximumHomeResults, 48)
-                    )
-                    // AniList's English name may differ from the name used
-                    // by a module. Try up to two real aliases only when that
-                    // source returned no result for the displayed query.
-                    if decoded.isEmpty && searchesAllSourcesOnOpen && term == prefilledQuery {
-                        for alternative in fallbackQueries {
-                            guard !Task.isCancelled, searchToken == token else { return }
-                            if let response = try? await runtime.call(
-                                handler: "searchResults", arguments: [alternative]
-                            ) {
-                                let matches = ModuleRuntimeDecoder.searchResults(
-                                    from: response, baseURL: runtime.baseURL,
-                                    maximumResults: min(runtime.maximumHomeResults, 48)
-                                )
-                                if !matches.isEmpty {
-                                    decoded = matches
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    var seenIDs = Set(liveMatches.map(\.id))
-                    var seenTitles = Set(liveMatches.map {
-                        $0.item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                    })
-                    for item in decoded {
-                        let titleKey = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                        let hit = KinetiqUnifiedSearchHit(source: source, item: item)
-                        if !titleKey.isEmpty && seenIDs.insert(hit.id).inserted &&
-                           (searchesAllSourcesOnOpen || seenTitles.insert(titleKey).inserted) {
-                            liveMatches.append(hit)
-                        }
-                    }
-                } catch {
-                    guard !Task.isCancelled, searchToken == token else { return }
-                    failures += 1
-                }
                 completedSources += 1
+                activeSearchWorkers -= 1
+                if pendingSources.isEmpty && activeSearchWorkers == 0 {
+                    batchInFlight = false
+                } else {
+                    // Rolling worker pool: the next source starts as soon as
+                    // any worker completes, without waiting for slow peers.
+                    loadNextSearchBatch()
+                }
             }
-            guard !Task.isCancelled, searchToken == token else { return }
-            batchInFlight = false
-            if (liveMatches.isEmpty || searchesAllSourcesOnOpen) && !pendingSources.isEmpty {
-                loadNextSearchBatch()
-            }
+            searchJobs.append(worker)
         }
-        searchJobs.append(worker)
+    }
+
+    private func searchOneSource(_ source: ModuleSourceOption,
+                                 term: String, token: UUID) async {
+        guard let record = packages.installedModule(for: source),
+              ModuleRuntimeTrustStore.isTrusted(record),
+              FileManager.default.fileExists(atPath: record.entryScriptPath),
+              FileManager.default.fileExists(atPath: record.manifestPath) else { return }
+        do {
+            let runtime = try SynthetiqModuleRuntime(record: record)
+            let payload = try await runtime.call(handler: "searchResults", arguments: [term])
+            guard !Task.isCancelled, searchToken == token,
+                  submittedQuery == term else { return }
+            // Unlike a Home shelf, Search displays every valid item returned
+            // by the bounded runtime response. No title or ID deduplication.
+            var decoded = ModuleRuntimeDecoder.searchResults(
+                from: payload, baseURL: runtime.baseURL,
+                maximumResults: Int.max
+            )
+            if decoded.isEmpty && searchesAllSourcesOnOpen && term == prefilledQuery {
+                for alternative in fallbackQueries {
+                    guard !Task.isCancelled, searchToken == token else { return }
+                    if let response = try? await runtime.call(
+                        handler: "searchResults", arguments: [alternative]
+                    ) {
+                        let matches = ModuleRuntimeDecoder.searchResults(
+                            from: response, baseURL: runtime.baseURL,
+                            maximumResults: Int.max
+                        )
+                        if !matches.isEmpty {
+                            decoded = matches
+                            break
+                        }
+                    }
+                }
+            }
+            guard !Task.isCancelled, searchToken == token,
+                  submittedQuery == term else { return }
+            // One state update per provider avoids a UI re-render for every
+            // search result and keeps duplicate title rows visible.
+            liveMatches.append(contentsOf: decoded.map {
+                KinetiqUnifiedSearchHit(source: source, item: $0)
+            })
+        } catch {
+            guard !Task.isCancelled, searchToken == token else { return }
+            failures += 1
+        }
     }
 
 }

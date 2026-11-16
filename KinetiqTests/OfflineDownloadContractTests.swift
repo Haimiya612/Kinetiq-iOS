@@ -3,6 +3,25 @@ import Foundation
 @testable import Kinetiq
 
 final class OfflineDownloadContractTests: XCTestCase {
+    func testSeasonBatchPolicyKeepsSourceEpisodeAndLanguageIdentity() {
+        let subOnly = ModuleAnimeEpisode(id: "sub-1", number: "1",
+            href: "/episode/1", subAvailable: true, dubAvailable: false)
+        let bilingual = ModuleAnimeEpisode(id: "both-2", number: "2",
+            href: "/episode/2", subAvailable: true, dubAvailable: true)
+        let dubOnly = ModuleAnimeEpisode(id: "dub-3", number: "3",
+            href: "/episode/3", subAvailable: false, dubAvailable: true)
+
+        XCTAssertTrue(KinetiqOfflineBatchPolicy.supports(subOnly, language: "sub"))
+        XCTAssertFalse(KinetiqOfflineBatchPolicy.supports(subOnly, language: "dub"))
+        XCTAssertTrue(KinetiqOfflineBatchPolicy.supports(bilingual, language: "sub"))
+        XCTAssertTrue(KinetiqOfflineBatchPolicy.supports(bilingual, language: "dub"))
+        XCTAssertFalse(KinetiqOfflineBatchPolicy.supports(dubOnly, language: "sub"))
+        XCTAssertTrue(KinetiqOfflineBatchPolicy.supports(dubOnly, language: "dub"))
+        XCTAssertFalse(KinetiqOfflineBatchPolicy.supports(bilingual, language: "unknown"))
+        XCTAssertGreaterThanOrEqual(KinetiqOfflineBatchPolicy.maximumEpisodes, 24)
+        XCTAssertLessThanOrEqual(KinetiqOfflineBatchPolicy.maximumEpisodes, 100)
+    }
+
     private func savedEntry(format: KinetiqOfflineFormat, path: String,
                             captions: [KinetiqSavedSubtitleTrack] = []) -> KinetiqOfflineEntry {
         KinetiqOfflineEntry(

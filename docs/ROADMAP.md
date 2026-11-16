@@ -44,6 +44,59 @@ implementations from other applications.
 
 ---
 
+## Current implementation reconciliation — 16 November 2026
+
+**Baseline:** `Haimiya612/Kinetiq-iOS` commit `b5e832c` (before the season
+queue changes in this delivery). This section supersedes the historical
+"current focus" and provisional batch statements later in this document;
+the 8-repository engineering programme remains a historical research record.
+
+- [x] Four-tab navigation, Home local-library access, module picker, and
+  Video/Manga selector exist in SwiftUI. Manga mode still contains placeholder UI.
+- [x] Episode download manager, per-episode MP4/HLS queue creation, HLS
+  advertised-quality selection, external subtitle sidecars, and offline
+  player routing exist in source. **This is an implementation check, not a
+  successful offline-device acceptance.**
+- [x] Eight-source *catalogue aggregation* exists in the separate
+  `Kinetiq-Modules` repository: 152 catalogue entries, 43 video ZIP candidates
+  as of its checked-in verification snapshot; five Node catalogue tests pass.
+  This does **not** mean 152 installable or functioning modules.
+- [ ] Confirm manual MP4/HLS episode download, Airplane Mode, restart,
+  cancellation, storage quotas, and subtitle playback on a physical iPhone.
+- [ ] Confirm batch season queue preparation, per-episode failure handling,
+  valid HLS quality selections, Wi-Fi policy and rate-limit behavior on iPhone.
+- [ ] Design and benchmark optional Kinetiq storage-efficient offline media:
+  selected source renditions first, then tested HEVC encoding when permitted;
+  do not promise lossless dramatic ZIP size reductions.
+- [ ] Design a shared media identity linking modules, imported local files,
+  downloaded episodes, watch history and metadata without guessing matches.
+- [x] Add an initial cross-source search engine with bounded parallel module
+  requests, all returned valid title results visible, and a Favorites source
+  chooser (Batch 06P1 source implementation; requires iPhone acceptance).
+- [ ] Verify four-worker search under slow/failed modules, source-only search,
+  cancellation, unfiltered duplicate titles, and Favorites switching on iPhone.
+
+**Duplicate-task ownership rule:** A capability has one implementation owner.
+Other roadmap phases may document cross-cutting acceptance criteria, but must
+not trigger a second implementation of the same component.
+
+| Repeated or overlapping scope | Canonical owner | What remains distinct |
+| --- | --- | --- |
+| Phase 1 and Phase 3 Home/navigation/library merge | Phase 1 navigation and Phase 3 library data | User data, collections, and local/module media identity remain Phase 3/06P |
+| Phase 2 and Phase 6 quality, subtitles, PiP, player retry | Phase 2 native player | Phase 6 supplies verified remote streams, headers and safe server fallback |
+| Phase 4 discovery and 05J/05K/06Q discovery work | Phase 4/06Q | Metadata matching and live all-source results still require tests |
+| Phase 5 repository updates and 05L–05O/06S | Phase 5/06S | Publisher signatures, rollback and native runtime security are not proven by catalogue aggregation |
+| Phase 10 episode downloads and 06K/06N/06O | Phase 10/06O | Existing manual download code needs offline acceptance; season queue is an extension |
+| Phase 11 themes and earlier design batches | Phase 11 | Full-screen layout/theme regressions require separate device checks |
+| 07A eight-source catalogue and Phase 7 manga | Separate `Kinetiq-Modules` catalogue (already created) | Phase 7 in this iOS roadmap still means building the reader, not repeating the catalogue merge |
+
+`Kinetiq` (the Kotlin/Quest project) is a separate platform and should not
+be counted as iOS phase completion. `VRPQuest` is a fork and not an iOS
+implementation deliverable. See `ROADMAP_RECONCILIATION_2026-11-16.md` for
+the evidence and remaining acceptance gates.
+
+---
+
 # Phase 1 -- Foundation & Application Architecture
 
 **Goal:** Establish a reliable foundation for the entire application.
@@ -64,10 +117,10 @@ implementations from other applications.
 
 ## Development Infrastructure
 
-- [ ] Refine the primary navigation around four destinations: Home, Favorites, Downloads, and Settings.
-- [ ] Merge the local Library experience into Home instead of dedicating a bottom-navigation destination to it.
-- [ ] Add a source/module picker at the top of Home, below the Dynamic Island and safe-area region.
-- [ ] Add a Video/Manga mode switch directly below the source picker.
+- [x] Refine the primary navigation around four destinations: Home, Favorites, Downloads, and Settings.
+- [x] Merge the local Library experience into Home instead of dedicating a bottom-navigation destination to it.
+- [x] Add a source/module picker at the top of Home, below the Dynamic Island and safe-area region.
+- [x] Add a Video/Manga mode switch directly below the source picker (manga content remains planned).
 - [ ] Keep the navigation architecture extensible for a future fifth destination.
 
 - [x] Configure the GitHub repository.
@@ -193,12 +246,12 @@ system.
 
 ## Organization
 
-- [ ] Merge the local Library into the Home experience while retaining a dedicated in-Home library destination/view.
-- [ ] Implement the Home source/module picker.
-- [ ] Implement the Video/Manga mode switch beneath the source picker.
+- [x] Merge the local Library into the Home experience while retaining a dedicated in-Home library destination/view (same implemented navigation as Phase 1).
+- [x] Implement the Home source/module picker (same implemented control as Phase 1).
+- [x] Implement the Video/Manga mode switch beneath the source picker (same implemented control as Phase 1; no reader yet).
 - [ ] Implement media categories.
-- [ ] Implement the Favorites destination and its saved-media collection.
-- [ ] Implement favorites for local media and, later, module-provided media.
+- [x] Implement the Favorites destination and its saved-media collection.
+- [x] Implement favorites for local media and module-provided media (unified title identity remains open).
 - [ ] Implement custom collections.
 - [ ] Implement playlists for local video.
 - [ ] Add sorting options.
@@ -567,17 +620,17 @@ and devices.
 
 ## Downloads
 
-- [ ] Add Downloads as a primary bottom-navigation destination.
-- [ ] Implement a download manager.
-- [ ] Support download queues.
-- [ ] Display download progress.
-- [ ] Support pausing downloads.
-- [ ] Support resuming downloads.
-- [ ] Support cancelling downloads.
+- [x] Add Downloads as a primary bottom-navigation destination.
+- [x] Implement a download manager (source implementation; on-device verification pending).
+- [x] Support download queues (source implementation; on-device verification pending).
+- [x] Display download progress (source implementation; on-device verification pending).
+- [x] Support pausing downloads (source implementation; on-device verification pending).
+- [x] Support resuming downloads (source implementation; on-device verification pending).
+- [x] Support cancelling downloads (source implementation; on-device verification pending).
 - [ ] Resume interrupted downloads.
-- [ ] Validate downloaded files.
-- [ ] Display download sizes.
-- [ ] Add storage management.
+- [x] Validate downloaded files (MP4/partial-file and HLS package checks exist; real-media QA pending).
+- [x] Display download sizes (recorded completed bytes).
+- [x] Add storage management (quota controls and deletion; actual quota enforcement under pressure needs device QA).
 - [ ] Support offline playback.
 
 ## Synchronization
