@@ -84,6 +84,7 @@ struct KinetiqDiscordPresenceSettingsView: View {
             Section("Connection") {
                 LabeledContent("Status", value: presence.connection.rawValue)
                 LabeledContent("Last stage", value: presence.connectionStage)
+                LabeledContent("Playback sync", value: presence.playbackSyncStatus)
                 Text(presence.message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -126,6 +127,9 @@ struct KinetiqDiscordPresenceSettingsView: View {
                         Text(sentAt, style: .time)
                     }
                 }
+                Text("Rapid +10s taps and slider jumps are combined into one settled update. Presence refreshes obey a conservative rolling rate limit; the activity can briefly trail the player while a seek is in progress.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Current activity preview") {

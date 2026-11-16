@@ -250,16 +250,53 @@ enum KinetiqTMDBCredentials {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
-        guard let value, !value.isEmpty else { return true }
-        var record = query
-        record[kSecValueData as String] = Data(value.utf8)
-        return SecItemAdd(record as CFDictionary, nil) == errSecSuccess
+        guard let value, !value.isEmpty else {
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        // Match the existing Discord credential policy. Do not keep this
+        // secret in UserDefaults, a settings export, a log, or a shared file.
+        // Updating an existing item in place also preserves its last good
+        // value if Keychain temporarily refuses the replacement.
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
+        var newItem = query
+        attributes.forEach { newItem[$0.key] = $0.value }
+        return SecItemAdd(newItem as CFDictionary, nil) == errSecSuccess
     }
 }
 
 actor KinetiqTMDBEpisodeService {
     static let shared = KinetiqTMDBEpisodeService()
+    enum TokenCheck: Sendable {
+        case accepted
+        case rejected
+        case temporarilyUnavailable
+    }
+
+    /// Validate a user's own API Read Access Token without exposing it in a
+    /// query parameter, UI diagnostic or shared application configuration.
+    func validateAccessToken(_ token: String) async -> TokenCheck {
+        guard let url = URL(string: "https://api.themoviedb.org/3/authentication") else {
+            return .temporarilyUnavailable
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return .temporarilyUnavailable }
+        switch http.statusCode {
+        case 200: return .accepted
+        case 401, 403: return .rejected
+        default: return .temporarilyUnavailable
+        }
+    }
+
     private struct CacheItem {
         let expiresAt: Date
         let episodes: [Int: KinetiqEpisodeSupplement]
@@ -386,9 +423,18 @@ struct KinetiqDetailArtworkHero: View {
 struct KinetiqMetadataSettingsView: View {
     @AppStorage("kinetiq.metadata.anilistEnabled") private var anilistEnabled = true
     @AppStorage("kinetiq.metadata.tmdbEnabled") private var tmdbEnabled = false
+    @AppStorage("kinetiq.metadata.tmdbPreferenceConfigured") private var tmdbPreferenceConfigured = false
     @State private var keyInput = ""
     @State private var hasTMDBKey = false
+    @State private var isValidatingTMDBKey = false
     @State private var message: String?
+
+    private var tmdbBinding: Binding<Bool> {
+        Binding(
+            get: { tmdbEnabled },
+            set: { tmdbEnabled = $0; tmdbPreferenceConfigured = true }
+        )
+    }
 
     var body: some View {
         Form {
@@ -398,30 +444,52 @@ struct KinetiqMetadataSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Optional TMDB episode information") {
-                Toggle("Use TMDB when configured", isOn: $tmdbEnabled)
+                Toggle("Use TMDB when configured", isOn: tmdbBinding)
                 SecureField("TMDB API read access token", text: $keyInput)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .privacySensitive()
                 Button("Save API token") {
                     let value = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     if KinetiqTMDBCredentials.save(value.isEmpty ? nil : value) {
                         hasTMDBKey = !value.isEmpty
                         keyInput = ""
-                        message = hasTMDBKey ? "Token saved securely on this iPhone." : "Saved token removed."
+                        tmdbPreferenceConfigured = true
+                        if hasTMDBKey {
+                            tmdbEnabled = false
+                            message = "Token saved securely. Checking TMDB access…"
+                            verifySavedToken(value)
+                        } else {
+                            tmdbEnabled = false
+                            message = "Saved token removed. TMDB enrichment disabled."
+                        }
                     } else {
                         message = "Unable to save to iOS Keychain."
                     }
                 }
+                .disabled(isValidatingTMDBKey)
                 if hasTMDBKey {
+                    Label("Saved in this iPhone's Keychain", systemImage: "key.horizontal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Check TMDB API access") {
+                        if let token = KinetiqTMDBCredentials.token() {
+                            verifySavedToken(token)
+                        }
+                    }
+                    .disabled(isValidatingTMDBKey)
                     Button("Remove saved TMDB token", role: .destructive) {
                         if KinetiqTMDBCredentials.save(nil) {
                             hasTMDBKey = false
-                            message = "Saved token removed."
+                            tmdbEnabled = false
+                            tmdbPreferenceConfigured = true
+                            message = "Saved token removed. TMDB enrichment disabled."
                         }
                     }
                 }
+                if isValidatingTMDBKey { ProgressView("Checking TMDB access…") }
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
-                Text("TMDB is optional and requires your own API read token. Only uniquely matched series and seasons receive episode metadata.")
+                Text("TMDB is optional and requires your own API Read Access Token; Kinetiq does not provide one. A verified token automatically enables TMDB enrichment. Keychain storage survives normal app updates; retention after uninstalling and reinstalling is not guaranteed, especially if signing identity changes. Only uniquely matched series and seasons receive episode metadata.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Metadata credits") {
@@ -432,6 +500,43 @@ struct KinetiqMetadataSettingsView: View {
             }
         }
         .navigationTitle("Episode Metadata")
-        .task { hasTMDBKey = KinetiqTMDBCredentials.token() != nil }
+        .task {
+            let saved = KinetiqTMDBCredentials.token()
+            hasTMDBKey = saved != nil
+            if let saved, !tmdbPreferenceConfigured {
+                // A reinstall can reset UserDefaults while the same app's
+                // Keychain access group still contains the user's credential.
+                // Verify it once before enabling metadata again.
+                message = "Previously saved token found in Keychain. Verifying access…"
+                verifySavedToken(saved)
+            } else if saved == nil, tmdbEnabled {
+                tmdbEnabled = false
+                message = "No TMDB token is available. Re-enter your personal token."
+            }
+        }
+    }
+
+    private func verifySavedToken(_ token: String) {
+        guard !isValidatingTMDBKey else { return }
+        isValidatingTMDBKey = true
+        Task { @MainActor in
+            let result = await KinetiqTMDBEpisodeService.shared.validateAccessToken(token)
+            isValidatingTMDBKey = false
+            // The user may have removed or replaced the credential while the
+            // network request was running. Never re-enable a removed token.
+            guard KinetiqTMDBCredentials.token() == token else { return }
+            switch result {
+            case .accepted:
+                tmdbEnabled = true
+                tmdbPreferenceConfigured = true
+                message = "TMDB access verified. Episode enrichment is enabled automatically."
+            case .rejected:
+                tmdbEnabled = false
+                tmdbPreferenceConfigured = true
+                message = "TMDB rejected this token. Enter the API Read Access Token, not the shorter API key."
+            case .temporarilyUnavailable:
+                message = "Could not verify TMDB access. The token remains saved; check your connection and retry."
+            }
+        }
     }
 }

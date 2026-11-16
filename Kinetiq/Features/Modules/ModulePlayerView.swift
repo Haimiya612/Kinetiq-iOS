@@ -738,6 +738,37 @@ struct KinetiqModulePlayerView: View {
 
 // MARK: - Module Player Options Sheet
 
+/// Isolated from the rest of the player options so frequent playback-presence
+/// observations do not invalidate unrelated controls or subtitle settings.
+@MainActor
+private struct ModuleDiscordResyncControl: View {
+    @ObservedObject private var presence = KinetiqDiscordPresenceManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                presence.resyncCurrentPlayback()
+            } label: {
+                Label("Resync current playback", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(!presence.enabled || presence.connection != .connected ||
+                      presence.lastPreview == nil)
+            .accessibilityHint("Requests an updated Discord activity for the current episode while respecting rate limits")
+
+            Text(presence.enabled ? presence.playbackSyncStatus :
+                "Enable Discord Presence Lab in Settings to use this control.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.58))
+        }
+    }
+}
+
 /// Mirrors the Library player's glass bottom sheet; every selectable
 /// control is connected to the module AVPlayer or module episode session.
 @MainActor
@@ -1108,6 +1139,14 @@ private struct ModulePlayerOptionsSheet: View {
                         .foregroundStyle(.white)
                     }
                 }
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("DISCORD PRESENCE")
+                ModuleDiscordResyncControl()
 
                 Rectangle()
                     .fill(.white.opacity(0.09))
@@ -1725,6 +1764,11 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var recoveryTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
+    /// AVPlayer's asynchronous seek may not finish before another +10s tap.
+    /// Keep the requested destination separate from the last observed frame.
+    private weak var pendingSeekItem: AVPlayerItem?
+    private var pendingSeekTarget: Double?
+    private var seekRevision = 0
     private var manifestProbeTasks: [Task<Void, Never>] = []
     private var manifestProbedHosts = Set<String>()
 
@@ -1985,6 +2029,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
               lastStreamID != stream.id || bridge != nil || nativeBridge != nil else {
             return
         }
+        pendingSeekTarget = nil
+        pendingSeekItem = nil
+        seekRevision += 1
         if bridge == nil {
             nativeBridgeTask?.cancel()
             nativeBridgeTask = nil
@@ -2729,7 +2776,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func seek(by seconds: Double) {
-        seek(to: currentTime + seconds)
+        let base = pendingSeekItem === player.currentItem
+            ? (pendingSeekTarget ?? currentTime) : currentTime
+        seek(to: base + seconds)
     }
 
     func seek(to seconds: Double) {
@@ -2738,6 +2787,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         let target = min(max(seconds, 0), duration)
         let time = CMTime(seconds: target, preferredTimescale: 600)
+        pendingSeekItem = item
+        pendingSeekTarget = target
+        seekRevision += 1
+        let revision = seekRevision
 
         player.seek(
             to: time,
@@ -2745,8 +2798,16 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             toleranceAfter: .zero
         ) { [weak self] finished in
             Task { @MainActor [weak self] in
-                guard finished, let self,
-                      self.player.currentItem === item else { return }
+                guard let self, self.player.currentItem === item,
+                      self.seekRevision == revision else { return }
+                self.pendingSeekTarget = nil
+                self.pendingSeekItem = nil
+                guard finished else { return }
+                let actual = self.player.currentTime().seconds
+                if actual.isFinite, actual >= 0 {
+                    self.currentTime = actual
+                    if !self.isScrubbing { self.scrubPosition = actual }
+                }
                 self.externalSubtitles.updatePlaybackTime(self.player.currentTime().seconds)
                 self.persistCurrentProgress()
             }
@@ -2919,6 +2980,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     func stop() {
         guard !hasStopped else { return }
+        pendingSeekTarget = nil
+        pendingSeekItem = nil
+        seekRevision += 1
         savePlaybackProgress(force: true)
         hasStopped = true
 

@@ -442,6 +442,40 @@ private enum KinetiqDiscordCredentialStore {
     }
 }
 
+/// The personal Gateway activity path shares Discord's game-status update
+/// budget. Use a conservative rolling window and coalesce seek bursts instead
+/// of submitting one presence packet for every +10s tap or slider movement.
+enum KinetiqPresenceSyncPolicy {
+    static let seekSettleDelay: TimeInterval = 1.25
+    static let minimumUpdateSpacing: TimeInterval = 5
+    static let rollingWindow: TimeInterval = 20
+    static let maximumUpdatesPerWindow = 4
+
+    static func nextAllowedDate(after now: Date, attempts: [Date]) -> Date {
+        let recent = attempts.filter {
+            now.timeIntervalSince($0) >= 0 && now.timeIntervalSince($0) < rollingWindow
+        }.sorted()
+        var allowed = now
+        if let last = attempts.max() {
+            allowed = max(allowed, last.addingTimeInterval(minimumUpdateSpacing))
+        }
+        if recent.count >= maximumUpdatesPerWindow {
+            allowed = max(allowed, recent[recent.count - maximumUpdatesPerWindow]
+                .addingTimeInterval(rollingWindow + 0.1))
+        }
+        return allowed
+    }
+
+    static func isSeek(
+        previous: TimeInterval, current: TimeInterval,
+        elapsed: TimeInterval, wasPlaying: Bool
+    ) -> Bool {
+        guard previous.isFinite, current.isFinite else { return false }
+        let predicted = previous + (wasPlaying ? max(0, elapsed) : 0)
+        return abs(current - predicted) >= 3
+    }
+}
+
 @MainActor
 final class KinetiqDiscordPresenceManager: ObservableObject {
     static let shared = KinetiqDiscordPresenceManager()
@@ -479,6 +513,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var lastSentAt: Date?
     @Published private(set) var publicPosterURL: URL?
     @Published private(set) var artworkResolutionStatus = "No poster submitted."
+    @Published private(set) var playbackSyncStatus = "Waiting for playback."
 
     var artworkPreviewURL: URL? { selectedArtworkURL }
 
@@ -506,6 +541,16 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private var lastPublication = Date.distantPast
     private var lastPublishedPosition: TimeInterval?
     private var lastPreviewRecordedAt = Date.distantPast
+    private var previousPlaybackSample: (key: String, position: TimeInterval,
+                                         date: Date, playing: Bool)?
+    private var lastSeekObservedAt: Date?
+    private var presenceSendAttempts: [Date] = []
+    private var presenceSendTask: Task<Void, Never>?
+    private var scheduledPresenceTask: Task<Void, Never>?
+    private var scheduledPresenceAt: Date?
+    private var pendingForcedPublication = false
+    private var forcedPublicationRevision = 0
+    private var failedPublicationRetryAt = Date.distantPast
     private var foregroundObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var lastBackgroundAt: Date?
@@ -705,6 +750,17 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private func closeTransport() {
         generation += 1
+        scheduledPresenceTask?.cancel()
+        scheduledPresenceTask = nil
+        scheduledPresenceAt = nil
+        presenceSendTask?.cancel()
+        presenceSendTask = nil
+        presenceSendAttempts.removeAll()
+        pendingForcedPublication = false
+        failedPublicationRetryAt = .distantPast
+        lastSeekObservedAt = nil
+        previousPlaybackSample = nil
+        playbackSyncStatus = "Waiting for Gateway connection."
         artworkRegistrationTask?.cancel()
         artworkRegistrationTask = nil
         artworkRegistrationURL = nil
@@ -723,8 +779,20 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     func record(_ snapshot: KinetiqPresencePlayback) {
         guard enabled else { return }
+        let now = Date()
+        let sampleKey = "\(snapshot.animeTitle)|\(snapshot.episodeNumber)|\(snapshot.language)"
+        if let previous = previousPlaybackSample, previous.key == sampleKey,
+           KinetiqPresenceSyncPolicy.isSeek(
+               previous: previous.position, current: snapshot.position,
+               elapsed: now.timeIntervalSince(previous.date), wasPlaying: previous.playing
+           ) {
+            lastSeekObservedAt = now
+        } else if previousPlaybackSample?.key != sampleKey {
+            lastSeekObservedAt = nil
+        }
+        previousPlaybackSample = (sampleKey, snapshot.position, now, snapshot.isPlaying)
         lastPreview = snapshot
-        lastPreviewRecordedAt = Date()
+        lastPreviewRecordedAt = now
         prepareArtwork(for: snapshot)
         guard connection == .connected else { return }
         publishIfNeeded(force: false)
@@ -732,6 +800,13 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     func playbackEnded() {
         guard enabled else { return }
+        scheduledPresenceTask?.cancel()
+        scheduledPresenceTask = nil
+        scheduledPresenceAt = nil
+        pendingForcedPublication = false
+        previousPlaybackSample = nil
+        lastSeekObservedAt = nil
+        playbackSyncStatus = "Playback ended."
         lastPreview = nil
         publicPosterURL = nil
         artworkRegistrationTask?.cancel()
@@ -744,7 +819,15 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         artworkLookupTask = nil
         lastSignature = nil
         guard let socket, connection == .connected else { return }
-        Task { try? await Self.send(KinetiqDiscordActivity.clearPayload, on: socket) }
+        let sendTask = presenceSendTask
+        let connectionGeneration = generation
+        Task { @MainActor [weak self] in
+            // A clear packet must follow any already-running activity send.
+            await sendTask?.value
+            guard let self, self.generation == connectionGeneration,
+                  self.lastPreview == nil, self.connection == .connected else { return }
+            try? await Self.send(KinetiqDiscordActivity.clearPayload, on: socket)
+        }
     }
 
     /// Manual preview publishing is useful to isolate Discord acceptance from
@@ -765,8 +848,19 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         publishIfNeeded(force: true)
     }
 
+    /// A user-initiated refresh still obeys the same rolling update budget.
+    /// It is useful after iOS resumes a long PiP or foreground session.
+    func resyncCurrentPlayback() {
+        guard enabled, connection == .connected, lastPreview != nil else { return }
+        publishIfNeeded(force: true)
+    }
+
     private func publishIfNeeded(force: Bool) {
         guard let socket, connection == .connected, let lastPreview else { return }
+        if force {
+            pendingForcedPublication = true
+            forcedPublicationRevision += 1
+        }
         ensureRegisteredPoster()
         let now = Date()
         let age = max(0, now.timeIntervalSince(lastPreviewRecordedAt))
@@ -791,27 +885,89 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
             ? min(expectedUnclamped, adjusted.duration) : expectedUnclamped
         let seeked = lastPublishedPosition != nil && abs(position - expectedPosition) >= 4
-        if !force, signature == lastSignature, elapsed < 30, !seeked { return }
-        lastSignature = signature
-        lastPublication = now
-        lastPublishedPosition = position
+        if !pendingForcedPublication, signature == lastSignature,
+           elapsed < 30, !seeked {
+            scheduledPresenceTask?.cancel()
+            scheduledPresenceTask = nil
+            scheduledPresenceAt = nil
+            playbackSyncStatus = "Synchronized with the last submitted position."
+            return
+        }
+        // Serialize activity packets. Otherwise a slow WebSocket send can
+        // overtake a newer seek and leave Discord displaying a stale timer.
+        guard presenceSendTask == nil else { return }
+
+        var allowedAt = KinetiqPresenceSyncPolicy.nextAllowedDate(
+            after: now, attempts: presenceSendAttempts
+        )
+        if seeked, let lastSeekObservedAt {
+            allowedAt = max(allowedAt, lastSeekObservedAt.addingTimeInterval(
+                KinetiqPresenceSyncPolicy.seekSettleDelay))
+        }
+        allowedAt = max(allowedAt, failedPublicationRetryAt)
+        if allowedAt.timeIntervalSince(now) > 0.05 {
+            schedulePresencePublish(at: allowedAt)
+            playbackSyncStatus = seeked && lastSeekObservedAt.map({
+                $0.addingTimeInterval(KinetiqPresenceSyncPolicy.seekSettleDelay) > now
+            }) == true ? "Settling rapid seek changes…" : "Update queued within Discord's rate limit."
+            return
+        }
+        scheduledPresenceTask?.cancel()
+        scheduledPresenceTask = nil
+        scheduledPresenceAt = nil
         let payload = KinetiqDiscordActivity.payload(
             for: adjusted, now: now, posterOverride: publicPosterURL,
             activityType: activityType, streamingURL: streamingURL,
             nameStyle: nameStyle, registeredPosterKey: posterAssetKey,
             mediaProxyPoster: artworkRegistrationURL == selectedArtworkURL ? registeredMediaProxy : nil
         )
+        presenceSendAttempts.removeAll { now.timeIntervalSince($0) >= KinetiqPresenceSyncPolicy.rollingWindow }
+        presenceSendAttempts.append(now)
         let connectionGeneration = generation
-        Task { @MainActor [weak self] in
+        let sentRevision = forcedPublicationRevision
+        playbackSyncStatus = "Submitting latest playback position…"
+        presenceSendTask = Task { @MainActor [weak self] in
             do {
                 try await Self.send(payload, on: socket)
-                guard self?.generation == connectionGeneration else { return }
-                self?.lastSentAt = Date()
-                self?.message = "Activity submitted. Check visibility from another Discord account."
+                guard let self, self.generation == connectionGeneration else { return }
+                self.lastSignature = signature
+                self.lastPublication = now
+                self.lastPublishedPosition = position
+                self.lastSentAt = Date()
+                if self.forcedPublicationRevision == sentRevision {
+                    self.pendingForcedPublication = false
+                }
+                self.failedPublicationRetryAt = .distantPast
+                self.playbackSyncStatus = "Latest activity submitted."
+                self.message = "Activity submitted. Check visibility from another Discord account."
             } catch {
-                guard self?.generation == connectionGeneration else { return }
-                self?.message = "Presence update could not be sent. Reconnect and retry."
+                guard let self, self.generation == connectionGeneration else { return }
+                self.failedPublicationRetryAt = Date().addingTimeInterval(10)
+                self.playbackSyncStatus = "Submission failed; retry queued."
+                self.message = "Presence update could not be sent. Will retry if connected."
             }
+            guard let self, self.generation == connectionGeneration else { return }
+            self.presenceSendTask = nil
+            self.publishIfNeeded(force: false)
+        }
+    }
+
+    private func schedulePresencePublish(at date: Date) {
+        if let scheduledPresenceAt,
+           abs(scheduledPresenceAt.timeIntervalSince(date)) < 0.15 { return }
+        scheduledPresenceTask?.cancel()
+        scheduledPresenceAt = date
+        let connectionGeneration = generation
+        scheduledPresenceTask = Task { @MainActor [weak self] in
+            let delay = max(0, date.timeIntervalSinceNow)
+            do {
+                try await Task.sleep(for: .milliseconds(Int64((delay * 1_000).rounded(.up))))
+            } catch { return }
+            guard let self, !Task.isCancelled,
+                  self.generation == connectionGeneration else { return }
+            self.scheduledPresenceTask = nil
+            self.scheduledPresenceAt = nil
+            self.publishIfNeeded(force: false)
         }
     }
 

@@ -271,6 +271,53 @@ final class DiscordPresenceContractTests: XCTestCase {
         ), "Pressing Pause must win even before AVPlayer catches up")
     }
 
+    func testRapidSeeksAreDetectedWithoutTreatingNormalPlaybackAsASeek() {
+        XCTAssertFalse(KinetiqPresenceSyncPolicy.isSeek(
+            previous: 100, current: 100.25, elapsed: 0.25, wasPlaying: true
+        ))
+        XCTAssertTrue(KinetiqPresenceSyncPolicy.isSeek(
+            previous: 100, current: 110, elapsed: 0.2, wasPlaying: true
+        ))
+        XCTAssertTrue(KinetiqPresenceSyncPolicy.isSeek(
+            previous: 150, current: 55, elapsed: 0.2, wasPlaying: true
+        ), "Slider jumps backwards must also trigger a settled update")
+        XCTAssertFalse(KinetiqPresenceSyncPolicy.isSeek(
+            previous: 100, current: 100, elapsed: 0.5, wasPlaying: false
+        ))
+    }
+
+    func testDiscordPresenceUpdateBudgetCoalescesBursts() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let attempts = [0, 5, 10, 15].map { start.addingTimeInterval(Double($0)) }
+        let duringBurst = start.addingTimeInterval(16)
+        let permitted = KinetiqPresenceSyncPolicy.nextAllowedDate(
+            after: duringBurst, attempts: attempts
+        )
+        XCTAssertGreaterThanOrEqual(permitted.timeIntervalSince(start), 20.1 - 0.001)
+        XCTAssertLessThan(permitted.timeIntervalSince(start), 20.2)
+
+        let later = start.addingTimeInterval(24)
+        XCTAssertEqual(KinetiqPresenceSyncPolicy.nextAllowedDate(
+            after: later, attempts: attempts
+        ), later, "A settled seek must be able to publish after the window resets")
+    }
+
+    func testLatestSeekPayloadAnchorsNewPlaybackClock() throws {
+        let jumped = KinetiqPresencePlayback(
+            animeTitle: "Blue Box Season 2", episodeNumber: "3",
+            episodeTitle: "A New Promise", language: "sub",
+            posterURL: nil, position: 540, duration: 1_440,
+            isPlaying: true, isPictureInPicture: false
+        )
+        let submittedAt = Date(timeIntervalSince1970: 2_000)
+        let value = KinetiqDiscordActivity.payload(for: jumped, now: submittedAt)
+        let body = try XCTUnwrap(value["d"] as? [String: Any])
+        let activity = try XCTUnwrap((body["activities"] as? [[String: Any]])?.first)
+        let timestamps = try XCTUnwrap(activity["timestamps"] as? [String: Int])
+        XCTAssertEqual(timestamps["start"], 1_460_000)
+        XCTAssertEqual(timestamps["end"], 2_900_000)
+    }
+
     func testEpisodeTitleFallsBackForGenericTitlesAndReservesLanguageSuffix() {
         let generic = KinetiqPresencePlayback(
             animeTitle: "Anime", episodeNumber: "1", episodeTitle: "Episode 1",
