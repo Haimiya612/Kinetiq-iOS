@@ -129,6 +129,10 @@ enum KinetiqDiscordActivity {
               let host = url.host?.lowercased(),
               host != "localhost", !host.hasSuffix(".local"),
               host != "127.0.0.1", host != "::1",
+              host.contains("."), !host.hasSuffix(".localhost"),
+              !host.hasSuffix(".internal"), !host.hasSuffix(".lan"),
+              !host.hasSuffix(".invalid"), !host.hasSuffix(".test"),
+              host.rangeOfCharacter(from: .letters) != nil,
               url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil,
               url.absoluteString.count <= 400 else { return nil }
@@ -158,6 +162,19 @@ enum KinetiqDiscordActivity {
         return key
     }
 
+    /// An external image is not an uploaded Developer Portal asset. The
+    /// unofficial Gateway path requires the media-proxy identifier returned
+    /// by Discord's external-assets endpoint; an ordinary HTTPS URL often
+    /// leaves the activity text visible while rendering no image.
+    static func mediaProxyAsset(_ input: String?) -> String? {
+        guard let input,
+              input.hasPrefix("mp:external/"),
+              (13...300).contains(input.utf8.count),
+              !input.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) })
+        else { return nil }
+        return input
+    }
+
     static func payload(
         for playback: KinetiqPresencePlayback,
         now: Date = Date(),
@@ -165,7 +182,8 @@ enum KinetiqDiscordActivity {
         activityType: KinetiqDiscordActivityType = .watching,
         streamingURL: URL? = nil,
         nameStyle: KinetiqDiscordNameStyle = .kinetiq,
-        registeredPosterKey: String? = nil
+        registeredPosterKey: String? = nil,
+        mediaProxyPoster: String? = nil
     ) -> [String: Any] {
         let validStream = streamingURL.flatMap { validStreamingURL($0.absoluteString) }
         let effectiveType: KinetiqDiscordActivityType =
@@ -207,6 +225,11 @@ enum KinetiqDiscordActivity {
                 "large_image": registered,
                 "large_text": description(for: playback)
             ]
+        } else if let proxy = mediaProxyAsset(mediaProxyPoster) {
+            activity["assets"] = [
+                "large_image": proxy,
+                "large_text": description(for: playback)
+            ]
         } else if let artwork = publicArtwork(for: posterOverride) ?? publicArtwork(for: playback) {
             activity["assets"] = [
                 "large_image": artwork,
@@ -235,6 +258,48 @@ enum KinetiqDiscordActivity {
         "op": 3,
         "d": ["since": 0, "activities": [], "status": "online", "afk": false]
     ]
+}
+
+/// Unofficial endpoint used by other community Rich Presence clients. The
+/// registration response is an opaque identifier; do not attempt to guess its
+/// hash or construct `mp:external/` from an original URL.
+enum KinetiqDiscordExternalArtwork {
+    enum Failure: Error {
+        case httpStatus(Int)
+        case malformedResponse
+    }
+
+    static func proxyIdentifier(from response: Data) -> String? {
+        guard let entries = try? JSONSerialization.jsonObject(with: response) as? [[String: Any]],
+              let path = entries.first?["external_asset_path"] as? String else { return nil }
+        return KinetiqDiscordActivity.mediaProxyAsset("mp:" + path)
+    }
+
+    static func register(publicURL: URL, credential: String) async throws -> String {
+        guard let safe = KinetiqDiscordActivity.publicArtwork(for: publicURL),
+              let endpoint = URL(string: "https://discord.com/api/v9/applications/\(KinetiqDiscordActivity.applicationID)/external-assets")
+        else { throw Failure.malformedResponse }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(credential, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["urls": [safe]])
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw Failure.malformedResponse }
+        guard http.statusCode == 200 else { throw Failure.httpStatus(http.statusCode) }
+        guard data.count <= 64 * 1024, let image = proxyIdentifier(from: data) else {
+            throw Failure.malformedResponse
+        }
+        return image
+    }
 }
 
 private enum KinetiqDiscordCredentialStore {
@@ -317,6 +382,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var lastPreview: KinetiqPresencePlayback?
     @Published private(set) var lastSentAt: Date?
     @Published private(set) var publicPosterURL: URL?
+    @Published private(set) var artworkResolutionStatus = "No poster submitted."
 
     private var socket: URLSessionWebSocketTask?
     private var listeningTask: Task<Void, Never>?
@@ -334,6 +400,11 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private var lastBackgroundAt: Date?
     private var artworkLookupTitle: String?
     private var artworkLookupTask: Task<Void, Never>?
+    private var artworkRegistrationTask: Task<Void, Never>?
+    private var artworkRegistrationURL: URL?
+    private var registeredMediaProxy: String?
+    private var artworkCache: [String: (identifier: String, expiresAt: Date)] = [:]
+    private var artworkRetryAfter: [String: Date] = [:]
     private var startedAt: Date?
     private var lastGatewayOpcode: Int?
 
@@ -382,6 +453,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             artworkLookupTitle = nil
             artworkLookupTask?.cancel()
             artworkLookupTask = nil
+            artworkResolutionStatus = "Presence Lab disabled."
         }
     }
 
@@ -405,12 +477,16 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         if trimmed.isEmpty {
             posterAssetKey = nil
             UserDefaults.standard.removeObject(forKey: Self.registeredPosterKey)
+            artworkRegistrationURL = nil
             publishIfNeeded(force: true)
             return true
         }
         guard let key = KinetiqDiscordActivity.registeredAssetKey(trimmed) else { return false }
         posterAssetKey = key
         UserDefaults.standard.set(key, forKey: Self.registeredPosterKey)
+        artworkRegistrationTask?.cancel()
+        artworkRegistrationTask = nil
+        artworkResolutionStatus = "Using selected Developer Portal asset."
         publishIfNeeded(force: true)
         return true
     }
@@ -507,6 +583,10 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private func closeTransport() {
         generation += 1
+        artworkRegistrationTask?.cancel()
+        artworkRegistrationTask = nil
+        artworkRegistrationURL = nil
+        registeredMediaProxy = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
         listeningTask?.cancel()
@@ -532,6 +612,11 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         guard enabled else { return }
         lastPreview = nil
         publicPosterURL = nil
+        artworkRegistrationTask?.cancel()
+        artworkRegistrationTask = nil
+        artworkRegistrationURL = nil
+        registeredMediaProxy = nil
+        artworkResolutionStatus = "Playback ended."
         artworkLookupTitle = nil
         artworkLookupTask?.cancel()
         artworkLookupTask = nil
@@ -560,6 +645,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private func publishIfNeeded(force: Bool) {
         guard let socket, connection == .connected, let lastPreview else { return }
+        ensureRegisteredPoster()
         let now = Date()
         let age = max(0, now.timeIntervalSince(lastPreviewRecordedAt))
         let basePosition = lastPreview.position.isFinite ? max(0, lastPreview.position) : 0
@@ -577,7 +663,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             isPlaying: lastPreview.isPlaying,
             isPictureInPicture: lastPreview.isPictureInPicture
         )
-        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
+        let signature = "\(adjusted.animeTitle)|\(adjusted.episodeNumber)|\(adjusted.episodeTitle ?? "")|\(adjusted.language)|\(adjusted.isPlaying)|\(adjusted.isPictureInPicture)|\(publicPosterURL?.absoluteString ?? "")|\(registeredMediaProxy ?? "")|\(activityType.rawValue)|\(nameStyle.rawValue)|\(posterAssetKey ?? "")|\(streamingURL?.absoluteString ?? "")"
         let elapsed = now.timeIntervalSince(lastPublication)
         let expectedUnclamped = (lastPublishedPosition ?? position) + (adjusted.isPlaying ? max(0, elapsed) : 0)
         let expectedPosition = adjusted.duration.isFinite && adjusted.duration > 0
@@ -590,7 +676,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         let payload = KinetiqDiscordActivity.payload(
             for: adjusted, now: now, posterOverride: publicPosterURL,
             activityType: activityType, streamingURL: streamingURL,
-            nameStyle: nameStyle, registeredPosterKey: posterAssetKey
+            nameStyle: nameStyle, registeredPosterKey: posterAssetKey,
+            mediaProxyPoster: artworkRegistrationURL == publicPosterURL ? registeredMediaProxy : nil
         )
         let connectionGeneration = generation
         Task { @MainActor [weak self] in
@@ -602,6 +689,75 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             } catch {
                 guard self?.generation == connectionGeneration else { return }
                 self?.message = "Presence update could not be sent. Reconnect and retry."
+            }
+        }
+    }
+
+    /// Only an image returned by Discord's external-assets registration is
+    /// advertised as an `mp:` media-proxy asset. One request is made per cover
+    /// change; successful results are cached for four hours. Failed requests
+    /// back off rather than retrying on every player's time observation.
+    private func ensureRegisteredPoster() {
+        guard posterAssetKey == nil, activityType != .custom else { return }
+        guard let url = publicPosterURL,
+              KinetiqDiscordActivity.publicArtwork(for: url) != nil else {
+            artworkRegistrationTask?.cancel()
+            artworkRegistrationTask = nil
+            artworkRegistrationURL = nil
+            registeredMediaProxy = nil
+            artworkResolutionStatus = "No public anime poster URL available."
+            return
+        }
+
+        if artworkRegistrationURL == url {
+            if registeredMediaProxy != nil || artworkRegistrationTask != nil { return }
+        } else {
+            artworkRegistrationTask?.cancel()
+            artworkRegistrationTask = nil
+            artworkRegistrationURL = url
+            registeredMediaProxy = nil
+        }
+
+        let key = url.absoluteString
+        if let entry = artworkCache[key], entry.expiresAt > Date() {
+            registeredMediaProxy = entry.identifier
+            artworkResolutionStatus = "Discord media proxy resolved (cached). Verify on another account."
+            return
+        }
+        if let retryAfter = artworkRetryAfter[key], retryAfter > Date() {
+            artworkResolutionStatus = "Discord image registration failed. Retry later or change poster."
+            return
+        }
+        guard let credential = KinetiqDiscordCredentialStore.read() else {
+            artworkResolutionStatus = "Discord credential unavailable."
+            return
+        }
+        artworkResolutionStatus = "Requesting Discord media-proxy artwork…"
+        artworkRegistrationTask = Task { @MainActor [weak self] in
+            do {
+                let identifier = try await KinetiqDiscordExternalArtwork.register(
+                    publicURL: url, credential: credential
+                )
+                guard let self, !Task.isCancelled,
+                      self.artworkRegistrationURL == url,
+                      self.connection == .connected,
+                      self.posterAssetKey == nil else { return }
+                self.artworkRegistrationTask = nil
+                self.registeredMediaProxy = identifier
+                self.artworkCache[key] = (identifier, Date().addingTimeInterval(4 * 60 * 60))
+                self.artworkRetryAfter.removeValue(forKey: key)
+                self.artworkResolutionStatus = "Discord media proxy resolved. Verify image from another account."
+                self.publishIfNeeded(force: true)
+            } catch {
+                guard let self, !Task.isCancelled,
+                      self.artworkRegistrationURL == url else { return }
+                self.artworkRegistrationTask = nil
+                self.artworkRetryAfter[key] = Date().addingTimeInterval(5 * 60)
+                if case let KinetiqDiscordExternalArtwork.Failure.httpStatus(code) = error {
+                    self.artworkResolutionStatus = "Discord image registration returned HTTP \(code). Will retry later."
+                } else {
+                    self.artworkResolutionStatus = "Discord image registration failed. Will retry later."
+                }
             }
         }
     }

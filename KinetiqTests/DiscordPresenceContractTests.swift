@@ -127,6 +127,55 @@ final class DiscordPresenceContractTests: XCTestCase {
         XCTAssertTrue(poster["large_image"]?.contains("s4.anilist.co") == true)
     }
 
+    func testDiscordMediaProxyResponseBecomesRichPresenceArtwork() throws {
+        let response = Data("""
+        [{"url":"https://s4.anilist.co/cover.jpg","external_asset_path":"external/abc123/https/s4.anilist.co/cover.jpg"}]
+        """.utf8)
+        let image = try XCTUnwrap(KinetiqDiscordExternalArtwork.proxyIdentifier(from: response))
+        XCTAssertEqual(image, "mp:external/abc123/https/s4.anilist.co/cover.jpg")
+
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(), mediaProxyPoster: image
+        )
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        let assets = try XCTUnwrap(activity["assets"] as? [String: String])
+        XCTAssertEqual(assets["large_image"], image,
+                       "Use Discord's registered mp: path, not the original HTTPS image URL")
+        XCTAssertEqual(activity["state"] as? String, "Episode 3: A New Promise · SUB")
+    }
+
+    func testDeveloperPortalAssetStillOverridesResolvedMediaProxy() throws {
+        let value = KinetiqDiscordActivity.payload(
+            for: playback(), registeredPosterKey: "ALYA_POSTER",
+            mediaProxyPoster: "mp:external/abc123/https/s4.anilist.co/cover.jpg"
+        )
+        let activity = try XCTUnwrap(
+            ((value["d"] as? [String: Any])?["activities"] as? [[String: Any]])?.first
+        )
+        let assets = try XCTUnwrap(activity["assets"] as? [String: String])
+        XCTAssertEqual(assets["large_image"], "alya_poster")
+    }
+
+    func testMalformedProxyIdentifiersAreNeverUsed() {
+        let invalid = [
+            "https://s4.anilist.co/cover.jpg", "mp:external/", "mp:attachments/123",
+            "mp:external/x\nAuthorization: token",
+            String(repeating: "z", count: 301)
+        ]
+        for value in invalid {
+            XCTAssertNil(KinetiqDiscordActivity.mediaProxyAsset(value), value)
+        }
+        let malformed = [
+            Data("[]".utf8), Data("[{\"external_asset_path\":\"https://bad.example\"}]".utf8),
+            Data("{\"external_asset_path\":\"external/id\"}".utf8)
+        ]
+        for response in malformed {
+            XCTAssertNil(KinetiqDiscordExternalArtwork.proxyIdentifier(from: response))
+        }
+    }
+
     func testUnsafeMetadataPosterFallsBackToProviderPoster() throws {
         let value = KinetiqDiscordActivity.payload(
             for: playback(), posterOverride: URL(string: "https://unsafe.example/cover.jpg?token=private")
@@ -205,7 +254,9 @@ final class DiscordPresenceContractTests: XCTestCase {
             "https://img.example.org/cover.jpg?token=secret",
             "file:///private/cover.jpg",
             "http://img.example.org/cover.jpg",
-            "https://user:password@img.example.org/cover.jpg"
+            "https://user:password@img.example.org/cover.jpg",
+            "https://192.168.1.20/poster.jpg",
+            "https://images.internal/poster.jpg"
         ] {
             XCTAssertNil(KinetiqDiscordActivity.publicArtwork(for: playback(poster: url)))
         }

@@ -150,10 +150,10 @@ struct KinetiqDiscordPresenceSettingsView: View {
                     if let assetKey = presence.posterAssetKey {
                         Label("Testing Developer Portal asset: \(assetKey)", systemImage: "photo")
                             .font(.caption)
-                        Text("The uploaded asset key takes priority over the dynamic anime poster until you clear it.")
+                        Text("The uploaded asset key takes priority over automatic anime posters. Clear it below to test Discord media-proxy artwork.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if presence.publicPosterURL != nil {
-                        Label("Public poster available; Discord display still needs testing",
+                        Label("Public poster available; awaiting Discord media-proxy verification",
                               systemImage: "photo")
                             .font(.caption)
                     } else {
@@ -240,9 +240,18 @@ struct KinetiqDiscordPresenceSettingsView: View {
             }
 
             Section("Anime artwork · experimental") {
-                Text("By default Kinetiq sends the public anime cover URL (with AniList artwork as a fallback). Discord's Social SDK supports external URLs, but the experimental personal Gateway connection may ignore them.")
+                Text("Kinetiq now requests a Discord media-proxy identifier for each public anime poster, preferring AniList artwork where available. Unlike an ordinary image URL, Discord can recognize the resulting mp:external asset. This endpoint and personal Gateway method are unofficial, so visibility is not guaranteed.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Artwork resolution")
+                        .font(.subheadline.weight(.medium))
+                    Text(presence.artworkResolutionStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
 
                 TextField("Developer Portal asset key (optional)", text: $posterAssetInput)
                     .textInputAutocapitalization(.never)
@@ -268,6 +277,8 @@ struct KinetiqDiscordPresenceSettingsView: View {
                     Text(posterAssetNotice).font(.caption).foregroundStyle(.secondary)
                 }
                 Text("For the asset test, first upload an image under your Discord application's Rich Presence assets and enter its asset name here. This is optional and does not upload artwork from Kinetiq.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("To test automatic artwork, clear any earlier test key (including alya_poster), start an episode, wait for 'Discord media proxy resolved', and check the result from a second account. A resolved identifier does not prove Discord rendered it.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
