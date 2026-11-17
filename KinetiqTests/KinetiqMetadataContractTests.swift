@@ -63,6 +63,22 @@ final class KinetiqMetadataContractTests: XCTestCase {
         XCTAssertEqual(title, "Blue Box")
     }
 
+    func testSourceTitleGuardBlocksUnrelatedAnimeWithoutHidingLegitimateAliases() {
+        XCTAssertTrue(KinetiqSourceTitleSafety.needsConfirmation(
+            selected: "Roshidere", returned: "Blue Box"))
+        XCTAssertTrue(KinetiqSourceTitleSafety.needsConfirmation(
+            selected: "Blue Box Season 2", returned: "Blue Box Season 1"))
+        XCTAssertFalse(KinetiqSourceTitleSafety.needsConfirmation(
+            selected: "Alya Sometimes Hides Her Feelings in Russian",
+            returned: "Alya Hides Her Feelings in Russian"))
+        XCTAssertFalse(KinetiqSourceTitleSafety.needsConfirmation(
+            selected: "Blue Box", returned: "Blue Box (2024)"))
+        // A wholly different Japanese/English alias requires manual consent;
+        // Kinetiq may not silently play a different provider result.
+        XCTAssertTrue(KinetiqSourceTitleSafety.needsConfirmation(
+            selected: "Roshidere", returned: "Alya Sometimes Hides Her Feelings in Russian"))
+    }
+
     func testNoCrossProviderOverlayForSpecialsOrCompoundIDs() {
         XCTAssertNil(KinetiqEpisodeMetadataMatching.episodeIndex("OVA 1"))
         XCTAssertNil(KinetiqEpisodeMetadataMatching.episodeIndex("S2E5"))

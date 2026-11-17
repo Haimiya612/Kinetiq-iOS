@@ -352,6 +352,11 @@ final class KinetiqNoticeCenter: ObservableObject {
             duplicate.occurrences += 1
             history.insert(duplicate, at: 0)
             if current?.id == duplicate.id { current = duplicate }
+            // A duplicate in the pending queue must remain one banner,
+            // with the newest text and an incremented history counter.
+            if let waitingIndex = waiting.firstIndex(where: { $0.id == duplicate.id }) {
+                waiting[waitingIndex] = duplicate
+            }
             persist()
             return
         }

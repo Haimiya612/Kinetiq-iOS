@@ -919,7 +919,6 @@ struct ModuleSourcesView: View {
 
     var body: some View {
         reportPresentation
-            .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
             .task {
                 await store.loadSavedRepositoriesIfNeeded()
                 updateCenter.scan()
@@ -1405,7 +1404,7 @@ struct ModuleSourcesView: View {
             KinetiqNoticeCenter.shared.post(level,
                 title: cancelled ? "Installation Stopped" : "Repository Installation Finished",
                 message: "\(repo.name): \(batchInstalled) installed, \(failureCount) failed.",
-                groupKey: "batch.install.\(repo.id).\(UUID().uuidString)",
+                groupKey: "batch.install.\(repo.id)",
                 details: report)
             // A broken module never interrupts the remaining batch or opens
             // an OK dialog. Full redacted details remain in Notifications.
@@ -2247,7 +2246,6 @@ struct KinetiqModuleUpdateCenterView: View {
                 updates.statusMessage = message
             }
         }
-        .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
         .sheet(isPresented: $showingNotificationHistory) {
             NavigationStack { KinetiqNoticeHistoryView() }
         }

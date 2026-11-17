@@ -945,8 +945,6 @@ private struct KinetiqThemeGallery: View {
                             .move(edge: .top).combined(with: .opacity))
                         .padding(.horizontal, 14)
                         .padding(.top, 7)
-                } else {
-                    KinetiqNoticeBannerHost()
                 }
             }
             .animation(reduceMotion ? .easeOut(duration: 0.12) :

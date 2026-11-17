@@ -104,6 +104,40 @@ enum KinetiqEpisodeMetadataMatching {
     }
 }
 
+/// Detects when a provider returns a *different title* for a selected result.
+/// Different romanizations may be legitimate, so users can explicitly override
+/// a mismatch; never silently reinterpret a chosen series as another series.
+enum KinetiqSourceTitleSafety {
+    static func needsConfirmation(selected: String, returned: String) -> Bool {
+        let selectedKey = KinetiqEpisodeMetadataMatching.normalized(selected)
+        let returnedKey = KinetiqEpisodeMetadataMatching.normalized(returned)
+        guard !selectedKey.isEmpty, !returnedKey.isEmpty else { return false }
+        if selectedKey == returnedKey { return false }
+        // A season difference is never dismissed on the basis of title overlap.
+        let (selectedSeason, selectedBase) = KinetiqEpisodeMetadataMatching.seasonAndBaseTitle(selected)
+        let (returnedSeason, returnedBase) = KinetiqEpisodeMetadataMatching.seasonAndBaseTitle(returned)
+        if KinetiqEpisodeMetadataMatching.normalized(selectedBase) ==
+            KinetiqEpisodeMetadataMatching.normalized(returnedBase) &&
+            selectedSeason != returnedSeason { return true }
+        if selectedKey.count >= 8, returnedKey.contains(selectedKey) { return false }
+        if returnedKey.count >= 8, selectedKey.contains(returnedKey) { return false }
+
+        let commonWords: Set<String> = ["the", "and", "with", "for", "in", "a", "an", "of", "to",
+                                        "season", "episode", "part", "anime", "movie", "series"]
+        let chosen = Set(selectedKey.split(separator: " ").map(String.init).filter {
+            $0.count > 2 && !commonWords.contains($0)
+        })
+        let resolved = Set(returnedKey.split(separator: " ").map(String.init).filter {
+            $0.count > 2 && !commonWords.contains($0)
+        })
+        guard !chosen.isEmpty, !resolved.isEmpty else { return true }
+        let overlap = chosen.intersection(resolved).count
+        // Two distinctive common words plus substantial overlap are needed
+        // before accepting abbreviated English titles automatically.
+        return !(overlap >= 2 && Double(overlap) / Double(min(chosen.count, resolved.count)) >= 0.50)
+    }
+}
+
 private enum KinetiqMetadataURL {
     static func image(_ string: String?) -> URL? {
         guard let string, string.count < 2_048,

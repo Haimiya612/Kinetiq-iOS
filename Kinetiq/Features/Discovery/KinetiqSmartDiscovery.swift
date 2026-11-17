@@ -494,6 +494,8 @@ struct KinetiqSmartDiscoveryView: View {
 
     private func runSearch() {
         queryFieldFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
         let parsed = KinetiqDiscoveryIntent.interpret(question)
         guard !parsed.original.isEmpty else { return }
         searchTask?.cancel()

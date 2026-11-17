@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Foundation
 
 /// Grounded private inventory tools and opt-in, device-gated conversation.
@@ -134,6 +135,8 @@ struct KinetiqBrainView: View {
     }
 
     private func send() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
         let text = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
         guard !text.isEmpty, !busy else { return }
         question = ""

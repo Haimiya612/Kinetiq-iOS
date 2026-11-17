@@ -21,6 +21,48 @@ final class KinetiqPowerCenterContractTests: XCTestCase {
                           try KinetiqLibraryAuditor.fingerprint(url: different))
     }
 
+    func testM03PlayerGestureIntervalsAndFallback() {
+        for interval in [5, 10, 15, 30, 60] {
+            XCTAssertEqual(KinetiqPlayerSeekPolicy.safeInterval(interval), interval)
+        }
+        XCTAssertEqual(KinetiqPlayerSeekPolicy.safeInterval(-4), 10)
+        XCTAssertEqual(KinetiqPlayerSeekPolicy.safeInterval(999), 10)
+    }
+
+    func testPrivateManualChapterMarkersDoNotMixEpisodesOrSources() {
+        let domain = "KinetiqM03ChapterTests.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: domain)!
+        defer { suite.removePersistentDomain(forName: domain) }
+        let store = KinetiqManualChapterStore(defaults: suite)
+        store.markStart(mediaKey: "sourceA:roshidere", episodeKey: "ep1",
+                        kind: .opening, seconds: 32)
+        XCTAssertFalse(store.markEnd(mediaKey: "sourceA:roshidere", episodeKey: "ep1",
+                                     kind: .opening, seconds: 31))
+        XCTAssertTrue(store.markEnd(mediaKey: "sourceA:roshidere", episodeKey: "ep1",
+                                    kind: .opening, seconds: 120))
+        XCTAssertTrue(store.chapter(mediaKey: "sourceA:roshidere", episodeKey: "ep1",
+                                     kind: .opening)?.isSkippable == true)
+        XCTAssertNil(store.chapter(mediaKey: "sourceA:roshidere", episodeKey: "ep2", kind: .opening))
+        XCTAssertNil(store.chapter(mediaKey: "sourceB:roshidere", episodeKey: "ep1", kind: .opening))
+        XCTAssertEqual(KinetiqManualChapterStore(defaults: suite).chapter(
+            mediaKey: "sourceA:roshidere", episodeKey: "ep1", kind: .opening)?.end, 120)
+    }
+
+    func testRepositoryNoticesCoalesceAcrossRepeatedInstallResults() {
+        let domain = "KinetiqM03Notices.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let center = KinetiqNoticeCenter(defaults: defaults, schedulesAutoDismiss: false)
+        center.post(.warning, title: "Repository Installation Finished",
+                    message: "32 installed, 1 failed", groupKey: "batch.install.repo-a")
+        center.post(.warning, title: "Repository Installation Finished",
+                    message: "32 installed, 1 failed", groupKey: "batch.install.repo-a")
+        XCTAssertEqual(center.history.count, 1)
+        XCTAssertEqual(center.history.first?.occurrences, 2)
+        XCTAssertEqual(center.current?.occurrences, 2)
+        XCTAssertEqual(center.pendingCount, 0)
+    }
+
     func testExactTimecodeParserRejectsInvalidInput() {
         XCTAssertEqual(KinetiqTimecodeParser.seconds(from: "42"), 42)
         XCTAssertEqual(KinetiqTimecodeParser.seconds(from: "12:34"), 754)

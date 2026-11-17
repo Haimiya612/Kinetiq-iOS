@@ -4082,22 +4082,20 @@ struct ModuleBrowserView: View {
         showRecent: Bool,
         allowSorting: Bool
     ) -> some View {
-        // Some modules return the same anime more than once in a search.
-        // Dedupe by the provider's real identity without renaming results.
-        var seen = Set<String>()
-        let unique = originalItems.filter { seen.insert($0.id).inserted }
-
+        // M03: A provider may reuse an ID for two distinct catalogue rows.
+        // Never hide either result or let SwiftUI reuse a wrong row because
+        // it assumed the provider's ID was globally unique.
         let items: [ModuleAnimeItem]
         if allowSorting && catalogueSort == .title {
-            items = unique.sorted {
+            items = originalItems.sorted {
                 $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
         } else if allowSorting && catalogueSort == .reverseTitle {
-            items = unique.sorted {
+            items = originalItems.sorted {
                 $0.title.localizedStandardCompare($1.title) == .orderedDescending
             }
         } else {
-            items = unique
+            items = originalItems
         }
 
         return VStack(alignment: .leading, spacing: 14) {
@@ -4152,14 +4150,14 @@ struct ModuleBrowserView: View {
                     alignment: .center,
                     spacing: 13
                 ) {
-                    ForEach(items) { item in
-                        animeGridCard(item, showRecent: showRecent)
+                    ForEach(Array(items.enumerated()), id: \.offset) { row in
+                        animeGridCard(row.element, showRecent: showRecent)
                     }
                 }
             } else {
                 LazyVStack(spacing: 11) {
-                    ForEach(items) { item in
-                        animeListCard(item, showRecent: showRecent)
+                    ForEach(Array(items.enumerated()), id: \.offset) { row in
+                        animeListCard(row.element, showRecent: showRecent)
                     }
                 }
             }
@@ -4329,9 +4327,17 @@ struct ModuleBrowserView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
-                .onSubmit { Task { await searchAnime() } }
+                .onSubmit {
+                    searchIsFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                    Task { await searchAnime() }
+                }
 
             Button {
+                searchIsFocused = false
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                to: nil, from: nil, for: nil)
                 Task { await searchAnime() }
             } label: {
                 Image(systemName: "arrow.right.circle.fill")
@@ -4561,6 +4567,8 @@ struct ModuleAnimeDetailsView: View {
 
     @State private var detailsFailure: String?
     @State private var detailsFailureDiagnostics: String?
+    @State private var conflictingSourceTitle: String?
+    @State private var acceptedAlternateSourceTitle = false
     @State private var activeDetailsRequestID: UUID?
     @State private var errorMessage: String?
     @State private var lastPlaybackDiagnostics: String?
@@ -5205,6 +5213,18 @@ struct ModuleAnimeDetailsView: View {
                     ) {
                         Task { await loadDetailsAndEpisodes() }
                     }
+                    if let conflictingSourceTitle {
+                        Text("Selected: \(item.title)  ·  Source returned: \(conflictingSourceTitle)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("I recognize this alternate title — Continue") {
+                            acceptedAlternateSourceTitle = true
+                            Task { await loadDetailsAndEpisodes() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .accessibilityHint("Loads this source's episodes despite the title mismatch")
+                    }
                     Button("Copy Diagnostics", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = detailsFailureDiagnostics
                             ?? "Episode diagnostics were unavailable."
@@ -5470,6 +5490,8 @@ struct ModuleAnimeDetailsView: View {
         tmdbEpisodeMetadata = [:]
         detailsFailure = nil
         detailsFailureDiagnostics = nil
+        conflictingSourceTitle = nil
+        details = nil
 
         defer {
             if activeDetailsRequestID == requestID {
@@ -5491,6 +5513,25 @@ struct ModuleAnimeDetailsView: View {
                 fallback: item,
                 baseURL: runtime.baseURL
             )
+            // Some upstream modules return a cached or unrelated title for a
+            // valid catalogue item. Refuse automatic episode extraction when
+            // that happens, while permitting explicit alternate-title review.
+            if !acceptedAlternateSourceTitle,
+               KinetiqSourceTitleSafety.needsConfirmation(
+                selected: item.title, returned: resolvedDetails.title
+               ) {
+                conflictingSourceTitle = ModulePlaybackDiagnostics.redact(
+                    resolvedDetails.title, limit: 120)
+                detailsFailure = "The source returned a different series title. Kinetiq stopped before loading or playing its episodes. If this is a legitimate alternate title, you can continue explicitly."
+                detailsFailureDiagnostics = [
+                    "Kinetiq title identity guard · M03",
+                    "Source: \(ModulePlaybackDiagnostics.redact(sourceName, limit: 70))",
+                    "Selected: \(ModulePlaybackDiagnostics.redact(item.title, limit: 100))",
+                    "Returned: \(ModulePlaybackDiagnostics.redact(resolvedDetails.title, limit: 100))",
+                    "Action: automatic episode extraction blocked"
+                ].joined(separator: "\n")
+                return
+            }
 
             details = resolvedDetails
             metadata = ModuleTitleMetadata.decode(detailsResponse, baseURL: runtime.baseURL)

@@ -1274,7 +1274,12 @@ private struct KinetiqFocusedSourceSheet: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
-                    .onSubmit { Task { await performSearch() } }
+                    .onSubmit {
+                        searchFocused = false
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                        to: nil, from: nil, for: nil)
+                        Task { await performSearch() }
+                    }
                     .accessibilityLabel("Search \(source.title)")
                 if !query.isEmpty {
                     Button {
@@ -1336,7 +1341,8 @@ private struct KinetiqFocusedSourceSheet: View {
                         .foregroundStyle(.secondary)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 13),
                                         GridItem(.flexible(), spacing: 13)], spacing: 19) {
-                        ForEach(matches) { item in
+                        ForEach(Array(matches.enumerated()), id: \.offset) { row in
+                            let item = row.element
                             Button {
                                 searchFocused = false
                                 selectedTitle = item
@@ -1403,6 +1409,7 @@ private struct KinetiqFocusedSourceSheet: View {
     }
 
     private func performSearch() async {
+        searchFocused = false
         guard let runtime, !query.isEmpty else { return }
         let token = UUID()
         searchRequest = token
@@ -3159,8 +3166,10 @@ struct DiscoverView: View {
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .onSubmit {
+                        textFieldFocused = false
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                        to: nil, from: nil, for: nil)
                         if showOnline { runOnlineSearch() }
-                        else { textFieldFocused = false }
                     }
                     .accessibilityLabel("Search media")
                 if !searchText.isEmpty {
@@ -3543,6 +3552,8 @@ struct DiscoverView: View {
         cancelSearch()
         guard hasQuery else { return }
         textFieldFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
         submittedQuery = query
         guard showOnline else { return }
         pendingSources = searchSources.sorted { lhs, rhs in
