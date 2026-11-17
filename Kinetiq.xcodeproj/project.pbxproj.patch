@@ -1,0 +1,37 @@
+diff --git a/Kinetiq.xcodeproj/project.pbxproj b/Kinetiq.xcodeproj/project.pbxproj
+--- a/Kinetiq.xcodeproj/project.pbxproj
++++ b/Kinetiq.xcodeproj/project.pbxproj
+@@ -35,3 +35,6 @@
+ 		EA61CFD28B7E4039A15D62C0 /* ModulePackageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModulePackageManager.swift"; sourceTree = "<group>"; };
++		C2B05A1D82F84BE6A31F1001 /* ModuleDiscoverySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModuleDiscoverySupport.swift"; sourceTree = "<group>"; };
++		C2B05A1D82F84BE6A31F1003 /* ModuleDiscoveryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModuleDiscoveryViews.swift"; sourceTree = "<group>"; };
++		C2B05A1D82F84BE6A31F1005 /* ModuleDiscoveryContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModuleDiscoveryContractTests.swift"; sourceTree = "<group>"; };
+ 		D16B2E4F8A6C0D3E5F7A9B12 /* ModuleRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModuleRuntime.swift"; sourceTree = "<group>"; };
+ 		D0A1B2C3D4E5F60718293A4B /* ModulePlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModulePlayerView.swift"; sourceTree = "<group>"; };
+@@ -40,3 +43,6 @@
+ 		F0B37A91C5D642E8A13F76B4 /* ModulePackageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA61CFD28B7E4039A15D62C0 /* ModulePackageManager.swift */; };
++		C2B05A1D82F84BE6A31F1002 /* ModuleDiscoverySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B05A1D82F84BE6A31F1001 /* ModuleDiscoverySupport.swift */; };
++		C2B05A1D82F84BE6A31F1004 /* ModuleDiscoveryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B05A1D82F84BE6A31F1003 /* ModuleDiscoveryViews.swift */; };
++		C2B05A1D82F84BE6A31F1006 /* ModuleDiscoveryContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B05A1D82F84BE6A31F1005 /* ModuleDiscoveryContractTests.swift */; };
+ 		E27C3F5A9B7D1E4F6A8C0B23 /* ModuleRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = D16B2E4F8A6C0D3E5F7A9B12 /* ModuleRuntime.swift */; };
+ 		E1B2C3D4E5F60718293A4B5C /* ModulePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A1B2C3D4E5F60718293A4B /* ModulePlayerView.swift */; };
+@@ -61,3 +67,3 @@
+ 		DD1705967C5691C0E5DD98B9 /* Settings */ = {isa = PBXGroup; children = (62F24690A6F558F597D89A8D); path = "Settings"; sourceTree = "<group>"; };
+-		C63A0F2E9D8B7C415A39E426 /* Modules */ = {isa = PBXGroup; children = (A41E8D0C7B6F5A293817C204, EA61CFD28B7E4039A15D62C0, D16B2E4F8A6C0D3E5F7A9B12, D0A1B2C3D4E5F60718293A4B); path = Modules; sourceTree = "<group>"; };
++		C63A0F2E9D8B7C415A39E426 /* Modules */ = {isa = PBXGroup; children = (A41E8D0C7B6F5A293817C204, EA61CFD28B7E4039A15D62C0, D16B2E4F8A6C0D3E5F7A9B12, D0A1B2C3D4E5F60718293A4B, C2B05A1D82F84BE6A31F1001, C2B05A1D82F84BE6A31F1003); path = Modules; sourceTree = "<group>"; };
+ 		FCE84E5E95C48F4756FFFB6D /* Features */ = {isa = PBXGroup; children = (7320576F8E69F075631E6571, F85BA4F58B43CB35B1CD34E8, C63A0F2E9D8B7C415A39E426, DD1705967C5691C0E5DD98B9); path = "Features"; sourceTree = "<group>"; };
+@@ -65,3 +71,3 @@
+ 		77411DC22593C8882D069FA3 /* Kinetiq */ = {isa = PBXGroup; children = (3520A1CCC52A9804A94001B5, 708542948A3B222AF87CBF1B, FCE84E5E95C48F4756FFFB6D, 6A5258272E3BC28683FAF7BF); path = "Kinetiq"; sourceTree = "<group>"; };
+-		E5C8E3C8B51E9CDD6EEC601B /* KinetiqTests */ = {isa = PBXGroup; children = (827B9CB8A2ECE9CC3308B6FB, 7A1A2A3A4A5A4A6A7A8A9A05); path = "KinetiqTests"; sourceTree = "<group>"; };
++		E5C8E3C8B51E9CDD6EEC601B /* KinetiqTests */ = {isa = PBXGroup; children = (827B9CB8A2ECE9CC3308B6FB, 7A1A2A3A4A5A4A6A7A8A9A05, C2B05A1D82F84BE6A31F1005); path = "KinetiqTests"; sourceTree = "<group>"; };
+ 		5151B46607EBC8890D8DFCC2 /* Products */ = {isa = PBXGroup; children = (AC932B5842DD245F688B9722, F4909F29EDD95ADA67F1D3DB); name = Products; sourceTree = "<group>"; };
+@@ -69,3 +75,3 @@
+ 
+-		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, B2AE903D8C5F7214E6B9D032, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7C2E9A4D1B6F8035C7A9E241, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB, B52F9E1D8C7A6B304928D315, F0B37A91C5D642E8A13F76B4, E27C3F5A9B7D1E4F6A8C0B23, E1B2C3D4E5F60718293A4B5C); runOnlyForDeploymentPostprocessing = 0; };
++		8682261519D15BD64A9E5D31 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (ADCC1D3DA7308908E8FFDF3F, E1DD54D8099D679002E68183, EC15B7DBCA5FB369C1B746DB, A1A6AD922C59251FA9B13257, 5E84699F3992E558D152BEFA, B39923B3BECB357A679FDBA9, 8604A6D4E1704C5C21935501, B2AE903D8C5F7214E6B9D032, 20CA90543F39754DBCFC2E8F, 4B043EFAD24712A9028C5628, 7C2E9A4D1B6F8035C7A9E241, 7A1A2A3A4A5A4A6A7A8A9A02, 7A1A2A3A4A5A4A6A7A8A9A04, 906EC18EB6F0116F310AC1DB, B52F9E1D8C7A6B304928D315, F0B37A91C5D642E8A13F76B4, E27C3F5A9B7D1E4F6A8C0B23, E1B2C3D4E5F60718293A4B5C, C2B05A1D82F84BE6A31F1002, C2B05A1D82F84BE6A31F1004); runOnlyForDeploymentPostprocessing = 0; };
+ 		F001BC2AF9EB5498B3360756 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C1F46B0E5D9A7283B2E4F6C8); runOnlyForDeploymentPostprocessing = 0; };
+@@ -72,3 +78,3 @@
+ 		E28FAD8F60ECDED9B4AD087A /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222F0DBFFE5EB23DCD3FD16F); runOnlyForDeploymentPostprocessing = 0; };
+-		29BEEA3D856852A8CC3247ED /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (0F6810B113D77F527ACB84A7, 7A1A2A3A4A5A4A6A7A8A9A06); runOnlyForDeploymentPostprocessing = 0; };
++		29BEEA3D856852A8CC3247ED /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (0F6810B113D77F527ACB84A7, 7A1A2A3A4A5A4A6A7A8A9A06, C2B05A1D82F84BE6A31F1006); runOnlyForDeploymentPostprocessing = 0; };
+ 		D6B208DB47DA230159E08E40 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
