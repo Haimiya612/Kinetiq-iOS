@@ -3,6 +3,23 @@ import Foundation
 @testable import Kinetiq
 
 final class OfflineDownloadContractTests: XCTestCase {
+    func testTravelManifestExportsNoLocalPathsOrStreamSecrets() throws {
+        let entry = savedEntry(format: .file, path: "/private/kinetiq/secret.mp4")
+        let audit = KinetiqTravelAudit.inspect([entry])
+        let named = KinetiqTravelManifest(results: audit, includeNames: true)
+        let encoded = try JSONEncoder().encode(named)
+        let text = String(decoding: encoded, as: UTF8.self)
+        XCTAssertEqual(named.episodes.count, 1)
+        XCTAssertEqual(named.episodes.first?.title, "Blue Box")
+        XCTAssertFalse(text.contains("/private/"))
+        XCTAssertFalse(text.contains("secret.mp4"))
+        XCTAssertFalse(text.contains("Authorization"))
+        XCTAssertFalse(text.contains("https://"))
+        let anonymous = KinetiqTravelManifest(results: audit, includeNames: false)
+        XCTAssertEqual(anonymous.episodes.first?.title, "Hidden title")
+        XCTAssertEqual(anonymous.episodes.first?.source, "Hidden source")
+    }
+
     func testSeasonBatchPolicyKeepsSourceEpisodeAndLanguageIdentity() {
         let subOnly = ModuleAnimeEpisode(id: "sub-1", number: "1",
             href: "/episode/1", subAvailable: true, dubAvailable: false)

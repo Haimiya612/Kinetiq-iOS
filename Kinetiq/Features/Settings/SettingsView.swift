@@ -316,13 +316,43 @@ struct SettingsView: View {
 
                 Section("Playback") {
                     NavigationLink {
+                        KinetiqPlayerQuickDeckEditorView()
+                    } label: {
+                        Label("Player Quick Deck · pinned actions", systemImage: "slider.horizontal.3")
+                    }
+                    NavigationLink {
                         KinetiqSubtitleSettingsView()
                     } label: {
                         Label("Subtitles", systemImage: "captions.bubble")
                     }
+                    NavigationLink {
+                        KinetiqSceneMemoryView()
+                    } label: {
+                        Label("Scene Memory & bookmarks", systemImage: "bookmark.circle")
+                    }
+                    NavigationLink {
+                        KinetiqRecoveryCenterView()
+                    } label: {
+                        Label("Recovery Center · playback errors", systemImage: "cross.case")
+                    }
+                    NavigationLink {
+                        KinetiqStudyDeckView()
+                    } label: {
+                        Label("Japanese Study Deck · flashcards", systemImage: "character.book.closed")
+                    }
                 }
 
                 Section("Anime Discovery") {
+                    NavigationLink {
+                        KinetiqSpoilerShieldSettingsView()
+                    } label: {
+                        Label("Spoiler Shield · episode privacy", systemImage: "eye.slash")
+                    }
+                    NavigationLink {
+                        KinetiqBrainView()
+                    } label: {
+                        Label("Kinetiq Brain · media assistant", systemImage: "brain.head.profile")
+                    }
                     NavigationLink {
                         KinetiqSmartDiscoveryView()
                     } label: {
@@ -338,6 +368,37 @@ struct SettingsView: View {
                     } label: {
                         Label("Episode metadata & artwork", systemImage: "photo.on.rectangle.angled")
                     }
+                }
+
+                Section("Kinetiq Power Center") {
+                    NavigationLink {
+                        KinetiqLibraryDoctorView()
+                    } label: {
+                        Label("Library Doctor · duplicates & storage", systemImage: "externaldrive.badge.magnifyingglass")
+                    }
+                    NavigationLink {
+                        KinetiqViewingInsightsView()
+                    } label: {
+                        Label("Viewing Insights · private statistics", systemImage: "chart.bar.xaxis")
+                    }
+                    NavigationLink {
+                        KinetiqWatchPlansView()
+                    } label: {
+                        Label("Watch Plans · invites & QR codes", systemImage: "person.2.wave.2")
+                    }
+                    NavigationLink {
+                        KinetiqQualityForgeView()
+                    } label: {
+                        Label("Quality Forge · video conversion", systemImage: "waveform.path.ecg.rectangle")
+                    }
+                    NavigationLink {
+                        KinetiqSyncVaultView()
+                    } label: {
+                        Label("Sync Vault · device transfer", systemImage: "arrow.left.arrow.right.circle")
+                    }
+                    Text("Private, opt-in tools. Quality Forge only processes local imports; Sync Vault uses a file you explicitly share.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {

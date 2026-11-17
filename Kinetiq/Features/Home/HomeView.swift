@@ -126,6 +126,7 @@ struct HomeView: View {
     @State private var selectedSourceToBrowse: ModuleSourceOption?
     @State private var browseSourceInSearch = false
     @State private var showingSourcePicker = false
+    @State private var showingKinetiqBrain = false
     @State private var openManageModulesAfterDismiss = false
 
     private var selectedMode: HomeMediaMode {
@@ -205,6 +206,9 @@ struct HomeView: View {
                 onClose: { selectedSourceToBrowse = nil }
             )
         }
+        .sheet(isPresented: $showingKinetiqBrain) {
+            NavigationStack { KinetiqBrainView() }
+        }
         .task {
             await moduleSourceStore.loadSavedRepositoriesIfNeeded()
         }
@@ -276,6 +280,15 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Anime calendar")
+
+            Button { showingKinetiqBrain = true } label: {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Kinetiq Brain, local media assistant")
 
             Button(action: onDiscover) {
                 Image(systemName: "magnifyingglass")
@@ -627,6 +640,15 @@ struct HomeView: View {
             }
 
             Spacer()
+
+            Button { showingKinetiqBrain = true } label: {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 42, height: 42)
+                    .background(theme.cardBackground, in: Circle())
+            }
+            .accessibilityLabel("Kinetiq Brain")
 
             Button(action: openSourceSearch) {
                 Image(systemName: "magnifyingglass")

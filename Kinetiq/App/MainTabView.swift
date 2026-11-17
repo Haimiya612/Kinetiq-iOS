@@ -1061,6 +1061,43 @@ final class ModuleAnimeCollectionStore: ObservableObject {
                  episodeID: episodeID, language: language)?.resumePosition ?? 0
     }
 
+    /// Merge a user-selected, portable metadata snapshot. This never imports
+    /// another device's source URLs or secrets. A newly imported entry with no
+    /// local href is a visible watchlist record until the user re-finds it.
+    func mergeSyncTitles(_ records: [KinetiqSyncTitleRecord]) {
+        guard records.count <= maximumEntries else { return }
+        for remote in records {
+            guard !remote.sourceID.isEmpty, remote.sourceID.count <= 1_200,
+                  !remote.animeID.isEmpty, remote.animeID.count <= 1_500,
+                  !remote.title.isEmpty, remote.title.count <= 400,
+                  remote.sourceName.count <= 180,
+                  remote.episodes.count <= 1_000 else { continue }
+            let anime = ModuleAnimeItem(id: remote.animeID,
+                title: remote.title, href: "", imageURL: nil)
+            let index = ensureEntry(sourceID: remote.sourceID,
+                sourceName: remote.sourceName, anime: anime)
+            entries[index].isFavorite = entries[index].isFavorite || remote.favorite
+            entries[index].savedAt = max(entries[index].savedAt, remote.savedAt)
+
+            var byEpisode: [String: ModuleEpisodeProgress] = [:]
+            for episode in (entries[index].episodeProgress ?? []) + remote.episodes where episode.isValid {
+                if byEpisode[episode.id]?.updatedAt ?? .distantPast < episode.updatedAt {
+                    byEpisode[episode.id] = episode
+                }
+            }
+            let merged = byEpisode.values.sorted { $0.updatedAt > $1.updatedAt }
+            entries[index].episodeProgress = Array(merged.prefix(1_000))
+            if let newest = merged.first {
+                entries[index].latestEpisodeID = newest.episodeID
+                entries[index].latestEpisodeNumber = newest.episodeNumber
+                entries[index].latestLanguage = newest.language
+                entries[index].latestEpisodeDate = newest.updatedAt
+                updateSummary(at: index, progress: newest)
+            }
+        }
+        persist()
+    }
+
     /// Marking unwatched explicitly resets only this language's progress.
     /// Merely opening/replaying a completed episode retains its watched mark.
     func setWatched(

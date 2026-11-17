@@ -6,6 +6,28 @@ import UIKit
 import WebKit
 import CoreMedia
 
+/// Exact timecode entry is independent of a particular streaming server.
+/// Rejects negative, malformed and minute/second overflow values.
+enum KinetiqTimecodeParser {
+    static func seconds(from input: String) -> Double? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 18 else { return nil }
+        let components = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...3).contains(components.count) else { return nil }
+        let numbers = components.compactMap { component -> Int? in
+            let part = String(component).trimmingCharacters(in: .whitespaces)
+            guard !part.isEmpty, part.allSatisfy({ $0.isNumber }) else { return nil }
+            return Int(part)
+        }
+        guard numbers.count == components.count,
+              numbers.allSatisfy({ $0 >= 0 && $0 <= 10_000 }) else { return nil }
+        if numbers.count >= 2 && numbers[numbers.count - 1] > 59 { return nil }
+        if numbers.count == 3 && numbers[1] > 59 { return nil }
+        let total = numbers.reduce(0) { result, value in result * 60 + value }
+        return Double(total)
+    }
+}
+
 // MARK: - Module Player Panels
 
 // Matches the Local Library player panel order and symbols.
@@ -771,11 +793,152 @@ private struct ModuleDiscordResyncControl: View {
 
 /// Mirrors the Library player's glass bottom sheet; every selectable
 /// control is connected to the module AVPlayer or module episode session.
+enum KinetiqPlayerAction: String, CaseIterable, Identifiable {
+    case playPause, previousEpisode, nextEpisode
+    case seekBack5, seekForward5, seekBack10, seekForward10
+    case seekBack15, seekForward15, seekBack30, seekForward30
+    case seekBack60, seekForward60, undoSeek
+    case rateSlow, rateStudy, rateNormal, rateFine, rateFast, rateFaster, rateDouble
+    case loopStart, loopEnd, loopClear, replayDialogue
+    case captionsOff, retryCaptions, muteToggle, volumeDown, volumeUp
+    case aspectFit, aspectFill, autoplayToggle
+    case sleep15, sleep30, sleep60, sleepCancel
+    case retryServer, resetServerHealth, bookmarkScene, copyDiagnostics
+    case pauseAfter1, pauseAfter2, pauseAfter3, cancelBinge
+    case brain, study, recovery
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .playPause: return "Play or pause"
+        case .previousEpisode: return "Previous episode"
+        case .nextEpisode: return "Next episode"
+        case .seekBack5: return "Rewind 5 seconds"
+        case .seekForward5: return "Skip forward 5 seconds"
+        case .seekBack10: return "Rewind 10 seconds"
+        case .seekForward10: return "Skip forward 10 seconds"
+        case .seekBack15: return "Rewind 15 seconds"
+        case .seekForward15: return "Skip forward 15 seconds"
+        case .seekBack30: return "Rewind 30 seconds"
+        case .seekForward30: return "Skip forward 30 seconds"
+        case .seekBack60: return "Rewind 1 minute"
+        case .seekForward60: return "Skip forward 1 minute"
+        case .undoSeek: return "Undo last seek"
+        case .rateSlow: return "Slow speed · 0.5×"
+        case .rateStudy: return "Study speed · 0.75×"
+        case .rateNormal: return "Normal speed · 1×"
+        case .rateFine: return "Fine speed · 1.25×"
+        case .rateFast: return "Fast playback · 1.5×"
+        case .rateFaster: return "Faster playback · 1.75×"
+        case .rateDouble: return "Double speed · 2×"
+        case .loopStart: return "Set A/B loop start"
+        case .loopEnd: return "Set A/B loop end"
+        case .loopClear: return "Clear A/B loop"
+        case .replayDialogue: return "What did they say?"
+        case .captionsOff: return "Turn subtitles off"
+        case .retryCaptions: return "Retry selected subtitles"
+        case .muteToggle: return "Mute or unmute"
+        case .volumeDown: return "Lower volume by 10%"
+        case .volumeUp: return "Raise volume by 10%"
+        case .aspectFit: return "Fit video to screen"
+        case .aspectFill: return "Fill screen with video"
+        case .autoplayToggle: return "Toggle next-episode autoplay"
+        case .sleep15: return "Sleep timer · 15 minutes"
+        case .sleep30: return "Sleep timer · 30 minutes"
+        case .sleep60: return "Sleep timer · 60 minutes"
+        case .sleepCancel: return "Cancel sleep timer"
+        case .retryServer: return "Retry current server"
+        case .resetServerHealth: return "Reset learned server health"
+        case .bookmarkScene: return "Bookmark current scene"
+        case .copyDiagnostics: return "Copy safe diagnostics"
+        case .pauseAfter1: return "Pause after this episode"
+        case .pauseAfter2: return "Pause after 2 episodes"
+        case .pauseAfter3: return "Pause after 3 episodes"
+        case .cancelBinge: return "Cancel binge pause limit"
+        case .brain: return "Open Kinetiq Brain"
+        case .study: return "Open Japanese Study Deck"
+        case .recovery: return "Open Recovery Center"
+        }
+    }
+
+    var category: String {
+        switch self {
+        case .playPause, .previousEpisode, .nextEpisode, .seekBack5,
+             .seekForward5, .seekBack10, .seekForward10, .seekBack30,
+             .seekForward30, .seekBack15, .seekForward15, .seekBack60,
+             .seekForward60, .undoSeek: return "Transport & timeline"
+        case .rateSlow, .rateStudy, .rateNormal, .rateFine, .rateFast,
+             .rateFaster, .rateDouble, .loopStart, .loopEnd, .loopClear,
+             .aspectFit, .aspectFill: return "Playback & repeat"
+        case .replayDialogue, .captionsOff, .retryCaptions: return "Subtitles & dialogue"
+        case .muteToggle, .volumeDown, .volumeUp: return "Audio"
+        case .sleep15, .sleep30, .sleep60, .sleepCancel,
+             .pauseAfter1, .pauseAfter2, .pauseAfter3, .cancelBinge,
+             .autoplayToggle:
+            return "Sleep & Binge Guard"
+        case .retryServer, .resetServerHealth, .copyDiagnostics, .recovery:
+            return "Recovery & diagnostics"
+        case .bookmarkScene, .brain, .study: return "Personal tools"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .playPause: return "playpause.fill"
+        case .previousEpisode, .seekBack5, .seekBack10, .seekBack15,
+             .seekBack30, .seekBack60: return "backward.end.fill"
+        case .nextEpisode, .seekForward5, .seekForward10, .seekForward15,
+             .seekForward30, .seekForward60: return "forward.end.fill"
+        case .undoSeek: return "arrow.uturn.backward"
+        case .rateSlow, .rateStudy, .rateNormal, .rateFine,
+             .rateFast, .rateFaster, .rateDouble: return "speedometer"
+        case .loopStart: return "a.circle"
+        case .loopEnd: return "b.circle"
+        case .loopClear: return "repeat"
+        case .replayDialogue: return "text.bubble"
+        case .captionsOff, .retryCaptions: return "captions.bubble"
+        case .muteToggle: return "speaker.slash"
+        case .volumeDown: return "speaker.wave.1"
+        case .volumeUp: return "speaker.wave.3"
+        case .aspectFit: return "arrow.down.right.and.arrow.up.left"
+        case .aspectFill: return "arrow.up.left.and.arrow.down.right"
+        case .autoplayToggle: return "play.square.stack"
+        case .sleep15, .sleep30, .sleep60, .sleepCancel: return "moon.zzz"
+        case .retryServer: return "arrow.clockwise"
+        case .resetServerHealth: return "arrow.counterclockwise"
+        case .bookmarkScene: return "bookmark"
+        case .copyDiagnostics: return "doc.on.doc"
+        case .pauseAfter1, .pauseAfter2, .pauseAfter3, .cancelBinge: return "pause.circle"
+        case .brain: return "brain.head.profile"
+        case .study: return "character.book.closed"
+        case .recovery: return "cross.case"
+        }
+    }
+}
+
 @MainActor
 private struct ModulePlayerOptionsSheet: View {
     let panel: ModulePlayerPanel
     @ObservedObject var playback: ModulePlayerPlaybackController
     @ObservedObject var session: ModuleEpisodePlaybackSession
+    @StateObject private var continuity = KinetiqContinuityStore.shared
+    @StateObject private var connections = KinetiqMediaConnectionStore.shared
+    @State private var powerNotice: String?
+    @State private var typedTimecode = ""
+    @State private var bookmarkNote = ""
+    @State private var stopAtLocalTime = Date().addingTimeInterval(30 * 60)
+    @State private var showBrain = false
+    @State private var showActionFinder = false
+    @ObservedObject private var quickDeck = KinetiqPlayerQuickDeckStore.shared
+    @State private var showQuickDeckEditor = false
+    @State private var actionQuery = ""
+    @State private var pendingFinderDestination: KinetiqPlayerAction?
+    @State private var showRecoveryCenter = false
+    @State private var showStudyDeck = false
+    @State private var studySceneAnchor: KinetiqSceneAnchor?
+    @AppStorage("kinetiq.player.powerDeck.seekStep.v1") private var quickSeekSeconds = 10
+    @AppStorage("kinetiq.player.autoplayNext.v1") private var autoplayNextEpisode = true
     let onOpenWebPlayer: () -> Void
     let onClose: () -> Void
 
@@ -790,6 +953,89 @@ private struct ModulePlayerOptionsSheet: View {
             onClose: onClose
         ) {
             panelContent
+        }
+        .sheet(isPresented: $showBrain) {
+            NavigationStack { KinetiqBrainView() }
+        }
+        .sheet(isPresented: $showActionFinder, onDismiss: {
+            let target = pendingFinderDestination
+            pendingFinderDestination = nil
+            switch target {
+            case .brain: showBrain = true
+            case .study:
+                studySceneAnchor = playback.sceneAnchor
+                showStudyDeck = true
+            case .recovery: showRecoveryCenter = true
+            default: break
+            }
+        }) {
+            NavigationStack {
+                List {
+                    Section {
+                        ForEach(KinetiqPlayerAction.allCases.filter { actionQuery.isEmpty ||
+                            $0.title.localizedStandardContains(actionQuery) ||
+                            $0.category.localizedStandardContains(actionQuery)
+                        }) { action in
+                            Button {
+                                executePlayerAction(action)
+                                showActionFinder = false
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: action.symbol)
+                                        .frame(width: 30)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(action.title)
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(action.category)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(minHeight: 44)
+                            }
+                            .disabled(!playerActionAvailable(action))
+                        }
+                    } footer: {
+                        Text("Unavailable actions are disabled for this stream. All actions operate on the current player session.")
+                    }
+                }
+                .searchable(text: $actionQuery, prompt: "Search player controls")
+                .navigationTitle("Action Finder")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { showActionFinder = false }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showRecoveryCenter) {
+            NavigationStack { KinetiqRecoveryCenterView() }
+        }
+        .sheet(isPresented: $showQuickDeckEditor) {
+            NavigationStack {
+                KinetiqPlayerQuickDeckEditorView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showQuickDeckEditor = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showStudyDeck) {
+            NavigationStack {
+                KinetiqStudyDeckView(
+                    initialAnchor: studySceneAnchor,
+                    seriesTitle: session.animeTitle,
+                    onSeek: { seconds in
+                        guard let original = studySceneAnchor,
+                              let active = playback.sceneAnchor,
+                              active.mediaID == original.mediaID,
+                              active.episodeID == original.episodeID,
+                              active.language == original.language else { return }
+                        playback.seek(to: seconds)
+                    }
+                )
+            }
         }
     }
 
@@ -943,6 +1189,29 @@ private struct ModulePlayerOptionsSheet: View {
                     }
                 }
 
+                sectionLabel("ONE-TAP VIEWING PRESETS")
+                HStack(spacing: 8) {
+                    Button {
+                        playback.setRate(0.75)
+                        quickSeekSeconds = 5
+                        powerNotice = "Study preset: 0.75× with 5-second Quick Deck seeks."
+                    } label: {
+                        Label("Study", systemImage: "character.book.closed")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    Button {
+                        playback.setRate(1.0)
+                        playback.isAspectFill = false
+                        quickSeekSeconds = 10
+                        powerNotice = "Cinema preset: 1×, aspect fit and 10-second Quick Deck seeks."
+                    } label: {
+                        Label("Cinema", systemImage: "film")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(playback.player.currentItem == nil)
+
                 Rectangle()
                     .fill(.white.opacity(0.09))
                     .frame(height: 1)
@@ -1094,6 +1363,91 @@ private struct ModulePlayerOptionsSheet: View {
 
         case .more:
             VStack(alignment: .leading, spacing: 13) {
+                HStack {
+                    sectionLabel("YOUR QUICK DECK")
+                    Spacer()
+                    Button("Customize", systemImage: "slider.horizontal.3") {
+                        showQuickDeckEditor = true
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(KinetiqPalette.cyan)
+                }
+                if quickDeck.pinned.isEmpty {
+                    Text("No controls pinned yet. Customize to choose up to eight shortcuts.")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.64))
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
+                        ForEach(quickDeck.pinned) { action in
+                            Button {
+                                switch action {
+                                case .brain: showBrain = true
+                                case .study:
+                                    studySceneAnchor = playback.sceneAnchor
+                                    showStudyDeck = true
+                                case .recovery: showRecoveryCenter = true
+                                default: executePlayerAction(action)
+                                }
+                            } label: {
+                                Label(action.title, systemImage: action.symbol)
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!playerActionAvailable(action))
+                        }
+                    }
+                }
+
+                optionRow(
+                    title: "Find a player action",
+                    subtitle: "Search all 48 real actions, grouped by capability",
+                    symbol: "magnifyingglass.circle", selected: false
+                ) { showActionFinder = true }
+
+                powerDeck
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("RECOVERY & JAPANESE STUDY")
+
+                optionRow(
+                    title: "Recovery Center",
+                    subtitle: "Inspect categorized player failures, suggested actions and sanitized history",
+                    symbol: "cross.case", selected: false
+                ) { showRecoveryCenter = true }
+
+                if session.currentStream != nil {
+                    optionRow(
+                        title: "Retry this server now",
+                        subtitle: "Manually restart this episode stream without changing the source or watched progress",
+                        symbol: "arrow.clockwise", selected: false
+                    ) {
+                        playback.retryCurrentStream()
+                        powerNotice = "A manual retry was requested."
+                    }
+                }
+
+                optionRow(
+                    title: "Japanese Study Deck",
+                    subtitle: "Write scene-linked vocabulary cards, review them offline and export a CSV",
+                    symbol: "character.book.closed", selected: false
+                ) {
+                    studySceneAnchor = playback.sceneAnchor
+                    showStudyDeck = true
+                }
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
                 sectionLabel("SLEEP TIMER")
 
                 HStack(spacing: 9) {
@@ -1138,6 +1492,60 @@ private struct ModulePlayerOptionsSheet: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white)
                     }
+                }
+
+                HStack(spacing: 10) {
+                    DatePicker("Stop at local time", selection: $stopAtLocalTime,
+                               displayedComponents: .hourAndMinute)
+                        .datePickerStyle(.compact)
+                        .font(.caption)
+                    Button("Set") {
+                        let clock = Calendar.current.dateComponents([.hour, .minute], from: stopAtLocalTime)
+                        guard let next = Calendar.current.nextDate(after: Date(),
+                                matching: clock, matchingPolicy: .nextTime) else { return }
+                        let minutes = max(1, Int(ceil(next.timeIntervalSinceNow / 60)))
+                        playback.setSleepTimer(minutes)
+                        powerNotice = "Playback will pause near the next selected local time."
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text("The absolute-time option schedules the next occurrence on this device, even if it falls tomorrow. The timer is session-only and cancels when the player closes.")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.60))
+
+                Rectangle()
+                    .fill(.white.opacity(0.09))
+                    .frame(height: 1)
+                    .padding(.vertical, 3)
+
+                sectionLabel("BINGE GUARD · AUTOPLAY")
+                Toggle("Autoplay the next episode", isOn: $autoplayNextEpisode)
+                    .tint(KinetiqPalette.cyan)
+                    .foregroundStyle(.white)
+                    .onChange(of: autoplayNextEpisode) { _, enabled in
+                        if !enabled { playback.setPauseAfterEpisodes(nil) }
+                    }
+                HStack(spacing: 8) {
+                    ForEach([1, 2, 3], id: \.self) { count in
+                        Button("Pause after \(count)") {
+                            autoplayNextEpisode = true
+                            playback.setPauseAfterEpisodes(count)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(playback.episodesUntilPause == count ? KinetiqPalette.cyan : .gray)
+                    }
+                }
+                if let remaining = playback.episodesUntilPause {
+                    HStack {
+                        Text("Kinetiq will pause after \(remaining) completed episode(s), counting the current one.")
+                            .font(.caption).foregroundStyle(.white.opacity(0.72))
+                        Spacer(minLength: 4)
+                        Button("Cancel") { playback.setPauseAfterEpisodes(nil) }
+                            .font(.caption.weight(.semibold))
+                    }
+                } else {
+                    Text("A pause limit is temporary for this player session. Turning off autoplay stops after the current episode.")
+                        .font(.caption).foregroundStyle(.white.opacity(0.58))
                 }
 
                 Rectangle()
@@ -1278,6 +1686,282 @@ private struct ModulePlayerOptionsSheet: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    private var continuitySuggestion: KinetiqContinuitySuggestion? {
+        guard let source = session.sourceID,
+              let anime = session.animeItem,
+              let episode = session.currentEpisode else { return nil }
+        let id = String(source.utf8.count) + ":" + source + anime.id
+        return continuity.suggestion(for: id, episodeNumber: episode.number,
+            language: session.selectedLanguage, duration: playback.duration,
+            confirmedLinks: connections.connectedIDs(to: id))
+    }
+
+    private func playerActionAvailable(_ action: KinetiqPlayerAction) -> Bool {
+        switch action {
+        case .previousEpisode:
+            guard let current = session.currentEpisode,
+                  let index = session.episodes.firstIndex(where: { $0.id == current.id })
+            else { return false }
+            return index > 0
+        case .nextEpisode: return !session.upcomingEpisodes.isEmpty
+        case .playPause, .muteToggle: return playback.player.currentItem != nil
+        case .seekBack5, .seekForward5, .seekBack10, .seekForward10,
+             .seekBack15, .seekForward15, .seekBack30, .seekForward30,
+             .seekBack60, .seekForward60, .loopStart:
+            return playback.duration > 0
+        case .undoSeek: return playback.lastSeekPosition != nil
+        case .loopEnd: return playback.loopStart != nil
+        case .loopClear: return playback.loopStart != nil
+        case .replayDialogue: return playback.canUseTemporaryCaptions
+        case .retryCaptions:
+            return playback.externalSubtitles.selectedTrackID != nil
+        case .captionsOff:
+            return playback.player.currentItem != nil && !playback.requiresEmbeddedSubtitle
+        case .retryServer: return session.currentStream != nil
+        case .bookmarkScene: return playback.sceneAnchor != nil
+        case .sleepCancel: return playback.sleepTimerMinutes != nil
+        case .cancelBinge: return playback.episodesUntilPause != nil
+        case .pauseAfter1, .pauseAfter2, .pauseAfter3:
+            return session.currentEpisode != nil
+        case .rateSlow, .rateStudy, .rateNormal, .rateFine,
+             .rateFast, .rateFaster, .rateDouble, .volumeDown,
+             .volumeUp, .aspectFit, .aspectFill,
+             .sleep15, .sleep30, .sleep60:
+            return playback.player.currentItem != nil
+        case .autoplayToggle: return true
+        case .resetServerHealth, .copyDiagnostics, .brain, .study, .recovery:
+            return true
+        }
+    }
+
+    private func executePlayerAction(_ action: KinetiqPlayerAction) {
+        switch action {
+        case .playPause: playback.togglePlayback()
+        case .previousEpisode: playback.playPrevious()
+        case .nextEpisode: playback.playNext()
+        case .seekBack5: playback.seek(by: -5)
+        case .seekForward5: playback.seek(by: 5)
+        case .seekBack10: playback.seek(by: -10)
+        case .seekForward10: playback.seek(by: 10)
+        case .seekBack15: playback.seek(by: -15)
+        case .seekForward15: playback.seek(by: 15)
+        case .seekBack30: playback.seek(by: -30)
+        case .seekForward30: playback.seek(by: 30)
+        case .seekBack60: playback.seek(by: -60)
+        case .seekForward60: playback.seek(by: 60)
+        case .undoSeek: playback.undoLastSeek()
+        case .rateSlow: playback.setRate(0.5)
+        case .rateStudy: playback.setRate(0.75)
+        case .rateNormal: playback.setRate(1.0)
+        case .rateFine: playback.setRate(1.25)
+        case .rateFast: playback.setRate(1.5)
+        case .rateFaster: playback.setRate(1.75)
+        case .rateDouble: playback.setRate(2.0)
+        case .loopStart: playback.markLoopStart()
+        case .loopEnd: playback.markLoopEnd()
+        case .loopClear: playback.clearLoop()
+        case .replayDialogue: playback.rewindWithTemporaryCaptions()
+        case .captionsOff: playback.selectSubtitle(nil)
+        case .retryCaptions: playback.externalSubtitles.retry()
+        case .muteToggle: playback.player.isMuted.toggle()
+        case .volumeDown: playback.player.volume = max(0, playback.player.volume - 0.1)
+        case .volumeUp: playback.player.volume = min(1, playback.player.volume + 0.1)
+        case .aspectFit: playback.isAspectFill = false
+        case .aspectFill: playback.isAspectFill = true
+        case .autoplayToggle:
+            autoplayNextEpisode.toggle()
+            if !autoplayNextEpisode { playback.setPauseAfterEpisodes(nil) }
+            powerNotice = autoplayNextEpisode ? "Next-episode autoplay enabled." : "Next-episode autoplay disabled."
+        case .sleep15: playback.setSleepTimer(15)
+        case .sleep30: playback.setSleepTimer(30)
+        case .sleep60: playback.setSleepTimer(60)
+        case .sleepCancel: playback.setSleepTimer(nil)
+        case .retryServer: playback.retryCurrentStream()
+        case .resetServerHealth: playback.resetServerHealth()
+        case .bookmarkScene:
+            if let anchor = playback.sceneAnchor {
+                continuity.bookmark(anchor)
+                powerNotice = "Scene saved in your private bookmarks."
+            }
+        case .copyDiagnostics:
+            UIPasteboard.general.string = playback.diagnosticSummary
+            powerNotice = "Sanitized player diagnostics copied."
+        case .pauseAfter1, .pauseAfter2, .pauseAfter3:
+            autoplayNextEpisode = true
+            let count: Int
+            switch action {
+            case .pauseAfter1: count = 1
+            case .pauseAfter2: count = 2
+            default: count = 3
+            }
+            playback.setPauseAfterEpisodes(count)
+        case .cancelBinge: playback.setPauseAfterEpisodes(nil)
+        case .brain, .study, .recovery:
+            pendingFinderDestination = action
+        }
+    }
+
+    @ViewBuilder
+    private var powerDeck: some View {
+        sectionLabel("POWER DECK · TIMELINE")
+
+        Text("Quick seek step")
+            .font(.caption).foregroundStyle(.white.opacity(0.65))
+        HStack(spacing: 5) {
+            ForEach([5, 10, 15, 30, 60], id: \.self) { step in
+                Button("\(step)s") { quickSeekSeconds = step }
+                    .buttonStyle(.bordered)
+                    .tint(quickSeekSeconds == step ? KinetiqPalette.cyan : .gray)
+            }
+        }
+
+        HStack(spacing: 8) {
+            Button { playback.seek(by: -Double(quickSeekSeconds)) } label: {
+                Label("−\(quickSeekSeconds)s", systemImage: "backward.end")
+            }
+            Button { playback.seek(by: Double(quickSeekSeconds)) } label: {
+                Label("+\(quickSeekSeconds)s", systemImage: "forward.end")
+            }
+            Button { playback.undoLastSeek() } label: {
+                Label("Undo seek", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(playback.lastSeekPosition == nil)
+        }
+        .buttonStyle(.bordered)
+        .disabled(playback.duration <= 0)
+
+        HStack(spacing: 8) {
+            TextField("Jump to mm:ss or hh:mm:ss", text: $typedTimecode)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numbersAndPunctuation)
+                .accessibilityLabel("Exact playback timestamp")
+            Button("Go", systemImage: "arrow.right.circle.fill") {
+                guard let seconds = KinetiqTimecodeParser.seconds(from: typedTimecode),
+                      seconds <= playback.duration else {
+                    powerNotice = "Invalid timecode or timestamp beyond this episode. Try 12:34 or 01:12:34."
+                    return
+                }
+                playback.seek(to: seconds)
+                typedTimecode = ""
+                powerNotice = "Jumped to \(ModulePlayerPlaybackController.timeString(seconds))."
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(playback.duration <= 0 || typedTimecode.isEmpty)
+        }
+
+        sectionLabel("QUICK PLAYBACK PROFILES")
+        HStack(spacing: 8) {
+            Button("Study · 0.75×", systemImage: "text.book.closed") {
+                playback.setRate(0.75)
+                powerNotice = "Study playback speed set. Captions remain independently selectable."
+            }
+            Button("Cinema · 1×", systemImage: "film") {
+                playback.setRate(1.0)
+                playback.clearLoop()
+                powerNotice = "Normal speed restored and A/B loop cleared."
+            }
+        }
+        .buttonStyle(.bordered)
+
+        optionRow(title: "Ask Kinetiq Brain",
+                  subtitle: "Open grounded library/search tools or opt-in on-device AI; current episode details are not uploaded",
+                  symbol: "brain.head.profile", selected: false) {
+            showBrain = true
+        }
+
+        optionRow(title: "What did they say?",
+                  subtitle: "Rewind 10 seconds and show temporary captions when possible",
+                  symbol: "text.bubble", selected: false) {
+            playback.rewindWithTemporaryCaptions()
+        }
+        .disabled(!playback.canUseTemporaryCaptions)
+
+        HStack(spacing: 8) {
+            Button("A/B Start", systemImage: "a.circle") { playback.markLoopStart() }
+            Button("A/B End", systemImage: "b.circle") { playback.markLoopEnd() }
+            Button("Clear Loop", systemImage: "xmark.circle") { playback.clearLoop() }
+        }
+        .buttonStyle(.bordered)
+        .disabled(playback.duration <= 0)
+
+        if let start = playback.loopStart {
+            Text("Loop: \(Int(start))s → \(playback.loopEnd.map { "\(Int($0))s" } ?? "set end")")
+                .font(.caption).foregroundStyle(.white.opacity(0.72))
+        }
+
+        Rectangle().fill(.white.opacity(0.09)).frame(height: 1)
+        sectionLabel("SCENE PASSPORT · PRIVATE MEMORY")
+        TextField("Optional bookmark note", text: $bookmarkNote)
+            .textFieldStyle(.roundedBorder)
+            .onChange(of: bookmarkNote) { _, updated in
+                if updated.count > 240 { bookmarkNote = String(updated.prefix(240)) }
+            }
+        optionRow(title: "Bookmark this scene",
+                  subtitle: "Save this timecode and optional note on your device; no screenshot or URL captured",
+                  symbol: "bookmark", selected: false) {
+            if let anchor = playback.sceneAnchor {
+                continuity.bookmark(anchor, note: bookmarkNote.trimmingCharacters(in: .whitespacesAndNewlines))
+                bookmarkNote = ""
+                powerNotice = "Scene saved in Settings → Scene Memory."
+            }
+        }
+        .disabled(playback.sceneAnchor == nil)
+
+        if let activeAnchor = playback.sceneAnchor {
+            let saved = continuity.bookmarks.filter {
+                $0.anchor.mediaID == activeAnchor.mediaID &&
+                $0.anchor.episodeID == activeAnchor.episodeID &&
+                $0.anchor.language == activeAnchor.language
+            }.prefix(8)
+            if !saved.isEmpty {
+                Text("Saved moments in this edition")
+                    .font(.caption).foregroundStyle(.white.opacity(0.65))
+                ForEach(Array(saved)) { bookmark in
+                    HStack(spacing: 8) {
+                        Button {
+                            playback.seek(to: bookmark.anchor.seconds)
+                            powerNotice = "Returned to saved scene."
+                        } label: {
+                            Label("\(ModulePlayerPlaybackController.timeString(bookmark.anchor.seconds)) · \(bookmark.note.isEmpty ? "Scene" : bookmark.note)", systemImage: "bookmark.fill")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.bordered)
+                        Button(role: .destructive) { continuity.removeBookmark(bookmark.id) } label: {
+                            Image(systemName: "trash")
+                        }
+                        .accessibilityLabel("Remove scene bookmark")
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+
+        if let suggestion = continuitySuggestion {
+            optionRow(title: "Resume from \(suggestion.anchor.sourceName)",
+                      subtitle: "\(Int(suggestion.mappedSeconds))s · \(suggestion.explanation)",
+                      symbol: "arrow.triangle.branch", selected: false) {
+                playback.seek(to: suggestion.mappedSeconds)
+                powerNotice = "Applied approximate Source Passport handoff. Adjust manually if the cut differs."
+            }
+        } else {
+            Text("Cross-source resume appears only after you confirm the series in Source Passport and a matching episode, language and runtime are verified. Never jumps to an unverified cut.")
+                .font(.caption).foregroundStyle(.white.opacity(0.60))
+        }
+
+        if let anchor = playback.sceneAnchor {
+            ShareLink(item: "Watch \(session.animeTitle), episode \(anchor.episodeNumber) at \(ModulePlayerPlaybackController.timeString(anchor.seconds)) in your own authorized source. Shared by Kinetiq. No media link included.") {
+                Label("Share spoiler-safe watch timecode", systemImage: "square.and.arrow.up")
+                    .font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(.white)
+            Text("This shares a timecode invitation, not synchronized live playback or media files.")
+                .font(.caption2).foregroundStyle(.white.opacity(0.58))
+        }
+        if let powerNotice {
+            Text(powerNotice).font(.caption).foregroundStyle(KinetiqPalette.cyan)
         }
     }
 
@@ -1520,6 +2204,18 @@ private struct ModulePlayerOptionsSheet: View {
 
 // MARK: - Module Playback Controller
 
+/// One consistent decision for autoplay and a session-scoped binge limit.
+/// Never counts server retries or manual seeks as additional episodes.
+enum KinetiqBingeGuardPolicy {
+    static func completedEpisode(remaining: Int?, autoplay: Bool)
+        -> (advance: Bool, remaining: Int?) {
+        guard autoplay else { return (false, nil) }
+        guard let remaining else { return (true, nil) }
+        if remaining <= 1 { return (false, nil) }
+        return (true, remaining - 1)
+    }
+}
+
 @MainActor
 private final class ModulePlayerPlaybackController: ObservableObject {
 
@@ -1741,6 +2437,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     @Published private(set) var selectedAudio: AVMediaSelectionOption?
     @Published private(set) var selectedSubtitle: AVMediaSelectionOption?
     @Published private(set) var sleepTimerMinutes: Int?
+    @Published private(set) var episodesUntilPause: Int?
+    @Published private(set) var loopStart: Double?
+    @Published private(set) var loopEnd: Double?
+    @Published private(set) var lastSeekPosition: Double?
     @Published private(set) var resolutionText = "Analyzing…"
     @Published private(set) var playbackStatus = "Preparing stream"
     @Published private(set) var lastHTTPStatus: Int?
@@ -1749,6 +2449,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     private var audioGroup: AVMediaSelectionGroup?
     private var subtitleGroup: AVMediaSelectionGroup?
     private var sleepTask: Task<Void, Never>?
+    private var temporaryCaptionsTask: Task<Void, Never>?
 
     private let session: ModuleEpisodePlaybackSession
 
@@ -1824,6 +2525,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                     self.errorMessage = message
                     self.playbackStatus = "Source resolution failed"
                     self.note("Module handler reported an error")
+                    KinetiqRecoveryStore.shared.record(
+                        phase: .resolution, outcome: .failed,
+                        code: "MODULE_RESOLUTION_FAILED",
+                        source: self.session.sourceName,
+                        episode: self.session.currentEpisode?.number ?? "Unknown"
+                    )
                 }
             }
 
@@ -1918,6 +2625,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
                 self.currentTime = seconds
                 self.externalSubtitles.updatePlaybackTime(self.isRestoringPosition ? .nan : seconds)
+
+                if !self.isRestoringPosition, let start = self.loopStart,
+                   let end = self.loopEnd, end > start + 0.5,
+                   seconds >= end, seconds < end + 1.5 {
+                    self.seek(to: start)
+                }
 
                 if !self.isScrubbing {
                     self.scrubPosition = seconds
@@ -2052,6 +2765,11 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
         lastLoadedEpisode = session.currentEpisode
         lastLoadedLanguage = session.selectedLanguage
+        if previousEpisodeID != session.currentEpisode?.id {
+            clearLoop()
+            lastSeekPosition = nil
+            temporaryCaptionsTask?.cancel()
+        }
 
         let storedPosition: Double
         if let sourceID = session.sourceID,
@@ -2303,6 +3021,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 }
 
                 self.savePlaybackProgress(force: true, finished: true)
+                guard self.shouldAdvanceAfterEpisode() else {
+                    self.player.pause()
+                    self.wantsToPlay = false
+                    self.playbackStatus = "Episode finished · Binge Guard paused autoplay"
+                    return
+                }
                 await self.session.playNext()
 
                 if let message = self.session.playbackError,
@@ -2480,6 +3204,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         }
         note("Stage=AVPlayer; code=\(failureCode); status=\(lastHTTPStatus.map(String.init) ?? "unknown")")
         note("\(reason) on \(stream.hostName)")
+        KinetiqRecoveryStore.shared.record(
+            phase: .playback, outcome: .failed, code: failureCode,
+            source: session.sourceName,
+            episode: session.currentEpisode?.number ?? "Unknown",
+            httpStatus: lastHTTPStatus
+        )
 
         // Exactly one automatic retry per server. If the server rejects
         // authorization, move directly to a different available server.
@@ -2488,6 +3218,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
            automaticRetriedIDs.insert(stream.id).inserted {
             playbackStatus = "Retrying \(stream.label)"
             note("Automatic retry: \(stream.label)")
+            KinetiqRecoveryStore.shared.record(
+                phase: .playback, outcome: .retrying,
+                code: "AUTOMATIC_SERVER_RETRY", source: session.sourceName,
+                episode: session.currentEpisode?.number ?? "Unknown",
+                httpStatus: lastHTTPStatus
+            )
             recoveryTask?.cancel()
             recoveryTask = Task { @MainActor [weak self] in
                 do {
@@ -2522,6 +3258,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         ) {
             playbackStatus = "Switching to \(alternate.label)"
             note("Automatic fallback: \(alternate.label)")
+            KinetiqRecoveryStore.shared.record(
+                phase: .playback, outcome: .switching,
+                code: "SERVER_FALLBACK", source: session.sourceName,
+                episode: session.currentEpisode?.number ?? "Unknown",
+                httpStatus: lastHTTPStatus
+            )
             if session.selectStream(alternate) {
                 return
             }
@@ -2755,6 +3497,54 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     // MARK: Playback Controls
 
+    var sceneAnchor: KinetiqSceneAnchor? {
+        guard let source = session.sourceID, let anime = session.animeItem,
+              let episode = session.currentEpisode,
+              duration.isFinite && duration > 5, currentTime.isFinite,
+              currentTime >= 0 else { return nil }
+        let mediaID = String(source.utf8.count) + ":" + source + anime.id
+        return KinetiqSceneAnchor(mediaID: mediaID, sourceName: session.sourceName,
+            episodeID: episode.id, episodeNumber: episode.number,
+            language: session.selectedLanguage,
+            seconds: min(currentTime, duration), duration: duration)
+    }
+
+    var canUseTemporaryCaptions: Bool {
+        !subtitleOptions.isEmpty && player.currentItem != nil && duration > 0
+    }
+
+    func rewindWithTemporaryCaptions() {
+        guard canUseTemporaryCaptions else { return }
+        temporaryCaptionsTask?.cancel()
+        let previous = selectedSubtitle
+        let temporary = previous ?? subtitleOptions[0]
+        if previous == nil { selectSubtitle(temporary) }
+        seek(by: -10)
+        temporaryCaptionsTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, !Task.isCancelled, self.selectedSubtitle == temporary,
+                  previous == nil else { return }
+            self.selectSubtitle(nil)
+        }
+    }
+
+    func markLoopStart() {
+        guard duration > 0 else { return }
+        loopStart = min(max(currentTime, 0), duration)
+        loopEnd = nil
+    }
+
+    func markLoopEnd() {
+        guard let start = loopStart, currentTime > start + 0.5,
+              currentTime <= duration else { return }
+        loopEnd = currentTime
+    }
+
+    func clearLoop() {
+        loopStart = nil
+        loopEnd = nil
+    }
+
     func togglePlayback() {
         let waitingOrPlaying = player.timeControlStatus == .playing
             || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
@@ -2781,11 +3571,23 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         seek(to: base + seconds)
     }
 
+    func undoLastSeek() {
+        guard let previous = lastSeekPosition else { return }
+        lastSeekPosition = nil
+        seek(to: previous)
+        lastSeekPosition = nil
+    }
+
     func seek(to seconds: Double) {
         guard seconds.isFinite, duration > 0,
               let item = player.currentItem else { return }
 
         let target = min(max(seconds, 0), duration)
+        let previous = pendingSeekItem === item
+            ? (pendingSeekTarget ?? currentTime) : currentTime
+        if previous.isFinite && abs(previous - target) > 0.5 {
+            lastSeekPosition = previous
+        }
         let time = CMTime(seconds: target, preferredTimescale: 600)
         pendingSeekItem = item
         pendingSeekTarget = target
@@ -2909,6 +3711,11 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         refreshedEpisodeKey = nil
         playbackStatus = "Retrying manually"
         note("Manual retry: \(stream.label)")
+        KinetiqRecoveryStore.shared.record(
+            phase: .playback, outcome: .retrying,
+            code: "MANUAL_SERVER_RETRY", source: session.sourceName,
+            episode: session.currentEpisode?.number ?? "Unknown"
+        )
         lastStreamID = nil
         load(stream)
     }
@@ -2932,6 +3739,25 @@ private final class ModulePlayerPlaybackController: ObservableObject {
                 // The timer was cancelled or changed.
             }
         }
+    }
+
+    func setPauseAfterEpisodes(_ count: Int?) {
+        guard let count, (1...20).contains(count) else {
+            episodesUntilPause = nil
+            return
+        }
+        episodesUntilPause = count
+    }
+
+    private func shouldAdvanceAfterEpisode() -> Bool {
+        let key = "kinetiq.player.autoplayNext.v1"
+        let autoplay = UserDefaults.standard.object(forKey: key) == nil
+            ? true : UserDefaults.standard.bool(forKey: key)
+        let decision = KinetiqBingeGuardPolicy.completedEpisode(
+            remaining: episodesUntilPause, autoplay: autoplay
+        )
+        episodesUntilPause = decision.remaining
+        return decision.advance
     }
 
     // MARK: Lifecycle
@@ -2975,6 +3801,12 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             duration: length,
             finished: finished
         )
+        let mediaID = String(sourceID.utf8.count) + ":" + sourceID + anime.id
+        KinetiqContinuityStore.shared.record(KinetiqSceneAnchor(
+            mediaID: mediaID, sourceName: session.sourceName,
+            episodeID: episode.id, episodeNumber: episode.number,
+            language: lastLoadedLanguage, seconds: min(position, length),
+            duration: length))
         lastSavedProgressAt = now
     }
 
@@ -3008,6 +3840,9 @@ private final class ModulePlayerPlaybackController: ObservableObject {
         sleepTask?.cancel()
         sleepTask = nil
         sleepTimerMinutes = nil
+        temporaryCaptionsTask?.cancel()
+        temporaryCaptionsTask = nil
+        clearLoop()
         removeCurrentItemObservers()
 
         if let timeObserver {

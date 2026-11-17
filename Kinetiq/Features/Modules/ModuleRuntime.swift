@@ -4522,6 +4522,10 @@ struct ModuleAnimeDetailsView: View {
     @State private var episodeSearch = ""
     @State private var episodeFilter: ModuleEpisodeFilter = .all
     @State private var synopsisExpanded = false
+    @AppStorage(KinetiqSpoilerShieldPolicy.storageKey) private var spoilerDepthRaw = 0
+    @State private var revealedSpoilerEpisodeIDs = Set<String>()
+    @State private var revealedSpoilerExtraSections = false
+    @State private var revealedSeriesSynopsis = false
     @State private var metadata = ModuleTitleMetadata()
     @State private var supplementalMetadata: KinetiqSeriesSupplement?
     @State private var tmdbEpisodeMetadata: [Int: KinetiqEpisodeSupplement] = [:]
@@ -4584,9 +4588,18 @@ struct ModuleAnimeDetailsView: View {
                     detailSectionTabs
                     switch detailSection {
                     case .episodes: episodeSection
-                    case .about: aboutSection
-                    case .trailers: trailersSection
-                    case .related: relatedSection
+                    case .about:
+                        if extrasAreSpoilerProtected {
+                            protectedExtraSection("About this series")
+                        } else { aboutSection }
+                    case .trailers:
+                        if extrasAreSpoilerProtected {
+                            protectedExtraSection("Trailers and previews")
+                        } else { trailersSection }
+                    case .related:
+                        if extrasAreSpoilerProtected {
+                            protectedExtraSection("Related titles")
+                        } else { relatedSection }
                     }
                 }
                 .padding(18)
@@ -4620,6 +4633,11 @@ struct ModuleAnimeDetailsView: View {
             }
             .task(id: supplementalLookupKey) {
                 await loadSupplementalMetadata()
+            }
+            .onChange(of: spoilerDepthRaw) { _, _ in
+                revealedSpoilerEpisodeIDs.removeAll()
+                revealedSpoilerExtraSections = false
+                revealedSeriesSynopsis = false
             }
             .sheet(item: $relatedSelection) { related in
                 ModuleAnimeDetailsView(
@@ -4702,6 +4720,43 @@ struct ModuleAnimeDetailsView: View {
     private var continuation: ModuleEpisodeContinuation? {
         animeCollection.continuation(
             sourceID: sourceID, animeID: item.id, episodes: episodes
+        )
+    }
+
+    private var spoilerDepth: KinetiqSpoilerDepth {
+        KinetiqSpoilerDepth(rawValue: spoilerDepthRaw) ?? .off
+    }
+
+    private var extrasAreSpoilerProtected: Bool {
+        KinetiqSpoilerShieldPolicy.shouldProtectExtraSection(
+            depth: spoilerDepth,
+            explicitlyRevealed: revealedSpoilerExtraSections
+        )
+    }
+
+    private func protectedExtraSection(_ name: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "eye.slash.fill")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Spoiler Shield is protecting \(name.lowercased()).")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Reveal for this visit", systemImage: "eye") {
+                revealedSpoilerExtraSections = true
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, minHeight: 180)
+        .padding(16)
+        .background(detailTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func hidesEpisodeSpoilers(_ episode: ModuleAnimeEpisode) -> Bool {
+        KinetiqSpoilerShieldPolicy.shouldHideEpisode(
+            watched: hasWatched(episode), depth: spoilerDepth,
+            revealed: revealedSpoilerEpisodeIDs.contains(episode.id)
         )
     }
 
@@ -4883,7 +4938,17 @@ struct ModuleAnimeDetailsView: View {
             .buttonStyle(.bordered)
             .tint(detailTheme.accent)
 
-            if let synopsis = details?.synopsis ?? item.synopsis,
+            if spoilerDepth == .strict && !revealedSeriesSynopsis {
+                Button {
+                    revealedSeriesSynopsis = true
+                } label: {
+                    Label("Series synopsis hidden · Reveal for this visit", systemImage: "eye.slash")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .tint(detailTheme.accent)
+            } else if let synopsis = details?.synopsis ?? item.synopsis,
                !synopsis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
@@ -5037,8 +5102,26 @@ struct ModuleAnimeDetailsView: View {
 
                 Spacer()
 
+                Menu {
+                    Picker("Spoiler Shield", selection: $spoilerDepthRaw) {
+                        ForEach(KinetiqSpoilerDepth.allCases) { option in
+                            Text(option.title).tag(option.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("Spoiler Shield", systemImage: spoilerDepth == .off ? "eye" : "eye.slash")
+                        .font(.caption.weight(.semibold))
+                }
+                .accessibilityHint("Choose how episode artwork, titles and descriptions are protected")
+
                 Text("\(watchedEpisodeCount) / \(episodes.count) watched")
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if spoilerDepth != .off {
+                Text(spoilerDepth.explanation)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -5165,10 +5248,17 @@ struct ModuleAnimeDetailsView: View {
         let synopsis = episode.synopsis ?? tmdbEpisode?.synopsis ?? anilistEpisode?.synopsis
         let duration = episode.durationMinutes ?? tmdbEpisode?.durationMinutes
         let airDate = episode.airDate ?? tmdbEpisode?.airDate
+        let spoilerProtected = hidesEpisodeSpoilers(episode)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
-                    if let imageURL {
+                    if spoilerProtected {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(detailTheme.accent.opacity(0.10))
+                        Image(systemName: "eye.slash.fill")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.secondary)
+                    } else if let imageURL {
                         ModuleAnimeArtworkView(url: imageURL)
                     } else {
                         LinearGradient(
@@ -5196,7 +5286,11 @@ struct ModuleAnimeDetailsView: View {
                     Text("Episode \(episode.number)")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                    if let title {
+                    if spoilerProtected {
+                        Text("Episode details hidden")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else if let title {
                         Text(title)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(3)
@@ -5209,6 +5303,17 @@ struct ModuleAnimeDetailsView: View {
                 if episode.subAvailable { episodePlayButton(episode, language: "sub") }
                 if episode.dubAvailable { episodePlayButton(episode, language: "dub") }
                 Spacer(minLength: 0)
+                if spoilerProtected {
+                    Button {
+                        revealedSpoilerEpisodeIDs.insert(episode.id)
+                    } label: {
+                        Image(systemName: "eye")
+                            .font(.system(size: 19))
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Reveal Episode \(episode.number) details for this visit")
+                }
                 Menu {
                     if episode.subAvailable { watchedAction(episode, language: "sub") }
                     if episode.dubAvailable { watchedAction(episode, language: "dub") }
@@ -5232,7 +5337,7 @@ struct ModuleAnimeDetailsView: View {
                 .accessibilityLabel("Download options for Episode \(episode.number)")
             }
 
-            if let synopsis, !synopsis.isEmpty {
+            if !spoilerProtected, let synopsis, !synopsis.isEmpty {
                 Text(synopsis)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -46,6 +46,48 @@ implementations from other applications.
 
 ## Current implementation reconciliation — 16 November 2026
 
+### V2 source expansion — 17 November 2026 (NOT YET IMPORTED)
+
+The previously delivered all-in-one **V1 source ZIP has not yet been imported,
+committed or iPhone-tested by the owner**. The cumulative V2 full-source tree
+keeps all V1 additions and adds the **48-command player Action Finder**, a
+reorderable, eight-slot per-device Quick Deck with real capability checks,
+optional episode-level **Spoiler Shield** (Off/Unwatched/Strict), Study/Cinema
+presets and a stop-at-local-clock player timer. App version remains `0.3.0`;
+Discord RPC and the four original tabs are not changed. Details and exact
+test gates: `KINETIQ_ALL_IN_ONE_V2_HANDOFF.md`.
+
+Still outstanding from both research blueprints: live synchronized watch
+rooms, automatic end-to-end-protected device sync, broad codec/subtitle
+coverage, universal scene-level source matching, AI tool permissions and
+many advanced playback/UX controls. **No Xcode/IPA build has been certified**
+for this expansion. Fixing Actions Run is deferred by owner decision.
+
+### All-in-One Power Center delivery — 17 November 2026
+
+This source release adds grounded Kinetiq Brain tools and an optional
+Apple Intelligence multi-turn conversation (iOS 26+ and supported device
+configuration only; no cloud model), private
+Scene Passport progress and confirmed-link seek suggestions, scene bookmarks,
+contextual module-player timeline controls (custom seek step, undo seek, exact
+timestamp, bookmark notes and navigation), non-destructive native HEVC Quality
+Forge, portable manual Sync Vault, local Viewing Insights, exportable privacy-safe
+Travel Vault offline manifests, and shareable Watch
+Plans with QR invitations, plus a read-only KinetiqMedia Library Doctor for
+unwatched-file counts and bounded exact-duplicate checks. The four tabs and
+the original Discord RPC implementation are preserved. See
+`ALL_IN_ONE_RELEASE_2026-11-17.md` for code owners, acceptance checks and the
+honest distinction between implemented systems and the unfinished research
+inventory. Both original research blueprints are shipped in `docs/research/`.
+
+Still open: generative AI for unsupported devices or a consented cloud model;
+automatic, protected cross-device cloud sync; synchronized live Watch Rooms/SharePlay;
+frame-accurate universal source alignment; expanded media codec engine and the
+remaining player/UX capabilities in the masterplan. Physical-device acceptance
+and macOS Xcode compilation are required before claiming release readiness.
+
+---
+
 **Baseline:** `Haimiya612/Kinetiq-iOS` commit `b5e832c` (before the season
 queue changes in this delivery). This section supersedes the historical
 "current focus" and provisional batch statements later in this document;
@@ -1208,5 +1250,25 @@ can change. The integration programme above gives scope and acceptance tests.
   docs/IOS_BUILD_AND_SIGNING.md
 
 ---
+
+## Same-version foundation expansion — 17 November 2026
+
+- [x] Add searchable player Action Finder with 35 connected controls and
+  explicit capability gating; no extra main tab.
+- [x] Add module Binge Guard with completion-based 1/2/3 episode pause
+  limits and a persistent autoplay preference.
+- [x] Add a private Recovery Center for actual resolution/playback faults,
+  numeric status, action history, deduplication and sanitized export.
+- [x] Add manual scene-linked Japanese flashcards, local review scheduling
+  and CSV export with spreadsheet-injection protection.
+- [x] Keep Discord RPC, supplied source identities, four tabs and original
+  Xcode app version unchanged.
+- [ ] Verify new Swift contract tests, native playback and sheet transitions
+  on iOS using the existing Actions/iPhone process (user deferred Run).
+- [ ] Ship validated watch rooms, encrypted live device sync, automatic
+  subtitle extraction/translation and remaining blueprint controls only when
+  their underlying engines and permission models are real.
+
+See [Foundation expansion details](KINETIQ_FOUNDATION_EXPANSION_2026-11-17.md).
 
 *Kinetiq -- One platform. Every kind of media.*
