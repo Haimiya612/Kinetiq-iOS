@@ -22,6 +22,8 @@ final class KinetiqQualityForgeController: ObservableObject {
     @Published private(set) var result: URL?
     @Published private(set) var originalBytes: Int64 = 0
     @Published private(set) var convertedBytes: Int64 = 0
+    @Published private(set) var isSample = false
+    @Published private(set) var sampleLength: Double = 0
     private var exportSession: AVAssetExportSession?
 
     func cancel() {
@@ -29,17 +31,21 @@ final class KinetiqQualityForgeController: ObservableObject {
         status = "Canceled. Your original file is still intact."
     }
 
-    func convert(_ item: KinetiqImportedVideo, preset: KinetiqQualityPreset) {
+    func convert(_ item: KinetiqImportedVideo, preset: KinetiqQualityPreset,
+                 sampleOnly: Bool = false) {
         guard !busy else { return }
         busy = true
         result = nil
         originalBytes = item.bytes
         convertedBytes = 0
+        isSample = sampleOnly
+        sampleLength = 0
         status = "Checking file, battery and thermal conditions…"
-        Task { await execute(item, preset: preset) }
+        Task { await execute(item, preset: preset, sampleOnly: sampleOnly) }
     }
 
-    private func execute(_ item: KinetiqImportedVideo, preset: KinetiqQualityPreset) async {
+    private func execute(_ item: KinetiqImportedVideo, preset: KinetiqQualityPreset,
+                         sampleOnly: Bool) async {
         defer { busy = false; exportSession = nil }
         let device = UIDevice.current
         device.isBatteryMonitoringEnabled = true
@@ -60,7 +66,8 @@ final class KinetiqQualityForgeController: ObservableObject {
         }
         let key = URLResourceKey.volumeAvailableCapacityForImportantUsageKey
         let free = (try? item.url.resourceValues(forKeys: [key]).volumeAvailableCapacityForImportantUsage) ?? 0
-        guard free > max(300_000_000, item.bytes) else {
+        let requiredSpace = sampleOnly ? Int64(150_000_000) : max(300_000_000, item.bytes)
+        guard free > requiredSpace else {
             status = "Not enough spare storage for a second playable copy. No changes made."
             return
         }
@@ -70,6 +77,19 @@ final class KinetiqQualityForgeController: ObservableObject {
               exporter.supportedFileTypes.contains(.mov) else {
             status = "This codec/container cannot be converted with Apple's native HEVC exporter."
             return
+        }
+
+        // A short sample is a genuine re-encode of the first 30 seconds;
+        // it is not a ZIP estimate, and is never used to overwrite the input.
+        if sampleOnly {
+            guard let seconds = try? await asset.load(.duration).seconds,
+                  seconds.isFinite, seconds > 0 else {
+                status = "Unable to read the original duration for a sample."
+                return
+            }
+            sampleLength = min(30, seconds)
+            exporter.timeRange = CMTimeRange(start: .zero,
+                duration: CMTime(seconds: sampleLength, preferredTimescale: 600))
         }
 
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -83,7 +103,9 @@ final class KinetiqQualityForgeController: ObservableObject {
         exporter.outputFileType = .mov
         exporter.shouldOptimizeForNetworkUse = true
         exportSession = exporter
-        status = "Encoding a new HEVC copy. Keep Kinetiq open until complete…"
+        status = sampleOnly
+            ? "Encoding a 30-second HEVC sample. Original preserved…"
+            : "Encoding a new HEVC copy. Keep Kinetiq open until complete…"
 
         // Callback API works on the iOS 17 deployment target. The caller's
         // task awaits completion while the export session performs the work.
@@ -108,8 +130,10 @@ final class KinetiqQualityForgeController: ObservableObject {
         do {
             let before = try await asset.load(.duration).seconds
             let after = try await newAsset.load(.duration).seconds
+            let expectedDuration = sampleOnly ? sampleLength : before
             guard before.isFinite, after.isFinite, before > 0,
-                  abs(before - after) < max(2, before * 0.01) else {
+                  expectedDuration > 0,
+                  abs(expectedDuration - after) < max(2, expectedDuration * 0.01) else {
                 try? FileManager.default.removeItem(at: output)
                 status = "Output failed the runtime verification. Original preserved."
                 return
@@ -121,6 +145,10 @@ final class KinetiqQualityForgeController: ObservableObject {
         }
         result = output
         convertedBytes = Int64(bytes)
+        if sampleOnly {
+            status = "Verified \(Int(sampleLength.rounded()))-second sample encoded (\(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))). Compare its picture and audio before converting the entire video. This is NOT an estimate of the full video's size."
+            return
+        }
         let difference = item.bytes - Int64(bytes)
         if difference > 0 {
             status = "Converted copy verified. Saved \(ByteCountFormatter.string(fromByteCount: difference, countStyle: .file)) compared with this original. Check subtitles/audio before relying on it offline."
@@ -181,6 +209,10 @@ struct KinetiqQualityForgeView: View {
                     ProgressView("Converting…")
                     Button("Cancel conversion", role: .cancel) { worker.cancel() }
                 } else {
+                    Button("Preview with a 30-second HEVC sample", systemImage: "film") {
+                        if let selected { worker.convert(selected, preset: preset, sampleOnly: true) }
+                    }
+                    .disabled(selected == nil)
                     Button("Create separate compressed copy", systemImage: "square.on.square") {
                         showingConfirmation = true
                     }
@@ -188,8 +220,13 @@ struct KinetiqQualityForgeView: View {
                 }
                 Text(worker.status).font(.caption)
                 if let output = worker.result {
-                    LabeledContent("Source", value: ByteCountFormatter.string(fromByteCount: worker.originalBytes, countStyle: .file))
-                    LabeledContent("Converted", value: ByteCountFormatter.string(fromByteCount: worker.convertedBytes, countStyle: .file))
+                    LabeledContent("Original full file", value: ByteCountFormatter.string(fromByteCount: worker.originalBytes, countStyle: .file))
+                    LabeledContent(worker.isSample ? "Encoded sample" : "Converted full file",
+                        value: ByteCountFormatter.string(fromByteCount: worker.convertedBytes, countStyle: .file))
+                    if worker.isSample {
+                        Text("The sample size cannot be compared directly to the full original. Verify image quality and audio yourself before creating a full-size copy.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("Preview converted version", systemImage: "play.rectangle") { previewURL = output }
                     ShareLink(item: output) { Label("Export converted copy", systemImage: "square.and.arrow.up") }
                 }

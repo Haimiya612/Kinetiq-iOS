@@ -204,6 +204,7 @@ struct KinetiqSmartDiscoveryView: View {
     @StateObject private var history = PlaybackHistoryStore.shared
     @StateObject private var favorites = ModuleAnimeCollectionStore.shared
     @State private var question = ""
+    @FocusState private var queryFieldFocused: Bool
     @State private var intent: KinetiqDiscoveryIntent?
     @State private var suggestions: [KinetiqCatalogSuggestion] = []
     @State private var imported: [KinetiqImportedVideo] = []
@@ -251,6 +252,7 @@ struct KinetiqSmartDiscoveryView: View {
                 .padding(19)
             }
             .background(KinetiqExperienceBackground())
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Compass")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -277,6 +279,7 @@ struct KinetiqSmartDiscoveryView: View {
                     .lineLimit(1...3)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($queryFieldFocused)
                     .submitLabel(.search)
                     .onSubmit(runSearch)
             }
@@ -490,6 +493,7 @@ struct KinetiqSmartDiscoveryView: View {
     private func refreshLocalFiles() { imported = KinetiqPrivateLibraryScanner.importedVideos() }
 
     private func runSearch() {
+        queryFieldFocused = false
         let parsed = KinetiqDiscoveryIntent.interpret(question)
         guard !parsed.original.isEmpty else { return }
         searchTask?.cancel()

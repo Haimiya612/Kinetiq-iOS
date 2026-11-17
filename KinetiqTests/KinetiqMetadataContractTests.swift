@@ -38,6 +38,20 @@ final class KinetiqMetadataContractTests: XCTestCase {
         XCTAssertNil(KinetiqEpisodeMetadataMatching.displayTitle("Episode 5", episodeNumber: "5"))
     }
 
+    func testDiscordPresentationRemovesRepeatedEpisodePrefixesWithoutDroppingRealTitle() {
+        XCTAssertEqual(KinetiqEpisodeMetadataMatching.displayTitle(
+            "Episode 1: S1E1: Episode 1: Alya Hides Her Feelings", episodeNumber: "1"),
+            "Alya Hides Her Feelings")
+        XCTAssertEqual(KinetiqEpisodeMetadataMatching.displayTitle(
+            "S2E05: Episode 5 - The First Promise", episodeNumber: "5"),
+            "The First Promise")
+        XCTAssertNil(KinetiqEpisodeMetadataMatching.displayTitle(
+            "Episode 3: S1E3: Episode 3", episodeNumber: "3"))
+        XCTAssertEqual(KinetiqEpisodeMetadataMatching.displayTitle(
+            "Episode 6: Opening Night", episodeNumber: "5"),
+            "Episode 6: Opening Night")
+    }
+
     func testSeasonMatchingAvoidsNumberingByTitleSimilarity() {
         let matching = KinetiqEpisodeMetadataMatching.normalized("Blue Box Season 2")
         XCTAssertEqual(matching,

@@ -35,20 +35,35 @@ enum KinetiqEpisodeMetadataMatching {
         guard let raw else { return nil }
         var title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 200 else { return nil }
-        if title == episodeNumber { return nil }
-        let escaped = NSRegularExpression.escapedPattern(for: episodeNumber)
-        if let pattern = try? NSRegularExpression(
-            pattern: "(?i)^\\s*(?:episode|ep\\.?)\\s*#?\\s*\(escaped)\\s*[:\\-–—]\\s*"),
-           let match = pattern.firstMatch(in: title, range: NSRange(title.startIndex..., in: title)),
-           let range = Range(match.range, in: title) {
-            title.removeSubrange(range)
+        let number = episodeNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !number.isEmpty else { return title }
+        let escaped = NSRegularExpression.escapedPattern(for: number)
+        // Some providers prepend *several* episode identifiers, e.g.
+        // "Episode 1: S1E1: Episode 1: Alya...". Consume repeated,
+        // matching prefixes for presentation only; never change episode IDs.
+        let patterns = [
+            "(?i)^\\s*(?:episode|ep\\.?)\\s*#?\\s*\(escaped)(?:\\s*[:\\-–—]\\s*|\\s+$)",
+            "(?i)^\\s*s\\d{1,2}\\s*e0*\(escaped)(?:\\s*[:\\-–—]\\s*|\\s+$)"
+        ]
+        for _ in 0..<6 {
+            var didRemove = false
+            for pattern in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern),
+                      let match = regex.firstMatch(in: title,
+                          range: NSRange(title.startIndex..., in: title)),
+                      let range = Range(match.range, in: title) else { continue }
+                title.removeSubrange(range)
+                title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                didRemove = true
+                break
+            }
+            if !didRemove { break }
         }
-        let bare = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !bare.isEmpty else { return nil }
-        if let remaining = leadingEpisodeNumber(in: bare), remaining == episodeNumber,
-           bare.range(of: #"(?i)^\s*(?:episode|ep\.?)\s*#?\s*\d+\s*$"#,
-                      options: .regularExpression) != nil { return nil }
-        return bare
+        guard !title.isEmpty, title != number else { return nil }
+        if let remaining = leadingEpisodeNumber(in: title), remaining == number,
+           title.range(of: #"(?i)^\s*(?:episode|ep\.?)\s*#?\s*\d+\s*$"#,
+                       options: .regularExpression) != nil { return nil }
+        return title
     }
 
     /// Only a plain episode number is accepted for cross-provider alignment.

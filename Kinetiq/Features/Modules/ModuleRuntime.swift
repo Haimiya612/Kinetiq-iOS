@@ -4914,7 +4914,7 @@ struct ModuleAnimeDetailsView: View {
                 } label: {
                     Label(
                         animeCollection.isFavorite(sourceID: sourceID, animeID: item.id)
-                            ? "My List ✓" : "My List",
+                            ? "My List" : "My List",
                         systemImage: animeCollection.isFavorite(sourceID: sourceID, animeID: item.id)
                             ? "checkmark" : "plus"
                     )

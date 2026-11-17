@@ -40,6 +40,9 @@ struct KinetiqSeasonDownloadSheet: View {
     @State private var skipped = 0
     @State private var failures: [String] = []
     @State private var preparationTask: Task<Void, Never>?
+    @State private var nextEpisodeCount = 0
+    @State private var seriesBudgetGB = 0
+    @State private var totalSelectedCount = 0
 
     @AppStorage("kinetiq.offline.defaultQuality")
     private var qualityRaw = KinetiqOfflineQuality.original.rawValue
@@ -56,6 +59,31 @@ struct KinetiqSeasonDownloadSheet: View {
         episodes.filter { KinetiqOfflineBatchPolicy.supports($0, language: language) }.count
     }
 
+    private var seasonDownloadStatus: (ready: Int, waiting: Int, failed: Int) {
+        var ready = 0, waiting = 0, failed = 0
+        for episode in episodes where KinetiqOfflineBatchPolicy.supports(episode, language: language) {
+            guard let item = downloads.entry(sourceID: sourceID, animeID: anime.id,
+                episodeID: episode.id, language: language) else { continue }
+            switch item.state {
+            case .ready: ready += 1
+            case .queued, .downloading, .paused: waiting += 1
+            case .failed: failed += 1
+            }
+        }
+        return (ready, waiting, failed)
+    }
+
+    private var selectedBatch: [ModuleAnimeEpisode] {
+        let supported = episodes.filter { KinetiqOfflineBatchPolicy.supports($0, language: language) }
+        guard nextEpisodeCount > 0 else { return Array(supported.prefix(KinetiqOfflineBatchPolicy.maximumEpisodes)) }
+        let missing = supported.filter { episode in
+            guard let existing = downloads.entry(sourceID: sourceID, animeID: anime.id,
+                episodeID: episode.id, language: language) else { return true }
+            return existing.state == .failed
+        }
+        return Array(missing.prefix(nextEpisodeCount))
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -64,6 +92,11 @@ struct KinetiqSeasonDownloadSheet: View {
                     LabeledContent("Selection", value: scopeName)
                     LabeledContent("Episodes", value: "\(episodes.count)")
                     LabeledContent("Available in \(language.uppercased())", value: "\(eligibleCount)")
+                    LabeledContent("Already saved", value: "\(seasonDownloadStatus.ready)")
+                    LabeledContent("Queued / transferring", value: "\(seasonDownloadStatus.waiting)")
+                    if seasonDownloadStatus.failed > 0 {
+                        LabeledContent("Needs retry", value: "\(seasonDownloadStatus.failed)")
+                    }
                     Label(sourceName, systemImage: "play.rectangle.on.rectangle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -89,6 +122,25 @@ struct KinetiqSeasonDownloadSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                         Toggle("Wi-Fi only", isOn: $wifiOnly)
+                        Picker("Batch size", selection: $nextEpisodeCount) {
+                            Text("Full selection").tag(0)
+                            Text("Next 1 missing").tag(1)
+                            Text("Next 3 missing").tag(3)
+                            Text("Next 5 missing").tag(5)
+                        }
+                        Text("Next-N selects the earliest eligible episodes not already saved or queued. It prepares a batch now; it is not a background subscription.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Picker("This series storage cap", selection: $seriesBudgetGB) {
+                            ForEach(KinetiqOfflineSeriesBudget.options, id: \.self) { value in
+                                Text(value == 0 ? "Use global limit" : "\(value) GB").tag(value)
+                            }
+                        }
+                        .onChange(of: seriesBudgetGB) { _, value in
+                            KinetiqOfflineSeriesBudget.setLimit(value,
+                                sourceID: sourceID, animeID: anime.id)
+                        }
+                        Text("A series cap prevents queuing once its already-saved files reach the limit. Final file sizes are unknown before downloading.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("Quality is applied to each episode's advertised HLS variants. MP4 files cannot be re-encoded by this setting. Custom quality falls back to Original when the saved variant is unavailable.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -97,8 +149,8 @@ struct KinetiqSeasonDownloadSheet: View {
 
                 if isPreparing || finished {
                     Section("Batch preparation") {
-                        ProgressView(value: Double(processed), total: Double(max(1, episodes.count)))
-                        LabeledContent("Episodes checked", value: "\(processed) / \(episodes.count)")
+                        ProgressView(value: Double(processed), total: Double(max(1, totalSelectedCount)))
+                        LabeledContent("Episodes checked", value: "\(processed) / \(totalSelectedCount)")
                         LabeledContent("Added to download queue", value: "\(queued)")
                         LabeledContent("Already queued or unavailable in \(language.uppercased())", value: "\(skipped)")
                         LabeledContent("Resolution / enqueue failures", value: "\(failures.count)")
@@ -121,7 +173,7 @@ struct KinetiqSeasonDownloadSheet: View {
                             }
                         }
                     }
-                } else if episodes.count > KinetiqOfflineBatchPolicy.maximumEpisodes {
+                } else if episodes.count > KinetiqOfflineBatchPolicy.maximumEpisodes && nextEpisodeCount == 0 {
                     Section {
                         Label("This selection contains more than \(KinetiqOfflineBatchPolicy.maximumEpisodes) episodes. Select one season or a smaller source list before downloading.",
                               systemImage: "exclamationmark.triangle")
@@ -129,14 +181,16 @@ struct KinetiqSeasonDownloadSheet: View {
                 } else {
                     Section {
                         Button {
+                            let batch = selectedBatch
+                            totalSelectedCount = batch.count
                             isPreparing = true
-                            preparationTask = Task { await prepareBatch() }
+                            preparationTask = Task { await prepareBatch(batch) }
                         } label: {
-                            Label("Queue \(eligibleCount) Episodes", systemImage: "arrow.down.circle.fill")
+                            Label("Queue \(selectedBatch.count) Episodes", systemImage: "arrow.down.circle.fill")
                                 .frame(maxWidth: .infinity)
                                 .font(.headline)
                         }
-                        .disabled(eligibleCount == 0)
+                        .disabled(selectedBatch.isEmpty)
                     }
                     Section {
                         Text("Only use downloads when the source permits saving its media. Each episode resolves separately; a broken source cannot be converted into a working download by batching it.")
@@ -151,6 +205,10 @@ struct KinetiqSeasonDownloadSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .onAppear {
+                seriesBudgetGB = KinetiqOfflineSeriesBudget.limit(
+                    sourceID: sourceID, animeID: anime.id)
             }
             .onDisappear { preparationTask?.cancel() }
         }
@@ -177,14 +235,14 @@ struct KinetiqSeasonDownloadSheet: View {
         )
     }
 
-    private func prepareBatch() async {
+    private func prepareBatch(_ batch: [ModuleAnimeEpisode]) async {
         defer {
             stopped = Task.isCancelled
             isPreparing = false
             finished = true
             preparationTask = nil
         }
-        for episode in episodes {
+        for episode in batch {
             if Task.isCancelled { break }
             defer { processed += 1 }
 
@@ -357,6 +415,20 @@ struct KinetiqEpisodeDownloadSheet: View {
                             Text(variants.isEmpty
                                  ? "The stream exposes no selectable resolutions. The original version will be saved."
                                  : "Original selects the source's default offline rendition.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Section("Approximate storage") {
+                        if let estimate = KinetiqOfflineSizeEstimate.approximateBytes(
+                            minutes: episode.durationMinutes,
+                            peakBitRate: selectedVariant?.peakBitRate) {
+                            LabeledContent("At advertised peak bitrate",
+                                value: ByteCountFormatter.string(fromByteCount: estimate,
+                                                                 countStyle: .file))
+                            Text("A rough peak-rate calculation, not a guaranteed download size. Available audio tracks and HLS packaging can change the result.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Size unknown: the source has not provided both a supported duration and a selectable bitrate.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -535,7 +607,7 @@ struct KinetiqOfflineDownloadsView: View {
             case .ready: item.state == .ready
             case .failed: item.state == .failed
             }
-        }.sorted { $0.createdAt > $1.createdAt }
+        }
     }
 
     var body: some View {
@@ -545,6 +617,12 @@ struct KinetiqOfflineDownloadsView: View {
                     header
                     summary
                     filterPicker
+                    if let message = store.pendingPolicyExplanation {
+                        Label(message, systemImage: "clock.badge.exclamationmark")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(12)
+                            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+                    }
                     if visible.isEmpty {
                         ContentUnavailableView(
                             filter == .all ? "Nothing Downloaded Yet" : "No Matching Downloads",
@@ -618,11 +696,22 @@ struct KinetiqOfflineDownloadsView: View {
     }
 
     private var summary: some View {
-        HStack(spacing: 12) {
-            Label("\(store.entries.filter { $0.state == .ready }.count) offline",
-                  systemImage: "checkmark.circle.fill")
-            Spacer()
-            Text(ByteCountFormatter.string(fromByteCount: store.totalBytes, countStyle: .file))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Label("\(store.entries.filter { $0.state == .ready }.count) offline",
+                      systemImage: "checkmark.circle.fill")
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: store.totalBytes, countStyle: .file))
+            }
+            HStack(spacing: 12) {
+                Label("\(store.queuedCount) waiting", systemImage: "list.number")
+                Spacer()
+                Label("\(store.entries.filter { $0.state == .downloading }.count) active",
+                      systemImage: "arrow.down.circle")
+            }
+            .font(.caption2)
+            Text("Queued transfer order is saved. Move waiting episodes up or down using the arrows on each card.")
+                .font(.caption2)
         }
         .font(.caption.weight(.semibold))
         .foregroundStyle(.secondary)
@@ -727,6 +816,18 @@ struct KinetiqOfflineDownloadsView: View {
                 Button("Resume", systemImage: "play.fill") { store.resume(entry.id) }
                     .buttonStyle(.bordered)
             }
+            if entry.state == .queued {
+                Button { store.moveQueued(entry.id, towardFront: true) } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .disabled(!store.canMoveQueued(entry.id, towardFront: true))
+                .accessibilityLabel("Move episode earlier in download queue")
+                Button { store.moveQueued(entry.id, towardFront: false) } label: {
+                    Image(systemName: "arrow.down")
+                }
+                .disabled(!store.canMoveQueued(entry.id, towardFront: false))
+                .accessibilityLabel("Move episode later in download queue")
+            }
             if entry.state == .failed && store.canRetry(entry.id) {
                 Button("Retry", systemImage: "arrow.clockwise") { store.retry(entry.id) }
                     .buttonStyle(.bordered)
@@ -754,6 +855,8 @@ private struct KinetiqOfflinePreferencesView: View {
     @AppStorage("kinetiq.offline.storageLimitGB") private var storageLimit = 20
     @AppStorage("kinetiq.offline.defaultQuality") private var quality = KinetiqOfflineQuality.original.rawValue
     @AppStorage("kinetiq.offline.notifyCompletion") private var notify = true
+    @AppStorage("kinetiq.offline.chargingOnly") private var chargingOnly = false
+    @AppStorage("kinetiq.offline.nightOnly") private var nightOnly = false
     @State private var confirmCleanup = false
     @State private var validationNotice: String?
     @StateObject private var store = KinetiqOfflineDownloadStore.shared
@@ -763,6 +866,15 @@ private struct KinetiqOfflinePreferencesView: View {
             Form {
                 Section("Transfer preferences") {
                     Toggle("Wi-Fi only", isOn: $wifiOnly)
+                    Toggle("Start new transfers only while charging", isOn: $chargingOnly)
+                        .onChange(of: chargingOnly) { _, _ in store.refreshQueue() }
+                    Toggle("Start new transfers at night (22:00–07:00)", isOn: $nightOnly)
+                        .onChange(of: nightOnly) { _, _ in store.refreshQueue() }
+                    Button("Re-evaluate queued downloads", systemImage: "arrow.clockwise") {
+                        store.refreshQueue()
+                    }
+                    Text("These policies gate newly queued tasks. Already-running system background transfers can continue. Night mode is evaluated while Kinetiq runs or returns to foreground; iOS does not guarantee a scheduled wake-up.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Picker("Default quality", selection: $quality) {
                         ForEach(KinetiqOfflineQuality.allCases.filter { $0 != .custom }) {
                             Text($0.rawValue).tag($0.rawValue)

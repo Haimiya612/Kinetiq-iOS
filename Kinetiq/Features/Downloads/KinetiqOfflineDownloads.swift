@@ -5,6 +5,7 @@ import Foundation
 import CryptoKit
 import Combine
 import UserNotifications
+import UIKit
 
 // MARK: - Offline contract (Batch 06K.10B)
 
@@ -145,6 +146,20 @@ enum KinetiqOfflineEligibility {
     }
 }
 
+/// Uses only source-declared episode duration and HLS peak bitrate.
+/// MP4 and missing metadata intentionally report unknown rather than invent
+/// a precise download size. Actual HLS/package size varies by selected tracks.
+enum KinetiqOfflineSizeEstimate {
+    static func approximateBytes(minutes: Int?, peakBitRate: Double?) -> Int64? {
+        guard let minutes, (1...600).contains(minutes), let peakBitRate,
+              peakBitRate.isFinite, peakBitRate >= 10_000,
+              peakBitRate <= 1_000_000_000 else { return nil }
+        let bytes = Double(minutes) * 60 * peakBitRate / 8
+        guard bytes > 0, bytes < Double(Int64.max) else { return nil }
+        return Int64(bytes)
+    }
+}
+
 /// A finished transfer must have a real local video and every caption that was
 /// promised at enqueue time. Never silently hide missing sidecar tracks.
 enum KinetiqOfflineFileAudit {
@@ -200,6 +215,48 @@ enum KinetiqOfflineFileAudit {
     }
 }
 
+/// Queue ordering is persisted in the existing downloads index. Only waiting
+/// transfers can be rearranged; active native background tasks are untouched.
+enum KinetiqOfflineQueueOrder {
+    static func moved(_ source: [KinetiqOfflineEntry], id: String,
+                      towardFront: Bool) -> [KinetiqOfflineEntry] {
+        let waiting = source.indices.filter { source[$0].state == .queued }
+        guard let current = waiting.firstIndex(where: { source[$0].id == id }) else { return source }
+        let destination = towardFront ? current - 1 : current + 1
+        guard waiting.indices.contains(destination) else { return source }
+        var entries = source
+        entries.swapAt(waiting[current], waiting[destination])
+        return entries
+    }
+}
+
+/// Per-title retention budget is keyed by hashed source/title identifiers.
+/// This stores no streaming URLs, request headers or authentication secrets.
+enum KinetiqOfflineSeriesBudget {
+    private static let storageKey = "kinetiq.offline.seriesBudget.v1"
+    static let options = [0, 1, 2, 5, 10, 20]
+    static func key(sourceID: String, animeID: String) -> String {
+        let text = "\(sourceID.utf8.count):\(sourceID)|\(animeID.utf8.count):\(animeID)"
+        return SHA256.hash(data: Data(text.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+    static func limit(sourceID: String, animeID: String,
+                      defaults: UserDefaults = .standard) -> Int {
+        let values = defaults.dictionary(forKey: storageKey) as? [String: Int] ?? [:]
+        let value = values[key(sourceID: sourceID, animeID: animeID)] ?? 0
+        return options.contains(value) ? value : 0
+    }
+    static func setLimit(_ gb: Int, sourceID: String, animeID: String,
+                         defaults: UserDefaults = .standard) {
+        guard options.contains(gb) else { return }
+        var values = defaults.dictionary(forKey: storageKey) as? [String: Int] ?? [:]
+        let name = key(sourceID: sourceID, animeID: animeID)
+        if gb == 0 { values.removeValue(forKey: name) }
+        else { values[name] = gb }
+        defaults.set(values, forKey: storageKey)
+    }
+}
+
 // MARK: - Persistent background-download coordinator
 
 /// Only non-secret identifiers, metadata and local filesystem paths are
@@ -214,6 +271,8 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
     @AppStorage("kinetiq.offline.concurrent") var maximumActive = 2
     @AppStorage("kinetiq.offline.storageLimitGB") var storageLimitGB = 20
     @AppStorage("kinetiq.offline.notifyCompletion") var notifyCompletion = true
+    @AppStorage("kinetiq.offline.chargingOnly") var chargingOnly = false
+    @AppStorage("kinetiq.offline.nightOnly") var nightOnly = false
 
     private let directWiFiID = "com.kinetiq.offline.direct.wifi.v1"
     private let directCellID = "com.kinetiq.offline.direct.cell.v1"
@@ -256,6 +315,15 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
                 return entry
             }
         }
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        NotificationCenter.default.addObserver(forName: UIDevice.batteryStateDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.startNextQueued() }
+            }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.startNextQueued() }
+            }
         configureSessions()
         reconnectTasks()
     }
@@ -406,6 +474,17 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
 
         let capacity = Int64(max(1, storageLimitGB)) * 1_000_000_000
         guard totalBytes < capacity else { throw OfflineDownloadError.storageLimit }
+        let perTitle = KinetiqOfflineSeriesBudget.limit(
+            sourceID: request.sourceID, animeID: request.anime.id)
+        if perTitle > 0 {
+            let used = entries.filter {
+                $0.state == .ready && $0.sourceID == request.sourceID &&
+                $0.animeID == request.anime.id
+            }.reduce(Int64(0)) { $0 + max(0, $1.bytes) }
+            guard used < Int64(perTitle) * 1_000_000_000 else {
+                throw OfflineDownloadError.storageLimit
+            }
+        }
         let available = try? supportDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
             .volumeAvailableCapacityForImportantUsage
         if let available, available < 250_000_000 { throw OfflineDownloadError.lowSpace }
@@ -442,7 +521,7 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         if let index = entries.firstIndex(where: { $0.id == id }) {
             entries[index] = record
         } else {
-            entries.insert(record, at: 0)
+            entries.append(record)
         }
         activeRequests[id] = request
 
@@ -592,7 +671,48 @@ final class KinetiqOfflineDownloadStore: NSObject, ObservableObject {
         }
     }
 
+    var queuedCount: Int { entries.filter { $0.state == .queued }.count }
+
+    func canMoveQueued(_ id: String, towardFront: Bool) -> Bool {
+        let waiting = entries.filter { $0.state == .queued }
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return false }
+        return towardFront ? index > 0 : index < waiting.count - 1
+    }
+
+    func moveQueued(_ id: String, towardFront: Bool) {
+        guard canMoveQueued(id, towardFront: towardFront) else { return }
+        entries = KinetiqOfflineQueueOrder.moved(entries, id: id, towardFront: towardFront)
+        persist()
+    }
+
+    var pendingPolicyExplanation: String? {
+        if chargingOnly {
+            let battery = UIDevice.current.batteryState
+            if battery != .charging && battery != .full {
+                return "Queued transfers will start when the iPhone is charging and Kinetiq is running. Active iOS background transfers are not interrupted."
+            }
+        }
+        if nightOnly {
+            let hour = Calendar.current.component(.hour, from: .now)
+            if hour < 22 && hour >= 7 {
+                return "New transfers wait until 22:00–07:00 while Kinetiq is running. iOS may not wake the app at the scheduled time."
+            }
+        }
+        return nil
+    }
+
+    /// Re-evaluate policy after the user changes download settings.
+    func refreshQueue() { startNextQueued() }
+
     private func startNextQueued() {
+        if chargingOnly {
+            let battery = UIDevice.current.batteryState
+            guard battery == .charging || battery == .full else { return }
+        }
+        if nightOnly {
+            let hour = Calendar.current.component(.hour, from: .now)
+            guard hour >= 22 || hour < 7 else { return }
+        }
         var active = entries.filter { $0.state == .downloading }.count
         let limit = max(1, min(4, maximumActive))
         for entry in entries where entry.state == .queued && active < limit {

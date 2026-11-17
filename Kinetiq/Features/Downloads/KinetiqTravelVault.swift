@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import UniformTypeIdentifiers
+import AVFoundation
 
 /// A user-exported offline inventory. It deliberately contains neither local
 /// filesystem paths nor remote stream URLs, cookies, headers or credentials.
@@ -80,6 +81,33 @@ enum KinetiqTravelAudit {
     }
 }
 
+/// On-device playback preflight. A successful file check is not enough:
+/// decode a real frame for MP4 and check local asset playability for HLS.
+/// HLS status remains qualified because some renderers cannot produce stills.
+enum KinetiqTravelPlaybackCheck: String {
+    case decoded = "A real video frame decoded from this local file"
+    case metadata = "Local HLS asset is recognized (full playback still needs Airplane Mode testing)"
+    case failed = "The local asset could not be verified for playback"
+
+    static func run(entry: KinetiqOfflineEntry) async -> KinetiqTravelPlaybackCheck {
+        guard entry.state == .ready,
+              KinetiqOfflineFileAudit.failureReason(for: entry) == nil,
+              let path = entry.localPath else { return .failed }
+        let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        guard (try? await asset.load(.isPlayable)) == true else { return .failed }
+        if entry.format == .hls { return .metadata }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 160, height: 90)
+        do {
+            _ = try await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600))
+            return .decoded
+        } catch {
+            return .failed
+        }
+    }
+}
+
 @MainActor
 struct KinetiqTravelVaultView: View {
     @StateObject private var store = KinetiqOfflineDownloadStore.shared
@@ -88,6 +116,10 @@ struct KinetiqTravelVaultView: View {
     @State private var exporting = false
     @State private var exportDocument: KinetiqTravelManifestDocument?
     @State private var exportStatus: String?
+    @State private var playbackChecks: [String: KinetiqTravelPlaybackCheck] = [:]
+    @State private var playbackCheckedCount = 0
+    @State private var playbackTesting = false
+    @State private var playbackTask: Task<Void, Never>?
 
     private struct TravelGroup: Identifiable {
         let title: String
@@ -160,6 +192,12 @@ struct KinetiqTravelVaultView: View {
                                     .font(.subheadline.weight(.medium))
                                 Text(result.entry.quality)
                                     .font(.caption2).foregroundStyle(.secondary)
+                                if let check = playbackChecks[result.id] {
+                                    Label(check.rawValue, systemImage: check == .decoded ?
+                                          "checkmark.circle.fill" : "info.circle")
+                                        .font(.caption2)
+                                        .foregroundStyle(check == .failed ? Color.orange : Color.secondary)
+                                }
                                 if let failure = result.failure {
                                     Text(failure).font(.caption).foregroundStyle(.secondary)
                                 } else {
@@ -176,6 +214,25 @@ struct KinetiqTravelVaultView: View {
                 } footer: {
                     Text("\(group.results.filter(\.fileReady).count) / \(group.results.count) local files passed")
                 }
+            }
+
+            Section("Playback verification (on this iPhone)") {
+                Text("\(playbackCheckedCount) checked · \(playbackChecks.values.filter { $0 == .decoded }.count) decoded frames")
+                    .font(.subheadline)
+                if playbackTesting {
+                    ProgressView(value: Double(playbackCheckedCount),
+                                 total: Double(max(1, min(60, readyCount))))
+                    Button("Stop playback checks", role: .cancel) {
+                        playbackTask?.cancel()
+                    }
+                } else {
+                    Button("Test saved video playback", systemImage: "play.rectangle.on.rectangle") {
+                        beginPlaybackChecks()
+                    }
+                    .disabled(readyCount == 0)
+                }
+                Text("Reads at most 60 completed files per run. MP4 receives an actual video-frame decode test; downloaded HLS receives a local AVFoundation compatibility check. Neither proves the entire episode, audio, subtitles, or restart playback succeeds.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Offline acceptance") {
@@ -198,6 +255,7 @@ struct KinetiqTravelVaultView: View {
                 if let exportStatus { Text(exportStatus).font(.caption) }
             }
         }
+        .onDisappear { playbackTask?.cancel() }
         .navigationTitle("Travel Vault")
         .navigationBarTitleDisplayMode(.inline)
         .fileExporter(isPresented: $exporting, document: exportDocument,
@@ -206,6 +264,25 @@ struct KinetiqTravelVaultView: View {
             case .success: exportStatus = "Manifest exported. It contains metadata only, not video files."
             case .failure: exportStatus = "The manifest could not be exported. Your downloads are unchanged."
             }
+        }
+    }
+
+    private func beginPlaybackChecks() {
+        guard !playbackTesting else { return }
+        playbackTask?.cancel()
+        playbackChecks = [:]
+        playbackCheckedCount = 0
+        playbackTesting = true
+        let candidates = Array(audit.filter(\.fileReady).prefix(60))
+        playbackTask = Task { @MainActor in
+            for item in candidates {
+                if Task.isCancelled { break }
+                let outcome = await KinetiqTravelPlaybackCheck.run(entry: item.entry)
+                if Task.isCancelled { break }
+                playbackChecks[item.id] = outcome
+                playbackCheckedCount += 1
+            }
+            playbackTesting = false
         }
     }
 }

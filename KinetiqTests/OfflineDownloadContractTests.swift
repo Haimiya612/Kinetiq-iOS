@@ -3,6 +3,56 @@ import Foundation
 @testable import Kinetiq
 
 final class OfflineDownloadContractTests: XCTestCase {
+    func testSizeEstimatesNeverInventUnknownStreamDimensions() {
+        XCTAssertNil(KinetiqOfflineSizeEstimate.approximateBytes(minutes: nil, peakBitRate: 2_000_000))
+        XCTAssertNil(KinetiqOfflineSizeEstimate.approximateBytes(minutes: 24, peakBitRate: nil))
+        XCTAssertNil(KinetiqOfflineSizeEstimate.approximateBytes(minutes: -1, peakBitRate: 2_000_000))
+        XCTAssertNil(KinetiqOfflineSizeEstimate.approximateBytes(minutes: 24, peakBitRate: .infinity))
+        XCTAssertEqual(KinetiqOfflineSizeEstimate.approximateBytes(minutes: 24,
+            peakBitRate: 2_000_000), 360_000_000)
+    }
+
+    func testQueueReorderOnlyChangesWaitingJobsAndPersistsTheirRelativePriority() {
+        func item(_ id: String, _ state: KinetiqOfflineState) -> KinetiqOfflineEntry {
+            KinetiqOfflineEntry(
+                id: id, sourceID: "module", sourceName: "Module", animeID: "anime",
+                animeTitle: "Anime", episodeID: id, episodeNumber: id,
+                language: "sub", artworkURL: nil, format: .file,
+                quality: "Original", createdAt: .now, state: state,
+                progress: 0, localPath: nil, bytes: 0, resumeSeconds: 0, error: nil
+            )
+        }
+        let entries = [item("one", .queued), item("active", .downloading),
+                       item("two", .queued), item("finished", .ready), item("three", .queued)]
+        let higher = KinetiqOfflineQueueOrder.moved(entries, id: "three", towardFront: true)
+        XCTAssertEqual(higher.map(\.id), ["one", "active", "three", "finished", "two"])
+        XCTAssertEqual(KinetiqOfflineQueueOrder.moved(entries, id: "one", towardFront: true).map(\.id),
+                       entries.map(\.id))
+        XCTAssertEqual(KinetiqOfflineQueueOrder.moved(entries, id: "active", towardFront: false).map(\.id),
+                       entries.map(\.id))
+        XCTAssertEqual(KinetiqOfflineQueueOrder.moved(entries, id: "two", towardFront: false).map(\.id),
+                       ["one", "active", "three", "finished", "two"])
+    }
+
+    func testPerSeriesStorageBudgetKeepsEverySourceSeparateAndHasNoStreamingSecrets() throws {
+        let name = "kinetiq.m02.test.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        XCTAssertEqual(KinetiqOfflineSeriesBudget.limit(sourceID: "A", animeID: "one",
+            defaults: defaults), 0)
+        KinetiqOfflineSeriesBudget.setLimit(2, sourceID: "A", animeID: "one", defaults: defaults)
+        XCTAssertEqual(KinetiqOfflineSeriesBudget.limit(sourceID: "A", animeID: "one",
+            defaults: defaults), 2)
+        XCTAssertEqual(KinetiqOfflineSeriesBudget.limit(sourceID: "A", animeID: "two",
+            defaults: defaults), 0)
+        XCTAssertEqual(KinetiqOfflineSeriesBudget.limit(sourceID: "B", animeID: "one",
+            defaults: defaults), 0)
+        KinetiqOfflineSeriesBudget.setLimit(0, sourceID: "A", animeID: "one", defaults: defaults)
+        XCTAssertEqual(KinetiqOfflineSeriesBudget.limit(sourceID: "A", animeID: "one",
+            defaults: defaults), 0)
+        XCTAssertFalse(KinetiqOfflineSeriesBudget.key(sourceID: "A", animeID: "one").contains("one"))
+    }
+
     func testTravelManifestExportsNoLocalPathsOrStreamSecrets() throws {
         let entry = savedEntry(format: .file, path: "/private/kinetiq/secret.mp4")
         let audit = KinetiqTravelAudit.inspect([entry])
