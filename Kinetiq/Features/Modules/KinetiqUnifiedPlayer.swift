@@ -37,6 +37,9 @@ struct KinetiqUnifiedPlayerChrome: View {
 
     let onClose: () -> Void
     let onStartPictureInPicture: () -> Void
+    /// The module player exposes its safety lock in the header; local playback
+    /// leaves this nil and retains its established controls.
+    var onLockControls: (() -> Void)? = nil
     let onToggleAspect: () -> Void
     let onPrevious: () -> Void
     let onRewind: () -> Void
@@ -98,6 +101,11 @@ struct KinetiqUnifiedPlayerChrome: View {
             }
 
             Spacer(minLength: 4)
+
+            if let onLockControls {
+                headerButton("lock", label: "Lock player controls", size: 15,
+                             action: onLockControls)
+            }
 
             airPlayControl
                 .frame(width: 40, height: 40)

@@ -166,7 +166,10 @@ struct KinetiqApp: App {
     var body: some Scene {
         WindowGroup {
             MainTabView(tagline: taglineStore.tagline)
-                .overlay(alignment: .top) { KinetiqNoticeBannerHost() }
+                // A separate pass-through foreground window keeps notices
+                // above fullscreen players and sheets instead of behind them.
+                .background(KinetiqForegroundNoticeInstaller()
+                    .frame(width: 0, height: 0))
                 .preferredColorScheme(
                     visualThemeRawValue == KinetiqVisualTheme.signature.rawValue
                         ? AppAppearance(rawValue: appearanceRawValue)?.colorScheme
@@ -206,6 +209,83 @@ struct KinetiqApp: App {
         let shouldPresent = await moduleUpdates.checkForUpdatesOnLaunch()
         guard !Task.isCancelled, shouldPresent else { return }
         showingModuleUpdates = true
+    }
+}
+
+// MARK: - M04 foreground notice presentation
+
+/// Never creates a second notice center. This is one visual host for the
+/// existing deduplicated queue, rendered above the app's modal layers.
+@MainActor
+private struct KinetiqForegroundNoticeInstaller: UIViewRepresentable {
+    final class AnchorView: UIView {
+        var sceneDidChange: ((UIWindowScene?) -> Void)?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            sceneDidChange?(window?.windowScene)
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        private var noticeWindow: KinetiqPassThroughNoticeWindow?
+
+        func updateScene(_ scene: UIWindowScene?) {
+            guard let scene else {
+                noticeWindow?.isHidden = true
+                noticeWindow = nil
+                return
+            }
+            if noticeWindow?.windowScene === scene { return }
+            noticeWindow?.isHidden = true
+            let window = KinetiqPassThroughNoticeWindow(windowScene: scene)
+            window.windowLevel = .normal + 5
+            window.backgroundColor = .clear
+            let host = UIHostingController(rootView:
+                KinetiqNoticeBannerHost()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: .top)
+                    .background(Color.clear)
+            )
+            host.view.backgroundColor = .clear
+            window.rootViewController = host
+            window.isHidden = false
+            noticeWindow = window
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> AnchorView {
+        let anchor = AnchorView(frame: .zero)
+        anchor.isUserInteractionEnabled = false
+        anchor.sceneDidChange = { [weak coordinator = context.coordinator] scene in
+            coordinator?.updateScene(scene)
+        }
+        return anchor
+    }
+
+    func updateUIView(_ uiView: AnchorView, context: Context) {
+        if let scene = uiView.window?.windowScene {
+            context.coordinator.updateScene(scene)
+        }
+    }
+}
+
+/// Transparent portions of the foreground window must not block video taps,
+/// menus or gestures underneath the notice. A presented history sheet remains
+/// fully interactive until dismissed.
+@MainActor
+private final class KinetiqPassThroughNoticeWindow: UIWindow {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard KinetiqNoticeCenter.shared.current != nil else { return nil }
+        if rootViewController?.presentedViewController != nil {
+            return super.hitTest(point, with: event)
+        }
+        let bannerWidth = min(bounds.width - 30, 560)
+        let isWithinBanner = point.y <= safeAreaInsets.top + 150 &&
+            abs(point.x - bounds.midX) <= bannerWidth / 2 + 4
+        return isWithinBanner ? super.hitTest(point, with: event) : nil
     }
 }
 
