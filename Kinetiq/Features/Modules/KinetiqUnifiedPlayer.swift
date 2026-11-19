@@ -39,7 +39,7 @@ struct KinetiqUnifiedPlayerChrome: View {
     let onStartPictureInPicture: () -> Void
     /// The module player exposes its safety lock in the header; local playback
     /// leaves this nil and retains its established controls.
-    var onLockControls: (() -> Void)? = nil
+    let onLockControls: (() -> Void)?
     let onToggleAspect: () -> Void
     let onPrevious: () -> Void
     let onRewind: () -> Void
@@ -50,12 +50,58 @@ struct KinetiqUnifiedPlayerChrome: View {
     let onSeekEditingChanged: (Bool) -> Void
     let onPanelSelected: (String) -> Void
 
-    /// Keep the optional lock action outside Swift's synthesized memberwise initializer.
-    /// The same chrome is shared with the local-library player, which may omit locking.
-    func lockControlsAction(_ action: @escaping () -> Void) -> Self {
-        var configured = self
-        configured.onLockControls = action
-        return configured
+    /// Explicitly define the shared chrome's API so that Swift's synthesized
+    /// memberwise initializer cannot omit the optional Lock handler.
+    init(
+        safeAreaInsets: EdgeInsets,
+        title: String,
+        playing: Bool,
+        busy: Bool,
+        aspectFill: Bool,
+        pictureInPictureAvailable: Bool,
+        displayedTime: Double,
+        duration: Double,
+        elapsedLabel: String,
+        durationLabel: String,
+        panels: [Panel],
+        airPlayControl: AnyView,
+        onClose: @escaping () -> Void,
+        onStartPictureInPicture: @escaping () -> Void,
+        onLockControls: (() -> Void)?,
+        onToggleAspect: @escaping () -> Void,
+        onPrevious: @escaping () -> Void,
+        onRewind: @escaping () -> Void,
+        onTogglePlay: @escaping () -> Void,
+        onForward: @escaping () -> Void,
+        onNext: @escaping () -> Void,
+        onSeekChanged: @escaping (Double) -> Void,
+        onSeekEditingChanged: @escaping (Bool) -> Void,
+        onPanelSelected: @escaping (String) -> Void
+    ) {
+        self.safeAreaInsets = safeAreaInsets
+        self.title = title
+        self.playing = playing
+        self.busy = busy
+        self.aspectFill = aspectFill
+        self.pictureInPictureAvailable = pictureInPictureAvailable
+        self.displayedTime = displayedTime
+        self.duration = duration
+        self.elapsedLabel = elapsedLabel
+        self.durationLabel = durationLabel
+        self.panels = panels
+        self.airPlayControl = airPlayControl
+        self.onClose = onClose
+        self.onStartPictureInPicture = onStartPictureInPicture
+        self.onLockControls = onLockControls
+        self.onToggleAspect = onToggleAspect
+        self.onPrevious = onPrevious
+        self.onRewind = onRewind
+        self.onTogglePlay = onTogglePlay
+        self.onForward = onForward
+        self.onNext = onNext
+        self.onSeekChanged = onSeekChanged
+        self.onSeekEditingChanged = onSeekEditingChanged
+        self.onPanelSelected = onPanelSelected
     }
 
     var body: some View {

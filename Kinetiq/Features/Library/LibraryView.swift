@@ -1976,6 +1976,7 @@ private struct LocalVideoPlayerView: View {
             airPlayControl: AnyView(KinetiqAirPlayPicker()),
             onClose: { dismiss() },
             onStartPictureInPicture: { startPiPWithCaptions() },
+            onLockControls: nil,
             onToggleAspect: {
                 model.aspectFill.toggle()
                 scheduleAutoHide()

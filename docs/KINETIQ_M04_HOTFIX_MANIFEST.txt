@@ -1,12 +1,15 @@
-Kinetiq M04 compilation hotfix — 2026-11-19
-Base: Kinetiq-M04-SubStudio-Cumulative-0.3.0.zip
+Kinetiq M04 compilation hotfix R2 — 2026-11-19
+Base: Kinetiq-M04-CI-Hotfix-Cumulative-0.3.0.zip
 GitHub run diagnosed: https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44537064928
 GitHub commit diagnosed: 3472dc0433cec32d013a60e9bd50cce03116d774
+New failed run diagnosed: https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44593364235
+New failed commit diagnosed: 7574f7bc20cedb29502a8ed910f146180f316aca
 
 Modified paths:
 Kinetiq/Features/Modules/ModulePlayerView.swift
 Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift
 Kinetiq/Features/Modules/KinetiqSubStudio.swift
+Kinetiq/Features/Library/LibraryView.swift
 tests/test_m04_contracts.py
 docs/KINETIQ_M04_DELIVERY.md
 

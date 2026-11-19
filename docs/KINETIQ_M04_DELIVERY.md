@@ -1,17 +1,23 @@
 # Kinetiq M04 — SubStudio and Player Comfort (18 November 2026)
 
-## 19 November 2026 — CI compilation hotfix
+## 19 November 2026 — CI compilation hotfix R2
 
-The cumulative source now includes a focused repair for GitHub Actions run
+The cumulative source addresses GitHub Actions run
 [#203](https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44537064928)
-(commit `3472dc0`). The failure occurred during simulator compilation, not
-inside the workflow YAML:
+(commit `3472dc0`) and the follow-up failed run
+[#204](https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44593364235)
+(commit `7574f7b`). Both failed during simulator compilation; neither
+identified a fault in the GitHub Actions workflow YAML.
 
-- Attach the module player's Lock callback through a view configuration
-  method instead of an unsupported synthesized initializer argument.
-- Pass a Swift locale identifier to `CFLocaleCreate` rather than a `CFString`.
+- Give the shared player chrome an explicit initializer with a required
+  optional Lock argument. The streaming player provides its real action and
+  the Local Library player explicitly provides `nil`, preserving both call
+  sites. The earlier view configuration method was not resolved by Xcode.
+- Wrap a Japanese CFString in the documented `CFLocaleIdentifier` initializer
+  before calling `CFLocaleCreate`. The prior hotfix erroneously passed a bare
+  Swift String; Xcode rejected both the original CFString and bare String.
 - Check the tokenizer's returned option flags instead of referencing the
-  unimported `kCFStringTokenizerTokenNone` constant.
+  unimported `kCFStringTokenizerTokenNone` constant (from R1).
 
 No features or tabs were removed. Discord RPC and the `0.3.0` app version
 remain unchanged. Twenty-one Python source-contract tests pass locally;

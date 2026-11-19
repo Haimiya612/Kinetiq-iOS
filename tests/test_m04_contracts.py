@@ -11,6 +11,20 @@ def swift(path):
 
 
 class M04Contracts(unittest.TestCase):
+    def test_shared_chrome_explicit_initializer_wires_every_action(self):
+        chrome = swift("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")
+        self.assertIn("init(\n        safeAreaInsets:", chrome)
+        for name in (
+            "safeAreaInsets", "title", "playing", "busy", "aspectFill",
+            "pictureInPictureAvailable", "displayedTime", "duration",
+            "elapsedLabel", "durationLabel", "panels", "airPlayControl",
+            "onClose", "onStartPictureInPicture", "onLockControls",
+            "onToggleAspect", "onPrevious", "onRewind", "onTogglePlay",
+            "onForward", "onNext", "onSeekChanged", "onSeekEditingChanged",
+            "onPanelSelected"
+        ):
+            self.assertIn(f"self.{name} = {name}", chrome)
+
     def test_unchanged_app_version(self):
         pbx = swift("Kinetiq.xcodeproj/project.pbxproj")
         self.assertIn("MARKETING_VERSION = 0.3.0", pbx)
@@ -33,9 +47,13 @@ class M04Contracts(unittest.TestCase):
         self.assertIn("pendingTransportChange = .next", player)
         self.assertIn("Play previous episode?", player)
         self.assertIn("Keep Watching", player)
-        self.assertIn(".lockControlsAction {", player)
+        self.assertIn("onLockControls: {", player)
         chrome = swift("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")
-        self.assertIn("configured.onLockControls = action", chrome)
+        self.assertIn("let onLockControls: (() -> Void)?", chrome)
+        self.assertIn("self.onLockControls = onLockControls", chrome)
+        self.assertNotIn("func lockControlsAction", chrome)
+        library = swift("Kinetiq/Features/Library/LibraryView.swift")
+        self.assertIn("onLockControls: nil", library)
 
     def test_seamless_handoff_and_original_loader_both_exist(self):
         player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")
@@ -52,7 +70,7 @@ class M04Contracts(unittest.TestCase):
         self.assertIn("func transcript(for slot:", studio)
         self.assertIn("func search(_ phrase:", studio)
         self.assertIn("func readabilityPercentage", studio)
-        self.assertIn('CFLocaleCreate(kCFAllocatorDefault, "ja_JP")', studio)
+        self.assertIn('CFLocaleIdentifier("ja_JP" as CFString)', studio)
         self.assertIn("CFStringTokenizerAdvanceToNextToken(tokenizer).rawValue != 0", studio)
         self.assertNotIn("kCFStringTokenizerTokenNone", studio)
 
