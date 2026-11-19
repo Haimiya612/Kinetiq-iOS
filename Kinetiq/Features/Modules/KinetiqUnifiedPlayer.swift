@@ -50,6 +50,14 @@ struct KinetiqUnifiedPlayerChrome: View {
     let onSeekEditingChanged: (Bool) -> Void
     let onPanelSelected: (String) -> Void
 
+    /// Keep the optional lock action outside Swift's synthesized memberwise initializer.
+    /// The same chrome is shared with the local-library player, which may omit locking.
+    func lockControlsAction(_ action: @escaping () -> Void) -> Self {
+        var configured = self
+        configured.onLockControls = action
+        return configured
+    }
+
     var body: some View {
         ZStack {
             LinearGradient(

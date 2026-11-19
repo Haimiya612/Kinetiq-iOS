@@ -1,5 +1,23 @@
 # Kinetiq M04 — SubStudio and Player Comfort (18 November 2026)
 
+## 19 November 2026 — CI compilation hotfix
+
+The cumulative source now includes a focused repair for GitHub Actions run
+[#203](https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44537064928)
+(commit `3472dc0`). The failure occurred during simulator compilation, not
+inside the workflow YAML:
+
+- Attach the module player's Lock callback through a view configuration
+  method instead of an unsupported synthesized initializer argument.
+- Pass a Swift locale identifier to `CFLocaleCreate` rather than a `CFString`.
+- Check the tokenizer's returned option flags instead of referencing the
+  unimported `kCFStringTokenizerTokenNone` constant.
+
+No features or tabs were removed. Discord RPC and the `0.3.0` app version
+remain unchanged. Twenty-one Python source-contract tests pass locally;
+Xcode compilation and iPhone playback still need GitHub Actions confirmation
+after these files are applied.
+
 This **cumulative full-source** package starts from the user's uploaded
 `Kinetiq-iOS-main 5.zip`, retaining its M01–M03 work and contextual
 M03/M04 skip-marker additions. It does not modify GitHub. App version remains

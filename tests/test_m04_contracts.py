@@ -33,7 +33,9 @@ class M04Contracts(unittest.TestCase):
         self.assertIn("pendingTransportChange = .next", player)
         self.assertIn("Play previous episode?", player)
         self.assertIn("Keep Watching", player)
-        self.assertIn("onLockControls:", player)
+        self.assertIn(".lockControlsAction {", player)
+        chrome = swift("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")
+        self.assertIn("configured.onLockControls = action", chrome)
 
     def test_seamless_handoff_and_original_loader_both_exist(self):
         player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")
@@ -50,6 +52,9 @@ class M04Contracts(unittest.TestCase):
         self.assertIn("func transcript(for slot:", studio)
         self.assertIn("func search(_ phrase:", studio)
         self.assertIn("func readabilityPercentage", studio)
+        self.assertIn('CFLocaleCreate(kCFAllocatorDefault, "ja_JP")', studio)
+        self.assertIn("CFStringTokenizerAdvanceToNextToken(tokenizer).rawValue != 0", studio)
+        self.assertNotIn("kCFStringTokenizerTokenNone", studio)
 
     def test_more_stays_complete_but_collapsed(self):
         player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")

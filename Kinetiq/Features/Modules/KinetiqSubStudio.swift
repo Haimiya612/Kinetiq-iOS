@@ -213,7 +213,7 @@ enum KinetiqJapaneseReading {
     static func romaji(for text: String) -> String? {
         guard !text.isEmpty, text.utf16.count < 2_000 else { return nil }
         let original = text as NSString
-        let locale = CFLocaleCreate(kCFAllocatorDefault, "ja_JP" as CFString)
+        let locale = CFLocaleCreate(kCFAllocatorDefault, "ja_JP")
         let options = kCFStringTokenizerUnitWord | kCFStringTokenizerAttributeLatinTranscription
         guard let tokenizer = CFStringTokenizerCreate(kCFAllocatorDefault,
             text as CFString, CFRange(location: 0, length: original.length), options, locale)
@@ -221,7 +221,7 @@ enum KinetiqJapaneseReading {
         var chunks: [String] = []
         var lastEnd = 0
         var didTranscribe = false
-        while CFStringTokenizerAdvanceToNextToken(tokenizer) != kCFStringTokenizerTokenNone {
+        while CFStringTokenizerAdvanceToNextToken(tokenizer).rawValue != 0 {
             let range = CFStringTokenizerGetCurrentTokenRange(tokenizer)
             guard range.location >= lastEnd, range.length > 0,
                   range.location + range.length <= original.length else { break }

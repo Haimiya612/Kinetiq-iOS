@@ -1056,11 +1056,6 @@ struct KinetiqModulePlayerView: View {
             airPlayControl: AnyView(ModuleAirPlayButton()),
             onClose: { dismiss() },
             onStartPictureInPicture: { startPiPWithCaptions() },
-            onLockControls: {
-                controlsLocked = true
-                controlsVisible = false
-                cancelAutoHide()
-            },
             onToggleAspect: {
                 playback.isAspectFill.toggle()
                 scheduleAutoHide()
@@ -1116,6 +1111,11 @@ struct KinetiqModulePlayerView: View {
                 cancelAutoHide()
             }
         )
+        .lockControlsAction {
+            controlsLocked = true
+            controlsVisible = false
+            cancelAutoHide()
+        }
     }
 
     // MARK: Options Overlay
