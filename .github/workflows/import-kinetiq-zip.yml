@@ -1,0 +1,179 @@
+name: Import Kinetiq Source ZIP
+
+# Install this file in GitHub once. Later, committing a ZIP to the fixed
+# repository-root filename automatically replaces source and creates a commit.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Kinetiq-update.zip
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kinetiq-zip-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import-source:
+    name: Validate ZIP, replace project, commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the upload commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Safely validate and import the complete source tree
+        env:
+          KINETIQ_ZIP_PATH: Kinetiq-update.zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          import stat
+          import tempfile
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          archive = root / os.environ['KINETIQ_ZIP_PATH']
+          required_dirs = ('Kinetiq', 'KinetiqTests', 'Kinetiq.xcodeproj', 'docs')
+          optional_dirs = ('scripts', 'tests')
+          root_files = (
+              'README.md', 'CONTRIBUTING.md', 'release-notes.json',
+              'KINETIQ_M05A_IPHONE_HANDOFF.md',
+          )
+          required_files = (
+              'Kinetiq.xcodeproj/project.pbxproj',
+              'Kinetiq/App/KinetiqApp.swift',
+              'Kinetiq/Features/Modules/ModulePlayerView.swift',
+              'docs/ROADMAP.md',
+          )
+
+          if not archive.is_file():
+              raise SystemExit(f'Missing {archive.relative_to(root)}. Upload the ZIP first.')
+          if archive.stat().st_size > 25 * 1024 * 1024:
+              raise SystemExit('ZIP is larger than the supported 25 MiB browser limit.')
+
+          with tempfile.TemporaryDirectory(prefix='kinetiq-zip-') as scratch:
+              staging = Path(scratch) / 'staged'
+              staging.mkdir()
+              with zipfile.ZipFile(archive) as zipped:
+                  entries = [item for item in zipped.infolist() if not item.is_dir()]
+                  if not entries or len(entries) > 5000:
+                      raise SystemExit('ZIP is empty or has too many files.')
+                  if sum(item.file_size for item in entries) > 256 * 1024 * 1024:
+                      raise SystemExit('ZIP expands beyond the 256 MiB safety limit.')
+
+                  names = [item.filename for item in entries]
+                  # Accept both GitHub's Kinetiq-iOS-main/ layout and a
+                  # root-level ZIP of the repository itself.
+                  if all(name.startswith('Kinetiq-iOS-main/') for name in names):
+                      prefix = 'Kinetiq-iOS-main/'
+                  elif all(name.startswith('Kinetiq-iOS-') for name in names):
+                      first = names[0].split('/', 1)[0]
+                      prefix = first + '/' if all(name.startswith(first + '/') for name in names) else ''
+                  else:
+                      prefix = ''
+
+                  seen = set()
+                  accepted = []
+                  for item in entries:
+                      name = item.filename
+                      if '\\' in name or name.startswith('/') or '\x00' in name:
+                          raise SystemExit(f'Unsafe archive path: {name!r}')
+                      if stat.S_ISLNK(item.external_attr >> 16):
+                          raise SystemExit(f'Symlink refused: {name!r}')
+                      raw_parts = PurePosixPath(name).parts
+                      if '..' in raw_parts or '.git' in raw_parts or '.' in raw_parts:
+                          raise SystemExit(f'Unsafe archive entry: {name!r}')
+                      if prefix and not name.startswith(prefix):
+                          raise SystemExit(f'Mixed ZIP root: {name!r}')
+                      relative = name[len(prefix):] if prefix else name
+                      if not relative:
+                          continue
+                      parts = PurePosixPath(relative).parts
+                      if not parts:
+                          continue
+                      if '__MACOSX' in parts or '__pycache__' in parts:
+                          continue
+                      if any(part.startswith('._') or part == '.DS_Store' for part in parts):
+                          continue
+                      if relative.endswith('.pyc'):
+                          continue
+                      canonical = relative.casefold()
+                      if canonical in seen:
+                          raise SystemExit(f'Duplicate/case-conflicting archive path: {relative}')
+                      seen.add(canonical)
+                      # Never change Actions, the Git directory, or arbitrary
+                      # top-level paths from a user-supplied archive.
+                      if parts[0] not in required_dirs + optional_dirs and relative not in root_files:
+                          continue
+                      accepted.append((item, relative))
+
+                  present = {relative for _, relative in accepted}
+                  missing = [path for path in required_files if path not in present]
+                  if missing:
+                      raise SystemExit(f'Not a complete Kinetiq source ZIP. Missing: {missing}')
+                  if sum(name.startswith('Kinetiq/') and name.endswith('.swift') for name in present) < 25:
+                      raise SystemExit('Too few Swift source files: refusing an incomplete import.')
+                  for folder in required_dirs:
+                      if not any(name.startswith(folder + '/') for name in present):
+                          raise SystemExit(f'Required source directory missing: {folder}')
+
+                  # Fully decompress and verify CRCs BEFORE touching the repo.
+                  for item, relative in accepted:
+                      destination = staging.joinpath(*PurePosixPath(relative).parts)
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      with zipped.open(item) as source, destination.open('wb') as target:
+                          shutil.copyfileobj(source, target, length=1024 * 1024)
+
+              # Exact, allowlisted folder replacement removes stale Swift
+              # files, while preserving .github/, imports/, and .git/.
+              for folder in required_dirs + optional_dirs:
+                  staged = staging / folder
+                  if not staged.is_dir():
+                      continue
+                  destination = root / folder
+                  if destination.is_symlink():
+                      raise SystemExit(f'Refusing to overwrite symlink: {folder}')
+                  if destination.exists():
+                      shutil.rmtree(destination)
+                  shutil.copytree(staged, destination)
+                  print(f'Replaced: {folder}/')
+              for filename in root_files:
+                  staged = staging / filename
+                  if staged.is_file():
+                      destination = root / filename
+                      if destination.is_symlink():
+                          raise SystemExit(f'Refusing to overwrite symlink: {filename}')
+                      shutil.copy2(staged, destination)
+                      print(f'Updated: {filename}')
+
+          # The upload commit retains the ZIP in Git history if recovery is
+          # needed, but the final HEAD stays clean and ready for next upload.
+          archive.unlink()
+          print('Removed temporary import ZIP from the updated working tree.')
+          PY
+
+      - name: Commit imported project
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git diff --cached --stat
+          git commit -m 'Import Kinetiq cumulative source ZIP'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
