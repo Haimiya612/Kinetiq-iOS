@@ -26,6 +26,10 @@ class M05Contracts(unittest.TestCase):
         self.assertIn('track.id != primaryTrackID', studio)
         self.assertIn('studio.select(track, for: slot)', studio)
 
+    def test_substudio_caption_line_explicitly_returns_view(self):
+        studio = swift("Kinetiq/Features/Modules/KinetiqSubStudio.swift")
+        self.assertIn('let tint = softColors ? Color.white : color\n        return VStack(spacing: 2)', studio)
+
     def test_recommended_media_does_not_fabricate_matching_titles(self):
         home = swift("Kinetiq/Features/Home/HomeView.swift")
         self.assertIn('KinetiqCrossSourceSearchPolicy.relevance', home)

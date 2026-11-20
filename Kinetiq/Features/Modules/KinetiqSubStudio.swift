@@ -291,7 +291,7 @@ struct KinetiqSubStudioCaptionStack: View {
 
     private func line(_ text: String, color: Color, label: String?) -> some View {
         let tint = softColors ? Color.white : color
-        VStack(spacing: 2) {
+        return VStack(spacing: 2) {
             if let label {
                 Text(label.uppercased())
                     .font(.system(size: 9, weight: .heavy, design: .rounded))

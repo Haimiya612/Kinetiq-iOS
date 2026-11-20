@@ -4,6 +4,14 @@ Source baseline: uploaded GitHub snapshot commit `446b37398ef906cb657095736d1e67
 the verified M04 R3 project. This cumulative ZIP retains the full Xcode project,
 all existing Swift sources, tests, resources and current `project.pbxproj`.
 
+## 20 November 2026 — CI compiler hotfix
+
+The full-source re-import now includes an explicit `return` from
+`KinetiqSubStudioCaptionStack.line(_:color:label:)`. This fixes the
+`KinetiqSubStudio.swift:292` opaque-return-type error seen in the first
+M05A GitHub Actions test build. Static contract tests pass locally; rerun
+the Xcode workflow to validate macOS compilation and iOS simulator tests.
+
 ## Test on iPhone (PASS / FAIL / N/T)
 
 1. **Player error escape:** Start a module episode that has no accepted stream.
