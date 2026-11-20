@@ -4,6 +4,21 @@ on:
   push:
     branches:
       - main
+    # The ZIP upload is only an intermediate commit. Wait for the importer
+    # to finish replacing the source before using a macOS runner.
+    paths-ignore:
+      - Kinetiq-update.zip
+      - .github/workflows/ios-ci.yaml
+
+  # A GITHUB_TOKEN-created import commit does not trigger a push workflow.
+  # This event runs only after the import workflow itself has completed.
+  workflow_run:
+    workflows:
+      - Import Kinetiq Source ZIP
+    types:
+      - completed
+    branches:
+      - main
 
   pull_request:
     branches:
@@ -32,6 +47,11 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and Test Kinetiq
+    # Failed/cancelled imports must never build or publish an IPA.
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ${{ inputs.runner || 'macos-26-intel' }}
     timeout-minutes: 40
 
@@ -47,6 +67,17 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # workflow_run.head_sha identifies the ZIP upload commit, not the
+          # final source commit created by the importer. Read updated main.
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.ref }}
+
+      - name: Confirm build revision
+        shell: bash
+        run: |
+          echo "Trigger: $GITHUB_EVENT_NAME"
+          echo "Building commit: $(git rev-parse HEAD)"
+          git log -1 --format='Commit message: %s'
 
       # --------------------------------------------------
       # 2. Select Xcode dynamically
