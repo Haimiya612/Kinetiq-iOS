@@ -674,6 +674,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     private var previousPlaybackSample: (key: String, position: TimeInterval,
                                          date: Date, playing: Bool)?
     private var lastSeekObservedAt: Date?
+    private var recentSeekSamples: [Date] = []
+    private var rapidSeekCooldownUntil = Date.distantPast
     private var presenceSendAttempts: [Date] = []
     private var presenceSendTask: Task<Void, Never>?
     private var headingRotationTask: Task<Void, Never>?
@@ -834,6 +836,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         }
         guard enabled, connection == .connected,
               (activityType != .custom || !customStatusText.isEmpty),
+              Date() >= rapidSeekCooldownUntil,
               headingMode == .alternating, lastPreview?.isPlaying == true else {
             headingRotationTask?.cancel()
             headingRotationTask = nil
@@ -847,6 +850,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 catch { return }
                 guard !Task.isCancelled, self.enabled,
                       self.connection == .connected,
+                      Date() >= self.rapidSeekCooldownUntil,
                       self.headingMode == .alternating,
                       (self.activityType != .custom || !self.customStatusText.isEmpty),
                       self.lastPreview?.isPlaying == true else { return }
@@ -997,6 +1001,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         lastSeekObservedAt = nil
         previousPlaybackSample = nil
         playbackSyncStatus = "Waiting for Gateway connection."
+        recentSeekSamples = []
+        rapidSeekCooldownUntil = .distantPast
         artworkRegistrationTask?.cancel()
         artworkRegistrationTask = nil
         artworkRegistrationURL = nil
@@ -1023,9 +1029,18 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                elapsed: now.timeIntervalSince(previous.date), wasPlaying: previous.playing
            ) {
             lastSeekObservedAt = now
+            recentSeekSamples.removeAll { now.timeIntervalSince($0) > 12 }
+            recentSeekSamples.append(now)
+            // Four seeks inside 12 seconds are one user interaction, not four
+            // separate Discord events. Let the desired title/position settle.
+            if recentSeekSamples.count >= 4 {
+                rapidSeekCooldownUntil = now.addingTimeInterval(30)
+            }
         } else if previousPlaybackSample?.key != sampleKey {
             lastSeekObservedAt = nil
             rotationShowsAnimeTitle = false
+            recentSeekSamples = []
+            rapidSeekCooldownUntil = .distantPast
         }
         previousPlaybackSample = (sampleKey, snapshot.position, now, snapshot.isPlaying)
         lastPreview = snapshot
@@ -1044,6 +1059,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         pendingForcedPublication = false
         previousPlaybackSample = nil
         lastSeekObservedAt = nil
+        recentSeekSamples = []
+        rapidSeekCooldownUntil = .distantPast
         playbackSyncStatus = "Playback ended."
         lastPreview = nil
         refreshHeadingRotation()
@@ -1144,11 +1161,16 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 KinetiqPresenceSyncPolicy.seekSettleDelay))
         }
         allowedAt = max(allowedAt, failedPublicationRetryAt)
+        if adjusted.isPlaying {
+            allowedAt = max(allowedAt, rapidSeekCooldownUntil)
+        }
         if allowedAt.timeIntervalSince(now) > 0.05 {
             schedulePresencePublish(at: allowedAt)
             playbackSyncStatus = seeked && lastSeekObservedAt.map({
                 $0.addingTimeInterval(KinetiqPresenceSyncPolicy.seekSettleDelay) > now
-            }) == true ? "Settling rapid seek changes…" : "Update queued within Discord's rate limit."
+            }) == true ? "Settling rapid seek changes…" :
+                (rapidSeekCooldownUntil > now ? "Rapid seeks detected; presence updates cooling down…" :
+                    "Update queued within Discord's rate limit.")
             return
         }
         scheduledPresenceTask?.cancel()
@@ -1185,7 +1207,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 self.refreshHeadingRotation()
             } catch {
                 guard let self, self.generation == connectionGeneration else { return }
-                self.failedPublicationRetryAt = Date().addingTimeInterval(10)
+                self.failedPublicationRetryAt = Date().addingTimeInterval(30)
                 self.playbackSyncStatus = "Submission failed; retry queued."
                 self.message = "Presence update could not be sent. Will retry if connected."
             }

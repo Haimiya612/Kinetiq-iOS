@@ -6,11 +6,49 @@ import Foundation
 /// Public catalog matches remain separately attributed to AniList.
 @MainActor
 struct KinetiqBrainView: View {
-    private struct Message: Identifiable {
-        let id = UUID()
+    private struct Message: Identifiable, Codable {
+        var id = UUID()
         let user: Bool
         let text: String
         let source: String?
+    }
+
+    /// Transcript only. The Apple Intelligence session itself is not restored
+    /// or replayed: doing so could silently resend private conversation text.
+    private enum TranscriptStore {
+        static var file: URL? {
+            FileManager.default.urls(for: .applicationSupportDirectory,
+                                     in: .userDomainMask).first?
+                .appendingPathComponent("KinetiqBrain", isDirectory: true)
+                .appendingPathComponent("local-chat.json")
+        }
+
+        static func load() -> [Message]? {
+            guard let file,
+                  let data = try? Data(contentsOf: file), data.count <= 750_000,
+                  let messages = try? JSONDecoder().decode([Message].self, from: data)
+            else { return nil }
+            return Array(messages.suffix(180))
+        }
+
+        static func save(_ messages: [Message]) {
+            guard let file else { return }
+            let safe = Array(messages.suffix(180))
+            guard let data = try? JSONEncoder().encode(safe), data.count <= 750_000 else { return }
+            do {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                        withIntermediateDirectories: true)
+                try data.write(to: file, options: [.atomic, .completeFileProtection])
+            } catch {
+                // A denied/unavailable protected-storage write should never
+                // block the conversation itself.
+            }
+        }
+
+        static func delete() {
+            guard let file else { return }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     @StateObject private var downloads = KinetiqOfflineDownloadStore.shared
@@ -18,6 +56,7 @@ struct KinetiqBrainView: View {
     @StateObject private var history = PlaybackHistoryStore.shared
     @StateObject private var nativeBrain = KinetiqNativeBrain.shared
     @AppStorage("kinetiq.brain.nativeAI.v1") private var nativeConversation = false
+    @AppStorage("kinetiq.brain.m05.keepLocalChat") private var keepLocalChat = false
     @State private var messages: [Message] = [
         Message(user: false, text: "Ask about your unwatched imports, finished shows, downloaded episodes, storage, or public anime. I can refine searches across multiple messages. I only inspect Kinetiq's imported media and saved records.", source: "Local guide")
     ]
@@ -27,6 +66,7 @@ struct KinetiqBrainView: View {
     @State private var lastCatalogTitles: [KinetiqCatalogSuggestion] = []
     @State private var showCompass = false
     @State private var work: Task<Void, Never>?
+    @State private var showingClearChatConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +100,16 @@ struct KinetiqBrainView: View {
                                 }
                                 .font(.caption)
                                 .buttonStyle(.bordered)
+                            }
+                            Toggle("Save chats on this iPhone", isOn: $keepLocalChat)
+                                .font(.subheadline.weight(.medium))
+                            Text("Opt in to storing up to 180 recent messages in protected app storage. Not synced or uploaded. AI context starts fresh after a relaunch.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            if keepLocalChat {
+                                Button("Clear saved conversation", role: .destructive) {
+                                    showingClearChatConfirmation = true
+                                }
+                                .font(.caption)
                             }
                         }
                         .padding(12)
@@ -131,6 +181,36 @@ struct KinetiqBrainView: View {
             }
         }
         .sheet(isPresented: $showCompass) { KinetiqSmartDiscoveryView() }
+        .onAppear {
+            if keepLocalChat, let saved = TranscriptStore.load(), !saved.isEmpty {
+                messages = saved
+            }
+        }
+        .onChange(of: messages.count) { _, _ in
+            if keepLocalChat { TranscriptStore.save(messages) }
+        }
+        .onChange(of: keepLocalChat) { _, enabled in
+            if enabled {
+                if let saved = TranscriptStore.load(), !saved.isEmpty {
+                    messages = saved
+                } else {
+                    TranscriptStore.save(messages)
+                }
+            }
+        }
+        .confirmationDialog("Delete the saved Brain chat?", isPresented: $showingClearChatConfirmation) {
+            Button("Delete Saved Chat", role: .destructive) {
+                work?.cancel()
+                busy = false
+                nativeBrain.resetConversation()
+                TranscriptStore.delete()
+                messages = [Message(user: false,
+                    text: "Chat cleared. Ask a new question to get started.",
+                    source: "Local guide")]
+            }
+        } message: {
+            Text("This removes the stored messages from this iPhone and clears the current conversation. Your favorites and watch history are untouched.")
+        }
         .onDisappear { work?.cancel() }
     }
 

@@ -230,6 +230,8 @@ struct SettingsView: View {
     private var genreNotificationsEnabled = false
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var visualThemeRawValue = KinetiqVisualTheme.signature.rawValue
+    @AppStorage("kinetiq.player.m05.returnPiPOnForeground")
+    private var returnPiPOnForeground = false
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.0"
@@ -315,6 +317,15 @@ struct SettingsView: View {
                 }
 
                 Section("Playback") {
+                    NavigationLink {
+                        KinetiqPlayerAppearanceSettingsView()
+                    } label: {
+                        Label("Player appearance · live previews", systemImage: "play.rectangle.on.rectangle")
+                    }
+                    Toggle("Return from PiP when reopening Kinetiq", isOn: $returnPiPOnForeground)
+                    Text("Optional: stop system Picture in Picture automatically when Kinetiq becomes active. Off keeps PiP floating.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     NavigationLink {
                         KinetiqPlayerQuickDeckEditorView()
                     } label: {

@@ -71,7 +71,9 @@ class M04Contracts(unittest.TestCase):
         player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")
         self.assertIn("pendingTransportChange = .previous", player)
         self.assertIn("pendingTransportChange = .next", player)
-        self.assertIn("Play previous episode?", player)
+        # M05 replaces the system confirmationDialog with a custom card,
+        # preserving the previous/next transport safety gate.
+        self.assertIn("Back to the previous episode?", player)
         self.assertIn("Keep Watching", player)
         self.assertIn("onLockControls: {", player)
         chrome = swift("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")

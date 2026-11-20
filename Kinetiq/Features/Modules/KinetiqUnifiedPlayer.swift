@@ -1,10 +1,109 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Unified visual layer
 //
 // The renderer is deliberately independent of AVPlayer and module/networking
 // objects. Local and remote playback adapters both drive this same interface.
 // Every visible action is forwarded to the active playback engine.
+
+enum KinetiqPlayerChromeStyle: String, CaseIterable, Identifiable {
+    case signature = "Signature"
+    case cinema = "Cinema"
+    case focus = "Focus"
+    var id: String { rawValue }
+    static let storageKey = "kinetiq.player.m05.chromeStyle"
+    var detail: String {
+        switch self {
+        case .signature: "The complete M04 player with familiar controls"
+        case .cinema: "Deeper gradients and a theatre-style control surface"
+        case .focus: "Dimmed chrome for a quieter watching experience"
+        }
+    }
+}
+
+@MainActor
+struct KinetiqPlayerAppearancePicker: View {
+    @AppStorage(KinetiqPlayerChromeStyle.storageKey)
+    private var selectedStyle = KinetiqPlayerChromeStyle.signature.rawValue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choose your player")
+                .font(.headline)
+            Text("Tap a preview to apply it instantly to the local and module player.")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(KinetiqPlayerChromeStyle.allCases) { style in
+                Button {
+                    selectedStyle = style.rawValue
+                    UISelectionFeedbackGenerator().selectionChanged()
+                } label: {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: style == .cinema ? 5 : 12)
+                                .fill(LinearGradient(colors: style == .cinema ?
+                                    [.black, .init(red: 0.16, green: 0.18, blue: 0.24)] :
+                                    [.init(red: 0.13, green: 0.2, blue: 0.32),
+                                     .init(red: 0.02, green: 0.035, blue: 0.08)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                            VStack(spacing: 8) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "chevron.down")
+                                    Spacer()
+                                    Text("NOW PLAYING")
+                                    Spacer()
+                                    Image(systemName: "pip")
+                                }
+                                .font(.system(size: 7, weight: .bold))
+                                Spacer(minLength: 0)
+                                HStack(spacing: 12) {
+                                    Image(systemName: "gobackward.10")
+                                    Image(systemName: "pause.fill")
+                                        .font(.system(size: style == .focus ? 15 : 21))
+                                    Image(systemName: "goforward.10")
+                                }
+                                .font(.system(size: 10))
+                                Spacer(minLength: 0)
+                                Capsule().fill(.white.opacity(0.35)).frame(height: 3)
+                                    .overlay(alignment: .leading) {
+                                        Capsule().fill(.cyan).frame(width: 34, height: 3)
+                                    }
+                            }
+                            .foregroundStyle(.white.opacity(style == .focus ? 0.7 : 1))
+                            .padding(10)
+                        }
+                        .frame(width: 138, height: 86)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(style.rawValue).font(.subheadline.weight(.bold))
+                            Text(style.detail).font(.caption2).fixedSize(horizontal: false, vertical: true)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        if selectedStyle == style.rawValue {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.cyan)
+                        }
+                    }
+                    .padding(10)
+                    .background(selectedStyle == style.rawValue ? Color.cyan.opacity(0.1) :
+                        Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Use \(style.rawValue) player appearance")
+            }
+        }
+    }
+}
+
+@MainActor
+struct KinetiqPlayerAppearanceSettingsView: View {
+    var body: some View {
+        ScrollView {
+            KinetiqPlayerAppearancePicker().padding(18)
+        }
+        .navigationTitle("Player appearance")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
 @MainActor
 struct KinetiqUnifiedPlayerChrome: View {
@@ -16,6 +115,11 @@ struct KinetiqUnifiedPlayerChrome: View {
 
     @AppStorage(KinetiqVisualTheme.storageKey)
     private var themeRaw = KinetiqVisualTheme.signature.rawValue
+    @AppStorage(KinetiqPlayerChromeStyle.storageKey)
+    private var chromeStyleRaw = KinetiqPlayerChromeStyle.signature.rawValue
+    private var chromeStyle: KinetiqPlayerChromeStyle {
+        KinetiqPlayerChromeStyle(rawValue: chromeStyleRaw) ?? .signature
+    }
     private var theme: KinetiqVisualTheme {
         KinetiqVisualTheme(rawValue: themeRaw) ?? .signature
     }
@@ -108,10 +212,10 @@ struct KinetiqUnifiedPlayerChrome: View {
         ZStack {
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.58), location: 0),
+                    .init(color: .black.opacity(chromeStyle == .cinema ? 0.86 : 0.58), location: 0),
                     .init(color: .clear, location: 0.27),
                     .init(color: .clear, location: 0.60),
-                    .init(color: .black.opacity(0.70), location: 1)
+                    .init(color: .black.opacity(chromeStyle == .focus ? 0.86 : 0.70), location: 1)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -123,8 +227,10 @@ struct KinetiqUnifiedPlayerChrome: View {
                     .padding(.top, max(safeAreaInsets.top, 14))
                 Spacer(minLength: 18)
                 transport
+                    .opacity(chromeStyle == .focus ? 0.76 : 1)
                 Spacer(minLength: 18)
                 footer
+                    .opacity(chromeStyle == .focus ? 0.73 : 1)
                     .padding(.bottom, max(safeAreaInsets.bottom, 15))
             }
             .padding(.horizontal, 16)
@@ -164,7 +270,7 @@ struct KinetiqUnifiedPlayerChrome: View {
             airPlayControl
                 .frame(width: 40, height: 40)
                 .background {
-                    if theme == .cinema || theme == .nocturne {
+                    if chromeStyle == .cinema || theme == .cinema || theme == .nocturne {
                         RoundedRectangle(cornerRadius: 9)
                             .fill(.black.opacity(0.68))
                     } else {
@@ -237,7 +343,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                     .frame(width: theme == .nocturne ? 64 : 72,
                            height: theme == .nocturne ? 64 : 72)
                     .background {
-                        if theme == .cinema {
+                        if chromeStyle == .cinema || theme == .cinema {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(.black.opacity(0.82))
                         } else if theme == .anime {
@@ -252,7 +358,7 @@ struct KinetiqUnifiedPlayerChrome: View {
                         }
                     }
                     .overlay {
-                        if theme == .cinema {
+                        if chromeStyle == .cinema || theme == .cinema {
                             RoundedRectangle(cornerRadius: 12)
                                 .strokeBorder(.white.opacity(0.3), lineWidth: 1)
                         } else {

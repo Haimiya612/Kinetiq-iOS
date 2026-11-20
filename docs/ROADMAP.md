@@ -1,5 +1,11 @@
 # Kinetiq -- Development Roadmap
 
+> **Master-batch ownership:** The 395-reference M01–M09 plan and M10–M12
+> programmes are tracked in [MASTER_MEGA_BATCHES_M01_M12.md](MASTER_MEGA_BATCHES_M01_M12.md).
+> The separate M05A corrective delivery does **not** complete the canonical
+> M05 Smart Library batch (B142–B161). For iPhone-only source updates while
+> GitSync is unavailable, see [IPHONE_ZIP_TO_GITHUB.md](IPHONE_ZIP_TO_GITHUB.md).
+
 Kinetiq is an independent, native iOS media platform designed to bring video,
 anime, manga, images, music, and personal media sources into one unified
 experience.
@@ -38,6 +44,44 @@ and create an even more capable, flexible, and polished experience.
 10. **Independent identity:** Kinetiq has its own implementation and visual identity.
 11. **No fake functionality:** Controls must perform their advertised actions.
 12. **Testability:** Every major feature must have a testing strategy before being considered complete.
+
+### M04 iPhone verification and M05 execution — 20 November 2026
+
+Owner's M04 checklist: **9 PASS / 1 NOT TESTED** (Japanese transcript/Romaji
+unverified because the tested modules did not expose a Japanese caption track).
+Player redesign, Lock, Quick Deck, transport confirmation, transitions,
+SubStudio baseline, PiP, theme integration and fullscreen notifications passed.
+
+**M05A — source update prepared; iPhone verification pending:**
+
+- Player failure always offers an independent Close action before landscape;
+  portrait player header is offset below the iPhone status bar.
+- SubStudio second/third-track selection uses a scrollable sheet, not a
+  non-scrolling nested Menu. Mutually exclusive track IDs remain enforced.
+- Softer supplementary captions and adjustable color intensity; tightly
+  bounded extra-caption heights; a custom subtitle stack still cannot be
+  drawn on the iOS-owned system PiP surface.
+- Three selectable player chrome styles with tappable, live-changing previews;
+  app-wide saved setting shown in Settings and the player Playback panel.
+- Optional PiP auto-return when the app enters the foreground; off by default.
+- Exact title / prefix / phrase result ranking across existing four concurrent
+  source workers, source-suffix preference, and per-source identity dedupe.
+- "Find similar" uses explicitly requested AniList public genre metadata, not
+  inferred module playback or AI-generated recommendations.
+- Brain can opt in to locally storing a bounded conversation transcript;
+  clearing it requires explicit confirmation. AI model context is not replayed.
+- Discord receives no player activity before the first real video frame, and
+  rapid seek bursts suppress title rotation / activity updates for 30 seconds.
+- The Home loading label is now "Finding titles for you…".
+
+**M05B and later (not implemented yet):** actual live frame-reactive ambilight
+sampling with a performance/off toggle; browsing inside Kinetiq with an
+app-owned PiP/mini-player; explicit user-confirmed cross-source favorite and
+playback-progress transfer after exact title/season/episode matching; granular
+Brain action tools and per-action Yes/No permission gates; subtitle-speaker
+identity when a trustworthy local transcript or supported model can identify
+the speaker; full 13-experience visual redesign and more context-aware motion.
+Do not mark these complete from an M05A ZIP alone.
 
 Kinetiq will not copy proprietary source code, assets, or private
 implementations from other applications.

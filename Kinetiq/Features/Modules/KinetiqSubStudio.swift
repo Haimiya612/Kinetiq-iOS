@@ -255,6 +255,8 @@ struct KinetiqSubStudioCaptionStack: View {
     let primaryLanguage: String?
     @ObservedObject var studio: KinetiqSubStudioController
     @AppStorage("kinetiq.substudio.romaji.m04.v1") private var showRomaji = false
+    @AppStorage("kinetiq.substudio.m05.softColors") private var softColors = true
+    @AppStorage("kinetiq.substudio.m05.colorStrength") private var colorStrength = 0.78
 
     private var japaneseText: String? {
         if primaryLanguage?.lowercased().hasPrefix("ja") == true { return primary }
@@ -268,7 +270,7 @@ struct KinetiqSubStudioCaptionStack: View {
     }
 
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 7) {
             if let primary, !primary.isEmpty {
                 KinetiqCaptionText(text: primary)
             }
@@ -288,22 +290,24 @@ struct KinetiqSubStudioCaptionStack: View {
     }
 
     private func line(_ text: String, color: Color, label: String?) -> some View {
+        let tint = softColors ? Color.white : color
         VStack(spacing: 2) {
             if let label {
                 Text(label.uppercased())
                     .font(.system(size: 9, weight: .heavy, design: .rounded))
-                    .foregroundStyle(color.opacity(0.88))
+                    .foregroundStyle(color.opacity(softColors ? 0.65 : 0.88))
             }
             Text(verbatim: text)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
                 .multilineTextAlignment(.center)
-                .lineLimit(4)
-                .foregroundStyle(color)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+                .foregroundStyle(tint.opacity(softColors ? 1 : max(0.5, colorStrength)))
                 .shadow(color: .black, radius: 3)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(.black.opacity(0.64), in: RoundedRectangle(cornerRadius: 8))
+        .background(.black.opacity(0.80), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -314,7 +318,10 @@ struct KinetiqSubStudioControls: View {
     let currentTime: Double
     let onSeek: (Double) -> Void
     @AppStorage("kinetiq.substudio.romaji.m04.v1") private var showRomaji = false
+    @AppStorage("kinetiq.substudio.m05.softColors") private var softColors = true
+    @AppStorage("kinetiq.substudio.m05.colorStrength") private var colorStrength = 0.78
     @State private var phraseQuery = ""
+    @State private var pickingSlot: KinetiqSubStudioSlot?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -332,20 +339,7 @@ struct KinetiqSubStudioControls: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white)
                     Spacer()
-                    Menu {
-                        Button("Off", systemImage: "captions.bubble") {
-                            studio.select(nil, for: slot)
-                        }
-                        ForEach(studio.tracks.filter { candidate in
-                            candidate.id != primaryTrackID &&
-                            candidate.id != studio.selectedTrack(for: slot == .secondary
-                                ? .tertiary : .secondary)?.id
-                        }) { track in
-                            Button("\(track.language?.uppercased() ?? "UND") · \(track.label)") {
-                                studio.select(track, for: slot)
-                            }
-                        }
-                    } label: {
+                    Button { pickingSlot = slot } label: {
                         Label(studio.selectedTrack(for: slot)?.label ?? "Choose track",
                               systemImage: "chevron.down")
                             .font(.caption.weight(.semibold))
@@ -427,6 +421,21 @@ struct KinetiqSubStudioControls: View {
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.63))
 
+            Toggle("Soft subtitle colors", isOn: $softColors)
+                .tint(KinetiqPalette.cyan)
+                .foregroundStyle(.white)
+            HStack {
+                Text("Color intensity")
+                Spacer()
+                Text("\(Int(colorStrength * 100))%")
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.white)
+            Slider(value: $colorStrength, in: 0.5...1, step: 0.05)
+                .tint(KinetiqPalette.cyan)
+                .disabled(softColors)
+
             HStack {
                 Text("Extra-track sync")
                     .font(.caption.weight(.medium))
@@ -443,6 +452,51 @@ struct KinetiqSubStudioControls: View {
             Text("Multiple custom subtitle overlays display inside Kinetiq. iOS system PiP can only carry supported native tracks; supplemental overlays stay in the app.")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.65))
+        }
+        .sheet(item: $pickingSlot) { slot in
+            NavigationStack {
+                List {
+                    Button {
+                        studio.select(nil, for: slot)
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        pickingSlot = nil
+                    } label: {
+                        Label("Off", systemImage: "captions.bubble")
+                    }
+                    ForEach(studio.tracks.filter { track in
+                        track.id != primaryTrackID &&
+                        track.id != studio.selectedTrack(for: slot == .secondary
+                            ? .tertiary : .secondary)?.id
+                    }) { track in
+                        Button {
+                            studio.select(track, for: slot)
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            pickingSlot = nil
+                        } label: {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(track.label).font(.body.weight(.medium))
+                                    Text(track.language?.uppercased() ?? "Unknown language")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if studio.selectedTrack(for: slot)?.id == track.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                }
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    }
+                }
+                .navigationTitle(slot.rawValue)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { pickingSlot = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
     }
 }

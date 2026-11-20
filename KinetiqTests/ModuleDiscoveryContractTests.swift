@@ -25,6 +25,39 @@ final class ModuleDiscoveryContractTests: XCTestCase {
         XCTAssertEqual(KinetiqCrossSourceSearchPolicy.maximumConcurrentSources, 4)
     }
 
+    func testM05ExactTitleRankingBeatsSubstringAndProviderNoise() {
+        func score(title: String, query: String) -> Int {
+            KinetiqCrossSourceSearchPolicy.relevance(title: title, query: query)
+        }
+        XCTAssertEqual(score(title: "Blue Box", query: "blue box"), 0)
+        XCTAssertLessThan(score(title: "Blue Box Season 2", query: "Blue Box"),
+                          score(title: "The Blue Box Collection", query: "Blue Box"))
+        XCTAssertLessThan(score(title: "Alya Sometimes Hides Her Feelings in Russian",
+                                query: "Alya"), score(title: "Unrelated Anime", query: "Alya"))
+        XCTAssertEqual(score(title: "Roshidere", query: "Roshidere"), 0)
+        XCTAssertEqual(score(title: "Totally Unrelated", query: "Blue Box"), 5)
+    }
+
+    func testM05SearchSuffixPrefersProviderWithoutLosingTheTitle() {
+        let providers = [(name: "Synthetiq Anime", id: "anime"),
+                         (name: "Synthetiq One", id: "one"),
+                         (name: "AniPM", id: "anipm")]
+        let hint = KinetiqCrossSourceSearchPolicy.sourceHint(
+            for: "Blue Box Synthetiq One", namedSources: providers)
+        XCTAssertEqual(hint.title, "Blue Box")
+        XCTAssertEqual(hint.sourceID, "one")
+        let plain = KinetiqCrossSourceSearchPolicy.sourceHint(
+            for: "Blue Box", namedSources: providers)
+        XCTAssertEqual(plain.title, "Blue Box")
+        XCTAssertNil(plain.sourceID)
+    }
+
+    func testM05PlayerAppearanceIsOptInAndHasThreeDistinctOptions() {
+        XCTAssertEqual(KinetiqPlayerChromeStyle.allCases.count, 3)
+        XCTAssertEqual(KinetiqPlayerChromeStyle.signature.rawValue, "Signature")
+        XCTAssertEqual(Set(KinetiqPlayerChromeStyle.allCases.map(\.rawValue)).count, 3)
+    }
+
     @MainActor
     func testCalendarAlertRoutesDirectlyToAllSourceLookup() {
         let payload: [AnyHashable: Any] = [

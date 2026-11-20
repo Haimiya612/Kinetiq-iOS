@@ -2493,7 +2493,7 @@ private struct KinetiqStreamingHome: View {
             HStack(spacing: 12) {
                 ProgressView()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Loading real catalogue…").font(.subheadline.weight(.semibold))
+                    Text("Finding titles for you…").font(.subheadline.weight(.semibold))
                     Text(source.title).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -2960,9 +2960,60 @@ private struct KinetiqUnifiedSearchHit: Identifiable {
     let item: ModuleAnimeItem
 }
 
+private struct KinetiqSimilarSeed: Identifiable {
+    let id = UUID()
+    let title: String
+}
+
 enum KinetiqCrossSourceSearchPolicy {
     // Bound active module runtimes; each may issue its own network requests.
     static let maximumConcurrentSources = 4
+
+    /// Keep explicit source suffixes separate from the title sent to modules.
+    /// "Blue Box AniPM" searches for "Blue Box" and starts AniPM first.
+    @MainActor
+    static func sourceHint(for text: String,
+                           sources: [ModuleSourceOption]) -> (title: String, sourceID: String?) {
+        sourceHint(for: text, namedSources: sources.map { (name: $0.title, id: $0.id) })
+    }
+
+    static func sourceHint(for text: String,
+                           namedSources: [(name: String, id: String)]) -> (title: String, sourceID: String?) {
+        let original = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for source in namedSources.sorted(by: { $0.name.count > $1.name.count }) {
+            let suffix = source.name
+            guard original.count > suffix.count,
+                  original.lowercased().hasSuffix(suffix.lowercased()) else { continue }
+            let prefix = String(original.dropLast(suffix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-—:|@ "))
+            guard !prefix.isEmpty else { continue }
+            return (prefix, source.id)
+        }
+        return (original, nil)
+    }
+
+    static func normalized(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#,
+                                  with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Lower scores are more relevant. Provider response order and arrival
+    /// order are tie breakers; no provider can bury an exact title match.
+    static func relevance(title: String, query: String) -> Int {
+        let title = normalized(title)
+        let query = normalized(query)
+        guard !query.isEmpty else { return 5 }
+        if title == query { return 0 }
+        if title.hasPrefix(query + " ") { return 1 }
+        if title.contains(" " + query + " ") || title.hasSuffix(" " + query) { return 2 }
+        if title.contains(query) { return 3 }
+        if query.split(separator: " ").allSatisfy({ title.contains($0) }) { return 4 }
+        return 5
+    }
 }
 
 @MainActor
@@ -3006,6 +3057,8 @@ struct DiscoverView: View {
     @State private var failures = 0
     @State private var failedSourceNames: [String] = []
     @State private var selectedHit: KinetiqUnifiedSearchHit?
+    @State private var similarSeed: KinetiqSimilarSeed?
+    @State private var searchRecommendedTitle = false
     @State private var selectedSavedTitle: ModuleAnimeCollectionEntry?
     @State private var selectedSource: ModuleSourceOption?
     @State private var showingLibrary = false
@@ -3051,6 +3104,24 @@ struct DiscoverView: View {
         let authorized = authorizedSources
         guard let scopedSourceID else { return authorized }
         return authorized.filter { $0.id == scopedSourceID }
+    }
+    private var rankedMatches: [KinetiqUnifiedSearchHit] {
+        let intent = KinetiqCrossSourceSearchPolicy.sourceHint(
+            for: submittedQuery, sources: searchSources
+        )
+        return liveMatches.enumerated().sorted { lhs, rhs in
+            let left = KinetiqCrossSourceSearchPolicy.relevance(
+                title: lhs.element.item.title, query: intent.title)
+            let right = KinetiqCrossSourceSearchPolicy.relevance(
+                title: rhs.element.item.title, query: intent.title)
+            if left != right { return left < right }
+            if let preferred = intent.sourceID {
+                let leftPreferred = lhs.element.source.id == preferred
+                let rightPreferred = rhs.element.source.id == preferred
+                if leftPreferred != rightPreferred { return leftPreferred }
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
     }
     private var localMatches: [URL] {
         guard hasQuery else { return [] }
@@ -3103,7 +3174,14 @@ struct DiscoverView: View {
                 runOnlineSearch()
             }
         }
-        .onChange(of: searchText) { _, _ in cancelSearch() }
+        .onChange(of: searchText) { _, _ in
+            if searchRecommendedTitle {
+                searchRecommendedTitle = false
+                runOnlineSearch()
+            } else {
+                cancelSearch()
+            }
+        }
         .onChange(of: scope) { _, _ in
             if hasQuery && showOnline { runOnlineSearch() }
             else { cancelSearch() }
@@ -3126,6 +3204,13 @@ struct DiscoverView: View {
         }
         .sheet(item: $selectedHit) { hit in
             KinetiqUnifiedSearchDestination(hit: hit)
+        }
+        .sheet(item: $similarSeed) { seed in
+            KinetiqSimilarAnimeSheet(title: seed.title) { title in
+                similarSeed = nil
+                searchRecommendedTitle = true
+                searchText = title
+            }
         }
         .sheet(item: $selectedSavedTitle) { entry in
             KinetiqSavedTitleDestination(entry: entry)
@@ -3408,7 +3493,8 @@ struct DiscoverView: View {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 12),
                                     GridItem(.flexible(), spacing: 12)],
                           spacing: 16) {
-                    ForEach(liveMatches) { hit in
+                    ForEach(rankedMatches) { hit in
+                        VStack(alignment: .leading, spacing: 7) {
                         Button { selectedHit = hit } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 ModuleAnimeArtworkView(url: hit.item.imageURL)
@@ -3428,6 +3514,16 @@ struct DiscoverView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Open \(hit.item.title) from \(hit.source.title)")
+                        Button {
+                            similarSeed = KinetiqSimilarSeed(title: hit.item.title)
+                        } label: {
+                            Label("Find similar", systemImage: "sparkles")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(theme.accent)
+                                .frame(minHeight: 30)
+                        }
+                        .buttonStyle(.plain)
+                        }
                     }
                 }
             }
@@ -3547,7 +3643,8 @@ struct DiscoverView: View {
     }
 
     /// Modules advertise no universal searchResults pagination contract.
-    /// Query every trusted selected source without suppressing duplicate titles.
+    /// Query every trusted selected source, preserving same-title choices across
+    /// providers. Duplicate IDs/URLs within one provider are removed later.
     private func runOnlineSearch() {
         cancelSearch()
         guard hasQuery else { return }
@@ -3556,7 +3653,12 @@ struct DiscoverView: View {
                                         to: nil, from: nil, for: nil)
         submittedQuery = query
         guard showOnline else { return }
+        let hint = KinetiqCrossSourceSearchPolicy.sourceHint(
+            for: submittedQuery, sources: searchSources
+        )
         pendingSources = searchSources.sorted { lhs, rhs in
+            if lhs.id == hint.sourceID { return true }
+            if rhs.id == hint.sourceID { return false }
             if lhs.id == sources.selectedSourceID { return true }
             if rhs.id == sources.selectedSourceID { return false }
             return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
@@ -3569,7 +3671,9 @@ struct DiscoverView: View {
 
     private func loadNextSearchBatch() {
         guard let token = searchToken, submittedQuery == query else { return }
-        let term = submittedQuery
+        let term = KinetiqCrossSourceSearchPolicy.sourceHint(
+            for: submittedQuery, sources: searchSources
+        ).title
         while activeSearchWorkers < KinetiqCrossSourceSearchPolicy.maximumConcurrentSources,
               !pendingSources.isEmpty {
             let source = pendingSources.removeFirst()
@@ -3578,7 +3682,7 @@ struct DiscoverView: View {
             let worker = Task { @MainActor in
                 await searchOneSource(source, term: term, token: token)
                 guard !Task.isCancelled, searchToken == token,
-                      submittedQuery == term else { return }
+                      submittedQuery == query else { return }
                 completedSources += 1
                 activeSearchWorkers -= 1
                 if pendingSources.isEmpty && activeSearchWorkers == 0 {
@@ -3603,9 +3707,9 @@ struct DiscoverView: View {
             let runtime = try SynthetiqModuleRuntime(record: record)
             let payload = try await runtime.call(handler: "searchResults", arguments: [term])
             guard !Task.isCancelled, searchToken == token,
-                  submittedQuery == term else { return }
-            // Unlike a Home shelf, Search displays every valid item returned
-            // by the bounded runtime response. No title or ID deduplication.
+                  submittedQuery == query else { return }
+            // Unlike a Home shelf, Search keeps same-title choices pointing to
+            // distinct items and shows results from every eligible provider.
             var decoded = ModuleRuntimeDecoder.searchResults(
                 from: payload, baseURL: runtime.baseURL,
                 maximumResults: Int.max
@@ -3628,10 +3732,16 @@ struct DiscoverView: View {
                 }
             }
             guard !Task.isCancelled, searchToken == token,
-                  submittedQuery == term else { return }
-            // One state update per provider avoids a UI re-render for every
-            // search result and keeps duplicate title rows visible.
-            liveMatches.append(contentsOf: decoded.map {
+                  submittedQuery == query else { return }
+            // Only collapse the *same item* emitted repeatedly by one source.
+            // Same title on different modules (or distinct hrefs) stays visible.
+            var seen = Set(liveMatches.map {
+                "\($0.source.id)|\($0.item.id)|\($0.item.href)"
+            })
+            let newItems = decoded.filter {
+                seen.insert("\(source.id)|\($0.id)|\($0.href)").inserted
+            }
+            liveMatches.append(contentsOf: newItems.map {
                 KinetiqUnifiedSearchHit(source: source, item: $0)
             })
         } catch {
@@ -3641,6 +3751,115 @@ struct DiscoverView: View {
         }
     }
 
+}
+
+/// Explicit, opt-in public metadata lookup. Recommendations use the shared
+/// AniList genre, not an unsupported claim of personalized AI similarity.
+@MainActor
+private struct KinetiqSimilarAnimeSheet: View {
+    let title: String
+    let onSearch: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var matchedTitle: String?
+    @State private var sharedGenre: String?
+    @State private var suggestions: [KinetiqCatalogSuggestion] = []
+    @State private var loading = true
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text("More like \(title)")
+                        .font(.title2.bold())
+                    Text("Find titles sharing a genre with the AniList match. This is a public-metadata suggestion, not a guarantee of the same plot, cast or streaming availability.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if loading {
+                        ProgressView("Finding related anime…")
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    } else if let errorMessage {
+                        ContentUnavailableView("Similar titles unavailable",
+                            systemImage: "sparkles", description: Text(errorMessage))
+                    } else {
+                        if let matchedTitle, let sharedGenre {
+                            Text("Matching AniList title: \(matchedTitle) · Shared genre: \(sharedGenre)")
+                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        }
+                        ForEach(suggestions) { candidate in
+                            Button {
+                                dismiss()
+                                onSearch(candidate.displayTitle)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    ModuleAnimeArtworkView(url: candidate.coverURL)
+                                        .frame(width: 64, height: 87)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(candidate.displayTitle).font(.subheadline.weight(.semibold))
+                                        Text(candidate.genres?.prefix(3).joined(separator: " · ") ?? "Anime")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Label("Find across my sources", systemImage: "magnifyingglass")
+                                            .font(.caption2)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(minHeight: 88)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .navigationTitle("Find similar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task(id: title) { await loadSuggestions() }
+        }
+    }
+
+    private func loadSuggestions() async {
+        loading = true
+        errorMessage = nil
+        do {
+            let initial = KinetiqDiscoveryIntent.interpret("Find \(title)")
+            let first = try await KinetiqPublicAnimeSearch.shared.search(initial)
+            try Task.checkCancellation()
+            let normalizedTitle = KinetiqCrossSourceSearchPolicy.normalized(title)
+            guard let selected = first.titles.first(where: { candidate in
+                [candidate.title.english, candidate.title.romaji,
+                 candidate.title.userPreferred].compactMap { $0 }.contains {
+                    KinetiqCrossSourceSearchPolicy.normalized($0) == normalizedTitle
+                }
+            }),
+                  let genre = selected.genres?.first,
+                  !genre.isEmpty else {
+                errorMessage = "AniList couldn't confidently identify this exact title and its genres. Try its official English or Romaji name."
+                loading = false
+                return
+            }
+            matchedTitle = selected.displayTitle
+            sharedGenre = genre
+            let genreIntent = KinetiqDiscoveryIntent(
+                original: "Anime in \(genre)", catalogSearch: nil,
+                genre: genre, finishedOnly: false,
+                maximumEpisodes: nil, asksForLocal: false
+            )
+            let picks = try await KinetiqPublicAnimeSearch.shared.search(genreIntent)
+            try Task.checkCancellation()
+            suggestions = Array(picks.titles.filter { $0.id != selected.id }.prefix(18))
+            if suggestions.isEmpty { errorMessage = "No related titles were returned for \(genre)." }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "The public anime catalogue couldn't be reached. Try again later."
+        }
+        loading = false
+    }
 }
 
 @MainActor

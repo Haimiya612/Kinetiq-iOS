@@ -250,6 +250,7 @@ struct KinetiqModulePlayerView: View {
     @State private var controlsVisible = true
     @State private var controlsLocked = false
     @State private var pendingTransportChange: KinetiqTransportEpisodeChange?
+    @AppStorage("kinetiq.player.m05.returnPiPOnForeground") private var returnPiPOnForeground = false
     @State private var hasPresentedVideoOnce = false
     @StateObject private var manualChapters = KinetiqManualChapterStore.shared
     @AppStorage("kinetiq.player.contextualSkipButtons.v1") private var contextualSkipButtonsEnabled = true
@@ -401,7 +402,12 @@ struct KinetiqModulePlayerView: View {
 
                 if controlsVisible && !controlsLocked {
                     controlOverlay(
-                        safeAreaInsets: geometry.safeAreaInsets
+                        safeAreaInsets: EdgeInsets(
+                            top: hasOrientationLease ? geometry.safeAreaInsets.top : max(geometry.safeAreaInsets.top, 56),
+                            leading: geometry.safeAreaInsets.leading,
+                            bottom: geometry.safeAreaInsets.bottom,
+                            trailing: geometry.safeAreaInsets.trailing
+                        )
                     )
                     .transition(.opacity)
                     .zIndex(2)
@@ -519,8 +525,51 @@ struct KinetiqModulePlayerView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        Button {
+                            dismiss()
+                        } label: {
+                            Label("Close Player", systemImage: "xmark.circle.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 170, minHeight: 48)
+                                .background(.white.opacity(0.19), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Return to the episode details even if video never opened")
                     }
                     .zIndex(5)
+                }
+
+                // A resolution failure can occur before landscape and before
+                // the normal chrome becomes reliably tappable. Keep an escape
+                // action independent of the failure card's height.
+                if playback.errorMessage != nil {
+                    VStack {
+                        HStack {
+                            Button {
+                                dismiss()
+                            } label: {
+                                Label("Close", systemImage: "chevron.down")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: 48)
+                                    .background(.black.opacity(0.78), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, hasOrientationLease ? 12 : max(geometry.safeAreaInsets.top, 56) + 8)
+                        Spacer()
+                    }
+                    .zIndex(12)
+                }
+
+                if let pendingTransportChange {
+                    transportConfirmation(pendingTransportChange)
+                        .zIndex(15)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
 
                 if let activePanel {
@@ -687,6 +736,10 @@ struct KinetiqModulePlayerView: View {
             )) { _ in
                 // System interruptions can leave the app foregrounded without
                 // a successful PiP start. Never strand the external selection.
+                if returnPiPOnForeground && pictureInPicture.isActuallyActive {
+                    pictureInPicture.stop()
+                    return
+                }
                 guard !pictureInPicture.isActuallyActive else { return }
                 pipCaptionRollbackTask?.cancel()
                 pipCaptionRollbackTask = nil
@@ -780,35 +833,65 @@ struct KinetiqModulePlayerView: View {
         } message: {
             Text(pictureInPicture.lastFailure ?? "PiP isn't available for this video.")
         }
-        .confirmationDialog(
-            pendingTransportChange == .previous ? "Play previous episode?" : "Play next episode?",
-            isPresented: Binding(
-                get: { pendingTransportChange != nil },
-                set: { if !$0 { pendingTransportChange = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let pendingTransportChange {
-                Button("Play \(pendingTransportChange.rawValue) Episode") {
-                    switch pendingTransportChange {
+    }
+
+    private func transportConfirmation(_ change: KinetiqTransportEpisodeChange) -> some View {
+        ZStack {
+            Color.black.opacity(0.76)
+                .ignoresSafeArea()
+                .onTapGesture { pendingTransportChange = nil }
+            VStack(spacing: 16) {
+                Image(systemName: change == .previous ? "backward.end.fill" : "forward.end.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(KinetiqPalette.cyan)
+                    .frame(width: 68, height: 68)
+                    .background(KinetiqPalette.cyan.opacity(0.12), in: Circle())
+                Text(change == .previous ? "Back to the previous episode?" : "Ready for the next episode?")
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .multilineTextAlignment(.center)
+                Text("Your current position is saved before switching. You can always come back.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                Button {
+                    pendingTransportChange = nil
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    switch change {
                     case .previous: playback.playPrevious()
                     case .next: playback.playNext()
                     }
-                    self.pendingTransportChange = nil
                     revealControls()
+                } label: {
+                    Label("Play \(change.rawValue) Episode", systemImage: "play.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 50)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(KinetiqPalette.cyan)
+                Button("Keep Watching") { pendingTransportChange = nil }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(minHeight: 44)
             }
-            Button("Keep Watching", role: .cancel) {
-                pendingTransportChange = nil
-            }
-        } message: {
-            Text("This changes the episode. Your current watch progress will be saved.")
+            .padding(24)
+            .frame(maxWidth: 370)
+            .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 27))
+            .padding(.horizontal, 24)
         }
     }
 
     // MARK: - PiP Caption Handoff (Batch 06B)
 
     private func updateDiscordPresence() {
+        // A resolved URL is not proof that video actually began. Do not leave
+        // Discord saying "Paused" for a source that never produced a frame.
+        guard playback.hasFinishedPresentingFirstFrame,
+              playback.errorMessage == nil else {
+            if KinetiqDiscordPresenceManager.shared.lastPreview != nil {
+                KinetiqDiscordPresenceManager.shared.playbackEnded()
+            }
+            return
+        }
         guard let episode = session.currentEpisode, webPlayerStream == nil,
               session.currentStream != nil else { return }
         KinetiqDiscordPresenceManager.shared.record(KinetiqPresencePlayback(
@@ -1489,6 +1572,7 @@ private struct ModulePlayerOptionsSheet: View {
     @AppStorage("kinetiq.player.m03.doubleTapSeekSeconds") private var doubleTapSeekSeconds = 10
     @AppStorage("kinetiq.player.m03.remainingClock") private var displaysRemainingTime = false
     @AppStorage("kinetiq.player.m03.holdFastPlayback") private var holdFastPlaybackEnabled = true
+    @AppStorage("kinetiq.player.m05.returnPiPOnForeground") private var returnPiPOnForeground = false
     @State private var confirmWrongContentReport = false
     let onOpenWebPlayer: () -> Void
     let onLockPlayer: () -> Void
@@ -1767,6 +1851,17 @@ private struct ModulePlayerOptionsSheet: View {
         case .playback:
             VStack(alignment: .leading, spacing: 13) {
                 qualityOptions
+
+                KinetiqPlayerAppearancePicker()
+                    .padding(.vertical, 8)
+
+                sectionLabel("PICTURE IN PICTURE")
+                Toggle("Return to player when reopening Kinetiq", isOn: $returnPiPOnForeground)
+                    .tint(KinetiqPalette.cyan)
+                    .foregroundStyle(.white)
+                Text("If video is in system PiP when you return to Kinetiq, end PiP and continue in the full player.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.67))
 
                 Rectangle()
                     .fill(.white.opacity(0.09))
