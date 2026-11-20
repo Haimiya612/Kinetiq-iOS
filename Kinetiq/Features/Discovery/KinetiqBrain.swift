@@ -11,30 +11,73 @@ struct KinetiqBrainView: View {
         let user: Bool
         let text: String
         let source: String?
+        var references: [ResearchCard]? = nil
     }
 
-    /// Transcript only. The Apple Intelligence session itself is not restored
-    /// or replayed: doing so could silently resend private conversation text.
+    private struct ResearchCard: Identifiable, Codable, Sendable {
+        let title: String
+        let detail: String
+        let cover: String?
+        let link: String
+        var id: String { link }
+    }
+
+    private struct ChatThread: Identifiable, Codable {
+        var id: UUID
+        var title: String
+        var updatedAt: Date
+        var messages: [Message]
+    }
+
+    private enum ChatTitle {
+        static func suggested(for question: String) -> String {
+            let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = text.lowercased()
+            let prefix: String
+            if lower.contains("download") || lower.contains("offline") { prefix = "📥 Offline & Downloads" }
+            else if lower.contains("favorite") || lower.contains("watchlist") { prefix = "⭐ My Watchlist" }
+            else if lower.contains("storage") || lower.contains("space") { prefix = "🗂️ Library Storage" }
+            else if lower.contains("anime") || lower.hasPrefix("find ") { prefix = "🎬 Anime Discovery" }
+            else { prefix = "✦ " + String(text.prefix(44)) }
+            return String(prefix.prefix(60))
+        }
+    }
+
+    /// Transcript only. Never replay a stored thread into Apple Intelligence;
+    /// switching threads always resets the model's live, private context.
     private enum TranscriptStore {
-        static var file: URL? {
+        static var directory: URL? {
             FileManager.default.urls(for: .applicationSupportDirectory,
                                      in: .userDomainMask).first?
                 .appendingPathComponent("KinetiqBrain", isDirectory: true)
-                .appendingPathComponent("local-chat.json")
         }
 
-        static func load() -> [Message]? {
+        static var file: URL? { directory?.appendingPathComponent("thread-library.json") }
+        static var oldFile: URL? { directory?.appendingPathComponent("local-chat.json") }
+
+        static func load() -> [ChatThread]? {
             guard let file,
-                  let data = try? Data(contentsOf: file), data.count <= 750_000,
-                  let messages = try? JSONDecoder().decode([Message].self, from: data)
-            else { return nil }
-            return Array(messages.suffix(180))
+                  let data = try? Data(contentsOf: file), data.count <= 3_500_000,
+                  let threads = try? JSONDecoder().decode([ChatThread].self, from: data)
+            else {
+                // M05A users keep their existing chat when enabling M05B.
+                guard let oldFile, let data = try? Data(contentsOf: oldFile),
+                      data.count <= 750_000,
+                      let messages = try? JSONDecoder().decode([Message].self, from: data),
+                      !messages.isEmpty else { return nil }
+                return [ChatThread(id: UUID(), title: "✦ Previous Conversation",
+                                   updatedAt: Date(), messages: Array(messages.suffix(180)))]
+            }
+            return Array(threads.prefix(50))
         }
 
-        static func save(_ messages: [Message]) {
+        static func save(_ threads: [ChatThread]) {
             guard let file else { return }
-            let safe = Array(messages.suffix(180))
-            guard let data = try? JSONEncoder().encode(safe), data.count <= 750_000 else { return }
+            let safe = Array(threads.sorted { $0.updatedAt > $1.updatedAt }.prefix(50)).map {
+                ChatThread(id: $0.id, title: String($0.title.prefix(80)),
+                           updatedAt: $0.updatedAt, messages: Array($0.messages.suffix(180)))
+            }
+            guard let data = try? JSONEncoder().encode(safe), data.count <= 3_500_000 else { return }
             do {
                 try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                         withIntermediateDirectories: true)
@@ -48,6 +91,7 @@ struct KinetiqBrainView: View {
         static func delete() {
             guard let file else { return }
             try? FileManager.default.removeItem(at: file)
+            if let oldFile { try? FileManager.default.removeItem(at: oldFile) }
         }
     }
 
@@ -64,9 +108,16 @@ struct KinetiqBrainView: View {
     @State private var busy = false
     @State private var priorIntent: KinetiqDiscoveryIntent?
     @State private var lastCatalogTitles: [KinetiqCatalogSuggestion] = []
+    @State private var latestResearchCards: [ResearchCard] = []
     @State private var showCompass = false
     @State private var work: Task<Void, Never>?
     @State private var showingClearChatConfirmation = false
+    @State private var threads: [ChatThread] = []
+    @State private var activeThreadID = UUID()
+    @State private var showingChatLibrary = false
+    @State private var showingRenameChat = false
+    @State private var renameText = ""
+    @State private var didRestore = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,29 +135,30 @@ struct KinetiqBrainView: View {
                         .padding(.bottom, 8)
 
                         VStack(alignment: .leading, spacing: 7) {
+                            HStack(spacing: 8) {
+                                Button("New chat", systemImage: "plus.bubble") { startNewChat() }
+                                    .buttonStyle(.borderedProminent)
+                                Button("Chat library", systemImage: "books.vertical") {
+                                    persistThread()
+                                    showingChatLibrary = true
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            if let current = threads.first(where: { $0.id == activeThreadID }) {
+                                Text(current.title).font(.caption.weight(.bold))
+                                    .foregroundStyle(KinetiqPalette.accent)
+                            }
                             Toggle("Conversational AI · on device", isOn: $nativeConversation)
                                 .font(.subheadline.weight(.medium))
                                 .disabled(!nativeBrain.isAvailable)
                             Text(nativeBrain.availabilityDescription)
                                 .font(.caption).foregroundStyle(.secondary)
-                            if nativeConversation {
-                                Button("Start a fresh AI conversation", systemImage: "arrow.counterclockwise") {
-                                    work?.cancel()
-                                    busy = false
-                                    nativeBrain.resetConversation()
-                                    messages.append(Message(user: false,
-                                        text: "New on-device conversation started. Private inventory tools are unchanged.",
-                                        source: "Kinetiq local control"))
-                                }
-                                .font(.caption)
-                                .buttonStyle(.bordered)
-                            }
                             Toggle("Save chats on this iPhone", isOn: $keepLocalChat)
                                 .font(.subheadline.weight(.medium))
-                            Text("Opt in to storing up to 180 recent messages in protected app storage. Not synced or uploaded. AI context starts fresh after a relaunch.")
+                            Text("Opt in to storing up to 50 conversations, each with 180 recent messages, in protected app storage. Not synced or uploaded. Model context starts fresh on opening a chat.")
                                 .font(.caption2).foregroundStyle(.secondary)
                             if keepLocalChat {
-                                Button("Clear saved conversation", role: .destructive) {
+                                Button("Delete all saved conversations", role: .destructive) {
                                     showingClearChatConfirmation = true
                                 }
                                 .font(.caption)
@@ -125,6 +177,36 @@ struct KinetiqBrainView: View {
                                     if let source = message.source {
                                         Label(source, systemImage: "checkmark.shield")
                                             .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    if let cards = message.references, !cards.isEmpty {
+                                        ForEach(cards) { card in
+                                            if let link = URL(string: card.link), link.scheme == "https" {
+                                                Link(destination: link) {
+                                                    HStack(spacing: 10) {
+                                                        if let raw = card.cover,
+                                                           let url = URL(string: raw), url.scheme == "https" {
+                                                            AsyncImage(url: url) { image in
+                                                                image.resizable().scaledToFill()
+                                                            } placeholder: {
+                                                                Image(systemName: "photo").foregroundStyle(.secondary)
+                                                            }
+                                                            .frame(width: 48, height: 66).clipped()
+                                                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                                                        }
+                                                        VStack(alignment: .leading, spacing: 4) {
+                                                            Text(card.title).font(.caption.weight(.semibold))
+                                                            Text(card.detail).font(.caption2)
+                                                                .foregroundStyle(.secondary)
+                                                        }
+                                                        Spacer(minLength: 0)
+                                                        Image(systemName: "arrow.up.right.square")
+                                                    }
+                                                    .padding(8)
+                                                    .background(Color.secondary.opacity(0.12),
+                                                        in: RoundedRectangle(cornerRadius: 9))
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 .padding(13)
@@ -169,6 +251,11 @@ struct KinetiqBrainView: View {
         .navigationTitle("Kinetiq Brain")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showingChatLibrary = true } label: {
+                    Label("Chat library", systemImage: "sidebar.left")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     ForEach(["What have I not watched?", "Which episodes are ready offline?",
@@ -181,37 +268,173 @@ struct KinetiqBrainView: View {
             }
         }
         .sheet(isPresented: $showCompass) { KinetiqSmartDiscoveryView() }
+        .sheet(isPresented: $showingChatLibrary) { chatLibrary }
         .onAppear {
+            KinetiqDiscordPresenceManager.shared.recordScene(.brain)
+            guard !didRestore else { return }
+            didRestore = true
             if keepLocalChat, let saved = TranscriptStore.load(), !saved.isEmpty {
-                messages = saved
-            }
-        }
-        .onChange(of: messages.count) { _, _ in
-            if keepLocalChat { TranscriptStore.save(messages) }
+                threads = saved
+                activeThreadID = saved[0].id
+                messages = saved[0].messages
+            } else { seedCurrentThread() }
         }
         .onChange(of: keepLocalChat) { _, enabled in
             if enabled {
-                if let saved = TranscriptStore.load(), !saved.isEmpty {
-                    messages = saved
-                } else {
-                    TranscriptStore.save(messages)
-                }
+                persistThread()
             }
         }
-        .confirmationDialog("Delete the saved Brain chat?", isPresented: $showingClearChatConfirmation) {
-            Button("Delete Saved Chat", role: .destructive) {
+        .alert("Rename conversation", isPresented: $showingRenameChat) {
+            TextField("Conversation title", text: $renameText)
+            Button("Save") { renameCurrentThread() }
+            Button("Cancel", role: .cancel) { }
+        }
+        .confirmationDialog("Delete all saved Brain conversations?", isPresented: $showingClearChatConfirmation) {
+            Button("Delete All Conversations", role: .destructive) {
                 work?.cancel()
                 busy = false
                 nativeBrain.resetConversation()
                 TranscriptStore.delete()
+                threads.removeAll()
                 messages = [Message(user: false,
                     text: "Chat cleared. Ask a new question to get started.",
                     source: "Local guide")]
+                seedCurrentThread()
             }
         } message: {
-            Text("This removes the stored messages from this iPhone and clears the current conversation. Your favorites and watch history are untouched.")
+            Text("This permanently removes all Brain conversation transcripts from this iPhone. Favorites and watch history are untouched.")
         }
-        .onDisappear { work?.cancel() }
+        .onDisappear {
+            work?.cancel()
+            KinetiqDiscordPresenceManager.shared.recordScene(.home)
+        }
+    }
+
+    private var chatLibrary: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button("Start a new conversation", systemImage: "plus.bubble.fill") {
+                        startNewChat()
+                        showingChatLibrary = false
+                    }
+                }
+                Section("Your conversations") {
+                    ForEach(threads.sorted { $0.updatedAt > $1.updatedAt }) { thread in
+                        HStack(spacing: 8) {
+                            Button {
+                                openThread(thread.id)
+                                showingChatLibrary = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(thread.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("\(thread.messages.count) messages · \(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(minHeight: 43)
+                            }
+                            .buttonStyle(.plain)
+                            if thread.id == activeThreadID {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(KinetiqPalette.accent)
+                            }
+                            Button(role: .destructive) { deleteThread(thread.id) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .accessibilityLabel("Delete \(thread.title)")
+                        }
+                    }
+                }
+                Section {
+                    Text("Saved conversations remain on this iPhone when storage is enabled. Opening an old transcript starts a fresh Apple Intelligence model context; it does not silently resend your old messages.")
+                        .font(.caption)
+                }
+            }
+            .navigationTitle("Brain conversations")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Rename current") {
+                        renameText = threads.first(where: { $0.id == activeThreadID })?.title ?? ""
+                        showingChatLibrary = false
+                        showingRenameChat = true
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingChatLibrary = false }
+                }
+            }
+        }
+    }
+
+    private func seedCurrentThread() {
+        let id = UUID()
+        activeThreadID = id
+        threads.insert(ChatThread(id: id, title: "✦ New Conversation",
+                                  updatedAt: Date(), messages: messages), at: 0)
+    }
+
+    private func persistThread() {
+        if let index = threads.firstIndex(where: { $0.id == activeThreadID }) {
+            threads[index].messages = Array(messages.suffix(180))
+            threads[index].updatedAt = Date()
+        } else { seedCurrentThread() }
+        if keepLocalChat { TranscriptStore.save(threads) }
+    }
+
+    private func prepareForThreadChange() {
+        work?.cancel()
+        work = nil
+        busy = false
+        question = ""
+        priorIntent = nil
+        lastCatalogTitles = []
+        latestResearchCards = []
+        nativeBrain.resetConversation()
+    }
+
+    private func startNewChat() {
+        persistThread()
+        prepareForThreadChange()
+        messages = [Message(user: false,
+            text: "New conversation. Ask me about your library, anime, or public metadata.",
+            source: "Kinetiq local guide")]
+        seedCurrentThread()
+        persistThread()
+    }
+
+    private func openThread(_ id: UUID) {
+        guard id != activeThreadID,
+              let thread = threads.first(where: { $0.id == id }) else { return }
+        persistThread()
+        prepareForThreadChange()
+        activeThreadID = thread.id
+        messages = thread.messages
+    }
+
+    private func renameCurrentThread() {
+        let title = String(renameText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !title.isEmpty,
+              let index = threads.firstIndex(where: { $0.id == activeThreadID }) else { return }
+        threads[index].title = title
+        persistThread()
+    }
+
+    private func deleteThread(_ id: UUID) {
+        threads.removeAll { $0.id == id }
+        if id == activeThreadID {
+            prepareForThreadChange()
+            if let first = threads.first {
+                activeThreadID = first.id
+                messages = first.messages
+            } else {
+                messages = [Message(user: false, text: "New conversation.", source: "Local guide")]
+                seedCurrentThread()
+            }
+        }
+        if keepLocalChat { TranscriptStore.save(threads) }
     }
 
     private func send() {
@@ -220,13 +443,30 @@ struct KinetiqBrainView: View {
         let text = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
         guard !text.isEmpty, !busy else { return }
         question = ""
+        latestResearchCards = []
         messages.append(Message(user: true, text: text, source: nil))
+        if let index = threads.firstIndex(where: { $0.id == activeThreadID }),
+           !threads[index].messages.contains(where: { $0.user }) {
+            threads[index].title = ChatTitle.suggested(for: text)
+        }
+        persistThread()
         busy = true
         work?.cancel()
         work = Task {
             let answer = await answer(text)
             guard !Task.isCancelled else { return }
-            messages.append(Message(user: false, text: answer.0, source: answer.1))
+            let cards: [ResearchCard] = answer.1.hasPrefix("AniList public metadata") ?
+                lastCatalogTitles.prefix(12).compactMap { item in
+                    guard let url = item.anilistURL else { return nil }
+                    let score = item.averageScore.map { " · \($0)% AniList" } ?? ""
+                    return ResearchCard(title: item.displayTitle,
+                        detail: "\(item.episodes.map(String.init) ?? "?") episodes\(score) · \(item.status ?? "Unknown")",
+                        cover: item.coverURL?.absoluteString,
+                        link: url.absoluteString)
+                } : latestResearchCards
+            messages.append(Message(user: false, text: answer.0, source: answer.1,
+                                    references: cards.isEmpty ? nil : cards))
+            persistThread()
             busy = false
         }
     }
@@ -277,6 +517,56 @@ struct KinetiqBrainView: View {
                 (["Your saved list (\(favorites.favorites.count) titles):"] + titles).joined(separator: "\n"), "Kinetiq Favorites")
         }
 
+        // Research is opt-in per question. Only the typed search term leaves
+        // this device; library entries, downloads and previous chats never do.
+        if let research = KinetiqBrainPublicResearch.parse(question) {
+            switch research.source {
+            case .wikipedia:
+                let cards = await KinetiqBrainPublicResearch.wikipedia(research.query)
+                latestResearchCards = cards
+                guard !cards.isEmpty else {
+                    return ("Wikipedia didn't return a verifiable public article. Try a more specific search phrase.",
+                            "Wikipedia public lookup · no results")
+                }
+                let lines = cards.prefix(5).map { "• \($0.title): \($0.detail)" }
+                return ((["Wikipedia public articles for ‘\(research.query)’:"] + lines +
+                         ["Open an article card to verify its original source. This is a limited encyclopedia lookup, not an unrestricted web search."]).joined(separator: "\n"),
+                        "Wikipedia public article lookup")
+            case .tmdb:
+                guard let token = KinetiqTMDBCredentials.token(), !token.isEmpty else {
+                    return ("TMDB research needs your personal API Read Access Token. Add it under Settings → Metadata Enrichment. Kinetiq does not include or upload a shared key.",
+                            "TMDB · credential not configured")
+                }
+                let cards = await KinetiqBrainPublicResearch.tmdb(research.query, token: token)
+                latestResearchCards = cards
+                guard !cards.isEmpty else {
+                    return ("TMDB returned no confidently matching series or movie for ‘\(research.query)’.",
+                            "TMDB public metadata · no verified title")
+                }
+                return ((["TMDB results for ‘\(research.query)’:"] +
+                         cards.map { "• \($0.title): \($0.detail)" } +
+                         ["TMDB user ratings are community averages, not Kinetiq ratings. This product uses the TMDB API but is not endorsed or certified by TMDB."]).joined(separator: "\n"),
+                        "TMDB public metadata · user-authorized lookup")
+            case .anilist:
+                let intent = KinetiqDiscoveryIntent(
+                    original: "Find \(research.query)", catalogSearch: research.query,
+                    genre: nil, finishedOnly: false, maximumEpisodes: nil, asksForLocal: false)
+                do {
+                    let results = try await KinetiqPublicAnimeSearch.shared.search(intent)
+                    lastCatalogTitles = results.titles
+                    let lines = results.titles.prefix(8).map { item in
+                        "• \(item.displayTitle) — \(item.averageScore.map { "\($0)% AniList" } ?? "No AniList score") · \(item.episodes.map(String.init) ?? "?") episodes"
+                    }
+                    return (lines.isEmpty ? "AniList found no matching title." :
+                        (["AniList public title and rating lookup:"] + lines +
+                         ["Ratings are AniList community averages, not Kinetiq reviews."]).joined(separator: "\n"),
+                        "AniList public metadata (live search)")
+                } catch {
+                    return ("AniList is temporarily unavailable.", "AniList public lookup failed")
+                }
+            }
+        }
+
         // Local inventory requests above always take precedence. When the user
         // opts in, ordinary open-ended questions use the retained on-device
         // conversation. Explicit catalog/refinement requests still use the
@@ -317,7 +607,7 @@ struct KinetiqBrainView: View {
                 return ("AniList returned no matching anime for this query. Try another title, genre or episode limit in Compass.", "AniList public metadata · no results")
             }
             let lines = result.titles.prefix(9).map {
-                "• \($0.displayTitle) [AniList #\($0.id)] — \($0.episodes.map(String.init) ?? "?") episodes, \($0.status ?? "unknown status")"
+                "• \($0.displayTitle) [AniList #\($0.id)] — \($0.episodes.map(String.init) ?? "?") episodes, \($0.status ?? "unknown status")\($0.averageScore.map { " · \($0)% AniList" } ?? "")"
             }
             return ((["AniList returned these public catalog matches:"] + lines +
                 ["This does not verify that any installed module can play them. Open Compass to search sources. Ask ‘only finished’ or ‘only romance’ to refine."]).joined(separator: "\n"), "AniList public metadata (live search)")
@@ -325,6 +615,135 @@ struct KinetiqBrainView: View {
             return ("Search canceled.", "Local")
         } catch {
             return ("AniList could not be reached right now. Your local files and history were not uploaded. Try again or open Compass.", "Public metadata request failed")
+        }
+    }
+
+    /// Explicit, bounded public lookups. No hidden scraping, open-web promises,
+    /// local-library uploads, fabricated scores, or inferred media matches.
+    private enum KinetiqBrainPublicResearch {
+        enum Source { case wikipedia, tmdb, anilist }
+        struct Query {
+            let source: Source
+            let query: String
+        }
+
+        static func parse(_ original: String) -> Query? {
+            let value = original.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefixes: [(String, Source)] = [
+                ("search the web for ", .wikipedia), ("web search ", .wikipedia),
+                ("wikipedia ", .wikipedia), ("web ", .wikipedia),
+                ("tmdb ", .tmdb), ("movie rating ", .tmdb),
+                ("anilist ", .anilist), ("anime rating ", .anilist),
+                ("rating ", .anilist), ("tell me about ", .anilist)
+            ]
+            guard let selected = prefixes.first(where: { value.lowercased().hasPrefix($0.0) })
+            else { return nil }
+            let text = String(value.dropFirst(selected.0.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard (2...120).contains(text.count) else { return nil }
+            return Query(source: selected.1, query: text)
+        }
+
+        private struct WikiEnvelope: Decodable {
+            let query: WikiQuery?
+            struct WikiQuery: Decodable { let pages: [Page]? }
+            struct Page: Decodable {
+                let pageid: Int?
+                let title: String
+                let extract: String?
+                let thumbnail: Thumbnail?
+            }
+            struct Thumbnail: Decodable { let source: String? }
+        }
+
+        static func wikipedia(_ text: String) async -> [ResearchCard] {
+            var url = URLComponents(string: "https://en.wikipedia.org/w/api.php")
+            url?.queryItems = [
+                .init(name: "action", value: "query"),
+                .init(name: "format", value: "json"),
+                .init(name: "formatversion", value: "2"),
+                .init(name: "generator", value: "prefixsearch"),
+                .init(name: "gpssearch", value: text),
+                .init(name: "gpslimit", value: "6"),
+                .init(name: "prop", value: "pageimages|extracts"),
+                .init(name: "piprop", value: "thumbnail"),
+                .init(name: "pithumbsize", value: "180"),
+                .init(name: "exintro", value: "1"),
+                .init(name: "explaintext", value: "1"),
+                .init(name: "exsentences", value: "2")
+            ]
+            guard let endpoint = url?.url else { return [] }
+            var request = URLRequest(url: endpoint)
+            request.timeoutInterval = 12
+            request.setValue("Kinetiq-iOS/0.3 (https://github.com/Haimiya612/Kinetiq-iOS)",
+                             forHTTPHeaderField: "User-Agent")
+            guard let fetched = try? await URLSession.shared.data(for: request),
+                  (fetched.1 as? HTTPURLResponse)?.statusCode == 200,
+                  fetched.0.count <= 600_000,
+                  let result = try? JSONDecoder().decode(WikiEnvelope.self, from: fetched.0)
+            else { return [] }
+            return (result.query?.pages ?? []).compactMap { page in
+                guard let id = page.pageid, id > 0 else { return nil }
+                let cover = page.thumbnail?.source.flatMap { URL(string: $0) }
+                return ResearchCard(title: page.title,
+                    detail: String((page.extract ?? "Public encyclopedia article").prefix(280)),
+                    cover: cover?.scheme == "https" ? cover?.absoluteString : nil,
+                    link: "https://en.wikipedia.org/?curid=\(id)")
+            }
+        }
+
+        private struct TMDBEnvelope: Decodable {
+            let results: [Media]
+            struct Media: Decodable {
+                let id: Int
+                let name: String?
+                let title: String?
+                let vote_average: Double?
+                let vote_count: Int?
+                let poster_path: String?
+                let overview: String?
+                var displayTitle: String { name ?? title ?? "" }
+            }
+        }
+
+        static func tmdb(_ text: String, token: String) async -> [ResearchCard] {
+            let normalized = KinetiqEpisodeMetadataMatching.normalized(text)
+            guard !normalized.isEmpty else { return [] }
+            var matches: [ResearchCard] = []
+            for type in ["tv", "movie"] {
+                var url = URLComponents(string: "https://api.themoviedb.org/3/search/\(type)")
+                url?.queryItems = [
+                    .init(name: "query", value: text),
+                    .init(name: "language", value: "en-US"),
+                    .init(name: "include_adult", value: "false")
+                ]
+                guard let endpoint = url?.url else { continue }
+                var request = URLRequest(url: endpoint)
+                request.timeoutInterval = 12
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                guard let fetched = try? await URLSession.shared.data(for: request),
+                      (fetched.1 as? HTTPURLResponse)?.statusCode == 200,
+                      fetched.0.count <= 600_000,
+                      let result = try? JSONDecoder().decode(TMDBEnvelope.self, from: fetched.0)
+                else { continue }
+                for media in result.results.prefix(15)
+                    where KinetiqEpisodeMetadataMatching.normalized(media.displayTitle) == normalized {
+                    let rating = media.vote_average.map { String(format: "%.1f/10", $0) }
+                    let votes = media.vote_count.map { "(\($0) votes)" } ?? ""
+                    let score = rating.map { "TMDB \($0) \(votes)" } ?? "No TMDB rating"
+                    let overview = String((media.overview ?? "").prefix(150))
+                    let art = media.poster_path.flatMap { path -> String? in
+                        guard path.hasPrefix("/"), !path.contains("..") else { return nil }
+                        return "https://image.tmdb.org/t/p/w342\(path)"
+                    }
+                    matches.append(ResearchCard(title: media.displayTitle,
+                        detail: "\(score) · \(overview)", cover: art,
+                        link: "https://www.themoviedb.org/\(type)/\(media.id)"))
+                    if matches.count >= 6 { return matches }
+                }
+            }
+            return matches
         }
     }
 }

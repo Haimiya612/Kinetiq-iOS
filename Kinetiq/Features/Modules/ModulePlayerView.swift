@@ -782,6 +782,11 @@ struct KinetiqModulePlayerView: View {
                     }
                 }
             }
+            // AVPlayer may report a delayed time-control transition. Record
+            // explicit Play/Pause intent immediately for Discord instead.
+            .onChange(of: playback.presenceIntentRevision) { _, _ in
+                updateDiscordPresence()
+            }
             .onChange(of: activePanel) { _, panel in
                 if panel != nil {
                     cancelAutoHide()
@@ -3355,6 +3360,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
 
     @Published private(set) var player = AVPlayer()
     @Published private(set) var isPlaying = false
+    @Published private(set) var presenceIntentRevision = 0
     /// Rich Presence must not report a pause during a +10s seek or buffering.
     /// The player's explicit play/pause intent remains independent from its
     /// transient AVPlayer time-control status and the actual player UI.
@@ -4524,6 +4530,7 @@ private final class ModulePlayerPlaybackController: ObservableObject {
             }
             player.playImmediately(atRate: playbackRate)
         }
+        presenceIntentRevision &+= 1
     }
 
     func seek(by seconds: Double) {

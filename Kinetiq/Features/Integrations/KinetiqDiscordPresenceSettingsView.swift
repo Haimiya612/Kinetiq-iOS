@@ -19,6 +19,11 @@ struct KinetiqDiscordPresenceSettingsView: View {
         Binding(get: { presence.enabled }, set: { presence.setEnabled($0) })
     }
 
+    private var browsingBinding: Binding<Bool> {
+        Binding(get: { presence.browsingEnabled },
+                set: { presence.setBrowsingEnabled($0) })
+    }
+
     private var activityTypeBinding: Binding<KinetiqDiscordActivityType> {
         Binding(get: { presence.activityType }, set: { presence.setActivityType($0) })
     }
@@ -60,6 +65,13 @@ struct KinetiqDiscordPresenceSettingsView: View {
                 Text("Experimental Discord Presence")
             } footer: {
                 Text("Only enable this if you understand the account risk. A successful Gateway connection does not prove Discord displays the activity.")
+            }
+
+            Section("M05B · Context-aware activity") {
+                Toggle("Show what I'm browsing", isOn: browsingBinding)
+                LabeledContent("Local activity", value: presence.currentScene.details)
+                Text("When enabled, Kinetiq can update Discord while you're in Home, Favorites, Downloads, Settings, Brain, a catalogue, or anime details. Playback and PiP always take priority. Navigation labels only—never your search queries or private file names. Off by default.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Local credential") {
@@ -185,7 +197,8 @@ struct KinetiqDiscordPresenceSettingsView: View {
                             .font(.caption)
                     }
                 } else {
-                    Text("Play an anime episode to preview the activity. A sample activity can also be sent after connecting.")
+                    Text(presence.browsingEnabled ? presence.currentScene.details :
+                         "Play an anime episode to preview the activity. A sample activity can also be sent after connecting.")
                         .foregroundStyle(.secondary)
                 }
             }

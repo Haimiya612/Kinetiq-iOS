@@ -78,6 +78,8 @@ struct KinetiqCatalogSuggestion: Identifiable, Decodable {
     let episodes: Int?
     let status: String?
     let genres: [String]?
+    /// Public aggregate rating from AniList (0–100); nil when unavailable.
+    let averageScore: Int?
 
     struct Title: Decodable {
         let english: String?
@@ -143,7 +145,7 @@ actor KinetiqPublicAnimeSearch {
             media(search: $search, genre: $genre, status: $status,
                   episodes_lesser: $maxEpisodes, type: ANIME, sort: [POPULARITY_DESC]) {
               id title { english romaji userPreferred }
-              coverImage { large } episodes status genres
+              coverImage { large } episodes status genres averageScore
             }
           }
         }

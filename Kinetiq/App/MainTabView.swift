@@ -102,11 +102,16 @@ struct MainTabView: View {
     var body: some View {
         mainLayout
             .onAppear {
+                updateDiscordScene()
                 openEpisodeNotification()
                 if KinetiqEpisodeAlerts.takePendingCalendar() {
                     animeSheet = .calendar
                 }
             }
+            .onChange(of: selectedTab) { _, _ in updateDiscordScene() }
+            .onChange(of: activeSheet) { _, _ in updateDiscordScene() }
+            .onChange(of: animeSheet?.id) { _, _ in updateDiscordScene() }
+            .onChange(of: showingLibrary) { _, _ in updateDiscordScene() }
             .onReceive(NotificationCenter.default.publisher(for: KinetiqEpisodeAlerts.didOpenCalendar)) { _ in
                 animeSheet = .calendar
             }
@@ -128,6 +133,28 @@ struct MainTabView: View {
                     KinetiqAnimeSourceLookupSheet(request: request)
                 }
             }
+    }
+
+    private func updateDiscordScene() {
+        let scene: KinetiqPresenceScene
+        if let animeSheet {
+            switch animeSheet {
+            case .calendar: scene = .calendar
+            case .sourceLookup(let request): scene = .anime(request.title)
+            }
+        } else if let activeSheet {
+            scene = activeSheet == .discover ? .search : .modules
+        } else if showingLibrary {
+            scene = .library
+        } else {
+            switch selectedTab {
+            case .home: scene = .home
+            case .favorites: scene = .favorites
+            case .downloads: scene = .downloads
+            case .settings: scene = .settings
+            }
+        }
+        KinetiqDiscordPresenceManager.shared.recordScene(scene)
     }
 
     private func openEpisodeNotification() {

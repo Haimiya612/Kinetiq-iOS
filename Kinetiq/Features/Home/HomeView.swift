@@ -3764,6 +3764,11 @@ private struct KinetiqSimilarAnimeSheet: View {
     @State private var sharedGenre: String?
     @State private var suggestions: [KinetiqCatalogSuggestion] = []
     @State private var loading = true
+    @State private var loadingMore = false
+    @State private var hasMore = false
+    @State private var nextPage = 2
+    @State private var genreIntent: KinetiqDiscoveryIntent?
+    @State private var excludedID: Int?
     @State private var errorMessage: String?
 
     var body: some View {
@@ -3772,7 +3777,7 @@ private struct KinetiqSimilarAnimeSheet: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     Text("More like \(title)")
                         .font(.title2.bold())
-                    Text("Find titles sharing a genre with the AniList match. This is a public-metadata suggestion, not a guarantee of the same plot, cast or streaming availability.")
+                    Text("Explore as many AniList titles in the same genre as you like. More recommendations load as you scroll. Shared genre does not guarantee the same plot, cast or streaming availability.")
                         .font(.caption).foregroundStyle(.secondary)
                     if loading {
                         ProgressView("Finding related anime…")
@@ -3785,6 +3790,8 @@ private struct KinetiqSimilarAnimeSheet: View {
                             Text("Matching AniList title: \(matchedTitle) · Shared genre: \(sharedGenre)")
                                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         }
+                        Text("\(suggestions.count) related anime loaded")
+                            .font(.caption2).foregroundStyle(.secondary)
                         ForEach(suggestions) { candidate in
                             Button {
                                 dismiss()
@@ -3806,6 +3813,18 @@ private struct KinetiqSimilarAnimeSheet: View {
                                 .frame(minHeight: 88)
                             }
                             .buttonStyle(.plain)
+                            .onAppear {
+                                if candidate.id == suggestions.suffix(8).first?.id, hasMore {
+                                    Task { await loadNextPage() }
+                                }
+                            }
+                        }
+                        if loadingMore { ProgressView("Loading more similar anime…") }
+                        if hasMore && !loadingMore {
+                            Button("Load more related anime", systemImage: "arrow.down.circle") {
+                                Task { await loadNextPage() }
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
                 }
@@ -3825,6 +3844,10 @@ private struct KinetiqSimilarAnimeSheet: View {
     private func loadSuggestions() async {
         loading = true
         errorMessage = nil
+        suggestions = []
+        nextPage = 2
+        hasMore = false
+        genreIntent = nil
         do {
             let initial = KinetiqDiscoveryIntent.interpret("Find \(title)")
             let first = try await KinetiqPublicAnimeSearch.shared.search(initial)
@@ -3849,9 +3872,12 @@ private struct KinetiqSimilarAnimeSheet: View {
                 genre: genre, finishedOnly: false,
                 maximumEpisodes: nil, asksForLocal: false
             )
+            self.genreIntent = genreIntent
+            excludedID = selected.id
             let picks = try await KinetiqPublicAnimeSearch.shared.search(genreIntent)
             try Task.checkCancellation()
-            suggestions = Array(picks.titles.filter { $0.id != selected.id }.prefix(18))
+            suggestions = picks.titles.filter { $0.id != selected.id }
+            hasMore = picks.hasMore
             if suggestions.isEmpty { errorMessage = "No related titles were returned for \(genre)." }
         } catch is CancellationError {
             return
@@ -3859,6 +3885,26 @@ private struct KinetiqSimilarAnimeSheet: View {
             errorMessage = "The public anime catalogue couldn't be reached. Try again later."
         }
         loading = false
+    }
+
+    private func loadNextPage() async {
+        guard !loading, !loadingMore, hasMore, let genreIntent else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        do {
+            let page = nextPage
+            let picks = try await KinetiqPublicAnimeSearch.shared.search(genreIntent, page: page)
+            try Task.checkCancellation()
+            let seen = Set(suggestions.map(\.id)).union(excludedID.map { [$0] } ?? [])
+            suggestions.append(contentsOf: picks.titles.filter { !seen.contains($0.id) })
+            nextPage = page + 1
+            hasMore = picks.hasMore
+        } catch is CancellationError {
+            return
+        } catch {
+            // Preserve already retrieved suggestions and let the user retry.
+            hasMore = true
+        }
     }
 }
 

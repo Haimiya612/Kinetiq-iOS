@@ -11,13 +11,19 @@ enum KinetiqPlayerChromeStyle: String, CaseIterable, Identifiable {
     case signature = "Signature"
     case cinema = "Cinema"
     case focus = "Focus"
+    case studio = "Studio"
+    case minimal = "Minimal"
+    case classic = "Classic"
     var id: String { rawValue }
     static let storageKey = "kinetiq.player.m05.chromeStyle"
     var detail: String {
         switch self {
         case .signature: "The complete M04 player with familiar controls"
-        case .cinema: "Deeper gradients and a theatre-style control surface"
-        case .focus: "Dimmed chrome for a quieter watching experience"
+        case .cinema: "Theatre-style bottom console, film frame and deep blacks"
+        case .focus: "One clear central playback action with quiet controls below"
+        case .studio: "Editing-bay layout with transport and playback telemetry"
+        case .minimal: "Weightless video-first controls and a discreet timeline"
+        case .classic: "Traditional framed transport and readable control panels"
         }
     }
 }
@@ -40,9 +46,11 @@ struct KinetiqPlayerAppearancePicker: View {
                 } label: {
                     HStack(spacing: 14) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: style == .cinema ? 5 : 12)
+                            RoundedRectangle(cornerRadius: style == .cinema ? 3 : 12)
                                 .fill(LinearGradient(colors: style == .cinema ?
-                                    [.black, .init(red: 0.16, green: 0.18, blue: 0.24)] :
+                                    [.black, .init(red: 0.12, green: 0.08, blue: 0.08)] :
+                                    style == .studio ? [.init(red: 0.04, green: 0.19, blue: 0.23), .black] :
+                                    style == .classic ? [.init(red: 0.19, green: 0.21, blue: 0.27), .black] :
                                     [.init(red: 0.13, green: 0.2, blue: 0.32),
                                      .init(red: 0.02, green: 0.035, blue: 0.08)],
                                     startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -57,16 +65,21 @@ struct KinetiqPlayerAppearancePicker: View {
                                 .font(.system(size: 7, weight: .bold))
                                 Spacer(minLength: 0)
                                 HStack(spacing: 12) {
-                                    Image(systemName: "gobackward.10")
-                                    Image(systemName: "pause.fill")
-                                        .font(.system(size: style == .focus ? 15 : 21))
-                                    Image(systemName: "goforward.10")
+                                    if style != .focus && style != .minimal {
+                                        Image(systemName: "gobackward.10")
+                                    }
+                                    Image(systemName: style == .studio ? "slider.horizontal.3" : "pause.fill")
+                                        .font(.system(size: style == .focus ? 26 : 18))
+                                    if style != .focus && style != .minimal {
+                                        Image(systemName: "goforward.10")
+                                    }
                                 }
                                 .font(.system(size: 10))
                                 Spacer(minLength: 0)
                                 Capsule().fill(.white.opacity(0.35)).frame(height: 3)
                                     .overlay(alignment: .leading) {
-                                        Capsule().fill(.cyan).frame(width: 34, height: 3)
+                                        Capsule().fill(style == .cinema ? .orange : .cyan)
+                                            .frame(width: 34, height: 3)
                                     }
                             }
                             .foregroundStyle(.white.opacity(style == .focus ? 0.7 : 1))
@@ -209,6 +222,19 @@ struct KinetiqUnifiedPlayerChrome: View {
     }
 
     var body: some View {
+        Group {
+            if chromeStyle == .signature {
+                signatureChrome
+            } else {
+                redesignedChrome
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // Signature is the exact original layout and tap map. Keep every visual
+    // adjustment to the other appearance branches, not this baseline.
+    private var signatureChrome: some View {
         ZStack {
             LinearGradient(
                 stops: [
@@ -236,6 +262,176 @@ struct KinetiqUnifiedPlayerChrome: View {
             .padding(.horizontal, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var redesignedChrome: some View {
+        switch chromeStyle {
+        case .cinema: cinemaChrome
+        case .focus: focusChrome
+        case .studio: studioChrome
+        case .minimal: minimalChrome
+        case .classic: classicChrome
+        case .signature: signatureChrome
+        }
+    }
+
+    private var cinemaChrome: some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.73), .clear, .black.opacity(0.93)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                Rectangle().fill(.white.opacity(0.38)).frame(height: 1)
+                header.padding(.top, max(safeAreaInsets.top, 14))
+                Spacer(minLength: 40)
+                VStack(spacing: 18) {
+                    HStack(spacing: 8) {
+                        Rectangle().fill(.orange.opacity(0.8)).frame(width: 4, height: 22)
+                        Text("CINEMA · THEATRE CONTROLS")
+                            .font(.system(size: 10, weight: .heavy, design: .rounded))
+                            .tracking(1.6).foregroundStyle(.white.opacity(0.8))
+                        Spacer()
+                        Text(elapsedLabel).font(.caption.monospacedDigit())
+                            .foregroundStyle(.orange)
+                    }
+                    transport
+                    footer
+                }
+                .padding(18)
+                .background(.black.opacity(0.76),
+                            in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(.orange.opacity(0.26), lineWidth: 1))
+                .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private var focusChrome: some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.39), .clear, .black.opacity(0.63)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                header.opacity(0.83).padding(.top, max(safeAreaInsets.top, 14))
+                Spacer(minLength: 10)
+                heroPlayButton
+                Spacer(minLength: 10)
+                VStack(spacing: 15) {
+                    secondaryTransport
+                    footer
+                }
+                .padding(15)
+                .background(.black.opacity(0.38),
+                            in: RoundedRectangle(cornerRadius: 24))
+                .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private var studioChrome: some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.88), .cyan.opacity(0.10), .black.opacity(0.86)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 12) {
+                header.padding(.top, max(safeAreaInsets.top, 14))
+                HStack(spacing: 10) {
+                    Label("STUDIO MONITOR", systemImage: "waveform.path")
+                    Spacer()
+                    Text("\(elapsedLabel) / \(durationLabel)")
+                }
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.cyan)
+                .padding(12)
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
+                Spacer(minLength: 14)
+                transport
+                    .padding(9)
+                    .background(.black.opacity(0.64), in: RoundedRectangle(cornerRadius: 13))
+                Spacer(minLength: 14)
+                footer.padding(16)
+                    .background(.black.opacity(0.80), in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var minimalChrome: some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.23), .clear, .black.opacity(0.45)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                header.opacity(0.77).padding(.top, max(safeAreaInsets.top, 14))
+                Spacer(minLength: 10)
+                heroPlayButton.opacity(0.88)
+                Spacer(minLength: 10)
+                secondaryTransport.opacity(0.78)
+                footer.opacity(0.85)
+                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var classicChrome: some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.66), .clear, .black.opacity(0.75)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                header.padding(.top, max(safeAreaInsets.top, 14))
+                    .padding(12)
+                    .background(Color(white: 0.15).opacity(0.75),
+                                in: RoundedRectangle(cornerRadius: 12))
+                Spacer(minLength: 12)
+                transport.padding(.horizontal, 12)
+                    .background(Color(white: 0.18).opacity(0.82),
+                                in: RoundedRectangle(cornerRadius: 16))
+                Spacer(minLength: 12)
+                footer.padding(15)
+                    .background(Color(white: 0.12).opacity(0.88),
+                                in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var heroPlayButton: some View {
+        Button(action: onTogglePlay) {
+            Image(systemName: playing ? "pause.fill" : "play.fill")
+                .font(.system(size: 33, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 90, height: 90)
+                .background(.black.opacity(0.38), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel(playing ? "Pause" : "Play")
+    }
+
+    private var secondaryTransport: some View {
+        HStack(spacing: 16) {
+            transportButton("backward.end.fill", size: 18, width: 42,
+                            label: "Previous", action: onPrevious)
+            transportButton("gobackward.10", size: 22, width: 48,
+                            label: "Back 10 seconds", action: onRewind)
+            Spacer(minLength: 0)
+            transportButton("goforward.10", size: 22, width: 48,
+                            label: "Forward 10 seconds", action: onForward)
+            transportButton("forward.end.fill", size: 18, width: 42,
+                            label: "Next", action: onNext)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .foregroundStyle(.white)
     }
 
     private var header: some View {

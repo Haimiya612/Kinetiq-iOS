@@ -1,0 +1,22 @@
+M05B source delta against owner's M05A archive, 21 November 2026
+
+Kinetiq/App/MainTabView.swift
+Kinetiq/Features/Discovery/KinetiqBrain.swift
+Kinetiq/Features/Discovery/KinetiqSmartDiscovery.swift
+Kinetiq/Features/Home/HomeView.swift
+Kinetiq/Features/Integrations/KinetiqDiscordPresence.swift
+Kinetiq/Features/Integrations/KinetiqDiscordPresenceSettingsView.swift
+Kinetiq/Features/Modules/KinetiqSubStudio.swift
+Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift
+Kinetiq/Features/Modules/ModulePlayerView.swift
+Kinetiq/Features/Modules/ModuleRuntime.swift
+KinetiqTests/DiscordPresenceContractTests.swift
+KinetiqTests/ModuleDiscoveryContractTests.swift
+docs/ROADMAP.md
+docs/KINETIQ_M05B_IPHONE_HANDOFF.md (new)
+docs/KINETIQ_M05B_CHANGED_FILES.txt (new)
+tests/test_m05b_contracts.py (new)
+
+No change to Kinetiq.xcodeproj/project.pbxproj; all modified Swift files
+are existing registered target sources. This distribution is a complete
+repository snapshot, not a patch archive.

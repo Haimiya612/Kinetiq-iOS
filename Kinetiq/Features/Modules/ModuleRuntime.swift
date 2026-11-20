@@ -3461,6 +3461,9 @@ struct ModuleBrowserView: View {
         .background {
             if !embeddedInHome { KinetiqExperienceBackground() }
         }
+        .onAppear {
+            KinetiqDiscordPresenceManager.shared.recordScene(.catalogue(source.title))
+        }
         .task(id: runtimeIdentity) {
             catalogueSection = startInSearch ? .search : ModuleBrowserPreferences.section(for: source.id)
             await prepareRuntime()
@@ -3484,6 +3487,7 @@ struct ModuleBrowserView: View {
             }
         }
         .onDisappear {
+            KinetiqDiscordPresenceManager.shared.recordScene(.home)
             activeSearchID = nil
             activePreparationID = nil
             isSearching = false
@@ -4649,6 +4653,12 @@ struct ModuleAnimeDetailsView: View {
             }
             .task {
                 await loadDetailsAndEpisodes()
+            }
+            .onAppear {
+                KinetiqDiscordPresenceManager.shared.recordScene(.anime(item.title))
+            }
+            .onDisappear {
+                KinetiqDiscordPresenceManager.shared.recordScene(.catalogue(sourceName))
             }
             .task(id: supplementalLookupKey) {
                 await loadSupplementalMetadata()

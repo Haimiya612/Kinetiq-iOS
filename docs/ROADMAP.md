@@ -45,14 +45,14 @@ and create an even more capable, flexible, and polished experience.
 11. **No fake functionality:** Controls must perform their advertised actions.
 12. **Testability:** Every major feature must have a testing strategy before being considered complete.
 
-### M04 iPhone verification and M05 execution — 20 November 2026
+### M04 iPhone verification and M05 execution — 21 November 2026
 
 Owner's M04 checklist: **9 PASS / 1 NOT TESTED** (Japanese transcript/Romaji
 unverified because the tested modules did not expose a Japanese caption track).
 Player redesign, Lock, Quick Deck, transport confirmation, transitions,
 SubStudio baseline, PiP, theme integration and fullscreen notifications passed.
 
-**M05A — source update prepared; iPhone verification pending:**
+**M05A — owner confirmed 13/13 iPhone PASS on 20 November 2026:**
 
 - Player failure always offers an independent Close action before landscape;
   portrait player header is offset below the iPhone status bar.
@@ -74,7 +74,26 @@ SubStudio baseline, PiP, theme integration and fullscreen notifications passed.
   rapid seek bursts suppress title rotation / activity updates for 30 seconds.
 - The Home loading label is now "Finding titles for you…".
 
-**M05B and later (not implemented yet):** actual live frame-reactive ambilight
+**M05B — cumulative source delivery prepared, Xcode/device verification pending:**
+
+- Persistent SubStudio track gap and color choices (including primary subtitle ink),
+  with explicit restore-layout defaults.
+- Cinema and Focus have different playback layouts; new Studio, Minimal and
+  Classic styles join them. Signature retains the original M04 chrome.
+- Similar-anime sheet requests subsequent AniList pages, dedupes results, and
+  supports continued discovery instead of a fixed first-page cap.
+- Brain opt-in local library with multiple named conversations, new chats,
+  rename/delete and bounded protected storage; older single chats migrate.
+- Explicit Wikipedia public article search (with thumbnails), AniList ratings
+  and posters, and TMDB exact-title lookup using the owner's existing token.
+  This is *not* arbitrary full-web search or a remote chatbot.
+- Discord intent-driven pause updates and optional, separately opt-in browsing
+  presence for app sections, source catalogues and anime details; stream
+  playback takes priority. Discord external visibility is not guaranteed.
+
+See [KINETIQ_M05B_IPHONE_HANDOFF.md](KINETIQ_M05B_IPHONE_HANDOFF.md).
+
+**M05C and later (not implemented yet):** actual live frame-reactive ambilight
 sampling with a performance/off toggle; browsing inside Kinetiq with an
 app-owned PiP/mini-player; explicit user-confirmed cross-source favorite and
 playback-progress transfer after exact title/season/episode matching; granular

@@ -46,6 +46,32 @@ final class DiscordPresenceContractTests: XCTestCase {
         XCTAssertEqual(KinetiqDiscordActivity.clock(.infinity), "00:00")
     }
 
+    func testM05BBrowsingActivityIsSeparateFromPlayback() throws {
+        let context = KinetiqPresenceScene.catalogue("AniWorld")
+        XCTAssertEqual(context.details, "Browsing AniWorld's Catalogue")
+        let payload = KinetiqDiscordActivity.scenePayload(for: context)
+        let body = try XCTUnwrap(payload["d"] as? [String: Any])
+        let activity = try XCTUnwrap((body["activities"] as? [[String: Any]])?.first)
+        XCTAssertEqual(activity["application_id"] as? String,
+                       KinetiqDiscordActivity.applicationID)
+        XCTAssertEqual(activity["details"] as? String, context.details)
+        XCTAssertNil(activity["timestamps"])
+        XCTAssertNil(activity["assets"])
+        XCTAssertFalse((activity["state"] as? String ?? "").contains("Paused"))
+        XCTAssertEqual(KinetiqPresenceScene.anime("Frieren").details,
+                       "Checking out Frieren")
+        XCTAssertEqual(KinetiqPresenceScene.brain.details,
+                       "Exploring with Kinetiq Brain")
+    }
+
+    func testM05BPausedActivityHasNoRunningTimer() throws {
+        let payload = KinetiqDiscordActivity.payload(for: playback(playing: false))
+        let body = try XCTUnwrap(payload["d"] as? [String: Any])
+        let activity = try XCTUnwrap((body["activities"] as? [[String: Any]])?.first)
+        XCTAssertTrue((activity["state"] as? String ?? "").contains("Paused"))
+        XCTAssertNil(activity["timestamps"])
+    }
+
     func testAllSixDiscordActivityTypesCanBeSelected() throws {
         XCTAssertEqual(KinetiqDiscordActivityType.allCases.map(\.rawValue), Array(0...5))
         for type in KinetiqDiscordActivityType.allCases {

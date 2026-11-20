@@ -52,10 +52,18 @@ final class ModuleDiscoveryContractTests: XCTestCase {
         XCTAssertNil(plain.sourceID)
     }
 
-    func testM05PlayerAppearanceIsOptInAndHasThreeDistinctOptions() {
-        XCTAssertEqual(KinetiqPlayerChromeStyle.allCases.count, 3)
+    func testM05BPlayerAppearancePreservesSignatureAndOffersSixDistinctOptions() {
+        XCTAssertEqual(KinetiqPlayerChromeStyle.allCases.count, 6)
         XCTAssertEqual(KinetiqPlayerChromeStyle.signature.rawValue, "Signature")
-        XCTAssertEqual(Set(KinetiqPlayerChromeStyle.allCases.map(\.rawValue)).count, 3)
+        XCTAssertEqual(Set(KinetiqPlayerChromeStyle.allCases.map(\.rawValue)).count, 6)
+        XCTAssertEqual(KinetiqPlayerChromeStyle.storageKey, "kinetiq.player.m05.chromeStyle")
+        XCTAssertTrue(KinetiqPlayerChromeStyle.allCases.allSatisfy { !$0.detail.isEmpty })
+    }
+
+    func testM05BSubStudioPaletteKeepsStablePersistableColorNames() {
+        XCTAssertEqual(KinetiqSubStudioInk.allCases.count, 7)
+        XCTAssertEqual(KinetiqSubStudioInk(rawValue: "Yellow"), .yellow)
+        XCTAssertEqual(KinetiqSubStudioInk(rawValue: "Lavender"), .lavender)
     }
 
     @MainActor

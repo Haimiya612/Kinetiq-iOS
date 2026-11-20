@@ -14,6 +14,24 @@ enum KinetiqSubStudioSlot: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Persist names, never platform Color encodings, so preferences survive updates.
+enum KinetiqSubStudioInk: String, CaseIterable, Identifiable {
+    case white = "White", yellow = "Yellow", cyan = "Cyan", mint = "Mint"
+    case pink = "Pink", orange = "Orange", lavender = "Lavender"
+    var id: String { rawValue }
+    var color: Color {
+        switch self {
+        case .white: .white
+        case .yellow: .yellow
+        case .cyan: .cyan
+        case .mint: .mint
+        case .pink: .pink
+        case .orange: .orange
+        case .lavender: Color(red: 0.78, green: 0.67, blue: 1)
+        }
+    }
+}
+
 @MainActor
 final class KinetiqSubStudioController: ObservableObject {
     @Published private(set) var tracks: [ModuleRemoteSubtitleTrack] = []
@@ -257,6 +275,10 @@ struct KinetiqSubStudioCaptionStack: View {
     @AppStorage("kinetiq.substudio.romaji.m04.v1") private var showRomaji = false
     @AppStorage("kinetiq.substudio.m05.softColors") private var softColors = true
     @AppStorage("kinetiq.substudio.m05.colorStrength") private var colorStrength = 0.78
+    @AppStorage("kinetiq.substudio.m05b.lineGap") private var lineGap = 7.0
+    @AppStorage("kinetiq.substudio.m05b.secondaryInk") private var secondaryInk = KinetiqSubStudioInk.yellow.rawValue
+    @AppStorage("kinetiq.substudio.m05b.tertiaryInk") private var tertiaryInk = KinetiqSubStudioInk.cyan.rawValue
+    @AppStorage("kinetiq.substudio.m05b.romajiInk") private var romajiInk = KinetiqSubStudioInk.mint.rawValue
 
     private var japaneseText: String? {
         if primaryLanguage?.lowercased().hasPrefix("ja") == true { return primary }
@@ -270,19 +292,22 @@ struct KinetiqSubStudioCaptionStack: View {
     }
 
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: max(0, min(26, lineGap))) {
             if let primary, !primary.isEmpty {
                 KinetiqCaptionText(text: primary)
             }
             if let text = studio.secondaryText, !text.isEmpty {
-                line(text, color: .yellow, label: studio.selectedTrack(for: .secondary)?.label)
+                line(text, color: (KinetiqSubStudioInk(rawValue: secondaryInk) ?? .yellow).color,
+                     label: studio.selectedTrack(for: .secondary)?.label)
             }
             if let text = studio.tertiaryText, !text.isEmpty {
-                line(text, color: .cyan, label: studio.selectedTrack(for: .tertiary)?.label)
+                line(text, color: (KinetiqSubStudioInk(rawValue: tertiaryInk) ?? .cyan).color,
+                     label: studio.selectedTrack(for: .tertiary)?.label)
             }
             if showRomaji, let japaneseText,
                let reading = KinetiqJapaneseReading.romaji(for: japaneseText) {
-                line(reading, color: .mint, label: "Romaji · approximate reading")
+                line(reading, color: (KinetiqSubStudioInk(rawValue: romajiInk) ?? .mint).color,
+                     label: "Romaji · approximate reading")
             }
         }
         .frame(maxWidth: 700)
@@ -320,6 +345,11 @@ struct KinetiqSubStudioControls: View {
     @AppStorage("kinetiq.substudio.romaji.m04.v1") private var showRomaji = false
     @AppStorage("kinetiq.substudio.m05.softColors") private var softColors = true
     @AppStorage("kinetiq.substudio.m05.colorStrength") private var colorStrength = 0.78
+    @AppStorage("kinetiq.substudio.m05b.lineGap") private var lineGap = 7.0
+    @AppStorage("kinetiq.substudio.m05b.secondaryInk") private var secondaryInk = KinetiqSubStudioInk.yellow.rawValue
+    @AppStorage("kinetiq.substudio.m05b.tertiaryInk") private var tertiaryInk = KinetiqSubStudioInk.cyan.rawValue
+    @AppStorage("kinetiq.substudio.m05b.romajiInk") private var romajiInk = KinetiqSubStudioInk.mint.rawValue
+    @ObservedObject private var captionSettings = KinetiqSubtitleSettings.shared
     @State private var phraseQuery = ""
     @State private var pickingSlot: KinetiqSubStudioSlot?
 
@@ -436,6 +466,47 @@ struct KinetiqSubStudioControls: View {
                 .tint(KinetiqPalette.cyan)
                 .disabled(softColors)
 
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text("Distance between subtitle tracks")
+                    Spacer()
+                    Text("\(Int(lineGap)) pt").monospacedDigit()
+                }
+                .font(.caption).foregroundStyle(.white)
+                Slider(value: $lineGap, in: 0...26, step: 1)
+                    .tint(KinetiqPalette.cyan)
+                Text("Subtitle line spacing")
+                    .font(.caption.weight(.medium)).foregroundStyle(.white)
+                Picker("Primary subtitle color", selection: Binding(
+                    get: { captionSettings.appearance.ink },
+                    set: { ink in
+                        var appearance = captionSettings.appearance
+                        appearance.ink = ink
+                        captionSettings.appearance = appearance
+                    }
+                )) {
+                    ForEach(KinetiqSubtitleAppearance.Ink.allCases, id: \.self) { ink in
+                        Text(ink.rawValue).tag(ink)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(.white)
+                inkPicker("Second subtitle color", selection: $secondaryInk)
+                inkPicker("Third subtitle color", selection: $tertiaryInk)
+                inkPicker("Romaji subtitle color", selection: $romajiInk)
+                Text("Choosing a supplemental color turns off Soft subtitle colors so your choice is visible. Your preferences are saved automatically on this device.")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.68))
+                Button("Restore subtitle layout defaults") {
+                    lineGap = 7
+                    secondaryInk = KinetiqSubStudioInk.yellow.rawValue
+                    tertiaryInk = KinetiqSubStudioInk.cyan.rawValue
+                    romajiInk = KinetiqSubStudioInk.mint.rawValue
+                    softColors = true
+                }
+                .font(.caption.weight(.medium))
+                .tint(KinetiqPalette.cyan)
+            }
+
             HStack {
                 Text("Extra-track sync")
                     .font(.caption.weight(.medium))
@@ -498,5 +569,18 @@ struct KinetiqSubStudioControls: View {
             }
             .presentationDetents([.medium, .large])
         }
+    }
+
+    private func inkPicker(_ title: String, selection: Binding<String>) -> some View {
+        Picker(title, selection: Binding(
+            get: { selection.wrappedValue },
+            set: { value in selection.wrappedValue = value; softColors = false }
+        )) {
+            ForEach(KinetiqSubStudioInk.allCases) { ink in
+                Text(ink.rawValue).tag(ink.rawValue)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(.white)
     }
 }

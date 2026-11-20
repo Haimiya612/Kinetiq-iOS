@@ -20,6 +20,42 @@ struct KinetiqPresencePlayback {
     let isPictureInPicture: Bool
 }
 
+/// Local activity description; only opted-in, foreground navigation labels
+/// may be published. Never includes search queries, watched URLs or credentials.
+struct KinetiqPresenceScene: Equatable {
+    enum Kind: String { case home, favorites, downloads, settings, library, search,
+        modules, anime, brain, calendar }
+    let kind: Kind
+    let item: String?
+
+    static let home = Self(kind: .home, item: nil)
+    static let favorites = Self(kind: .favorites, item: nil)
+    static let downloads = Self(kind: .downloads, item: nil)
+    static let settings = Self(kind: .settings, item: nil)
+    static let library = Self(kind: .library, item: nil)
+    static let search = Self(kind: .search, item: nil)
+    static let modules = Self(kind: .modules, item: nil)
+    static let brain = Self(kind: .brain, item: nil)
+    static let calendar = Self(kind: .calendar, item: nil)
+    static func catalogue(_ source: String) -> Self { .init(kind: .modules, item: source) }
+    static func anime(_ title: String) -> Self { .init(kind: .anime, item: title) }
+
+    var details: String {
+        switch kind {
+        case .home: "Exploring Kinetiq"
+        case .favorites: "Browsing Favorites"
+        case .downloads: "Managing Downloads"
+        case .settings: "Customizing Kinetiq"
+        case .library: "Exploring Local Library"
+        case .search: "Discovering Anime"
+        case .modules: item.map { "Browsing \($0)'s Catalogue" } ?? "Browsing Module Sources"
+        case .anime: item.map { "Checking out \($0)" } ?? "Viewing Anime Details"
+        case .brain: "Exploring with Kinetiq Brain"
+        case .calendar: "Checking Anime Calendar"
+        }
+    }
+}
+
 /// A seek can temporarily put AVPlayer in `.paused` or `.waitingToPlayAtSpecifiedRate`
 /// even though the viewer never pressed Pause. Discord should describe the
 /// viewer's playback intent, once the stream has actually started, instead of
@@ -273,6 +309,19 @@ enum KinetiqDiscordArtworkRenderer {
 /// Pure presentation mapping, usable without contacting Discord.
 enum KinetiqDiscordActivity {
     static let applicationID = "1571558800387874819"
+
+    static func scenePayload(for scene: KinetiqPresenceScene) -> [String: Any] {
+        // These activities are a separate mode from playback; no fictitious
+        // episode, progress clock, video poster or 'Paused' label.
+        let activity: [String: Any] = [
+            "name": "Kinetiq", "type": KinetiqDiscordActivityType.playing.rawValue,
+            "application_id": applicationID,
+            "details": String(scene.details.prefix(128)),
+            "state": "Kinetiq · Browsing"
+        ]
+        return ["op": 3, "d": ["since": 0, "activities": [activity],
+                               "status": "online", "afk": false]]
+    }
 
     static func clock(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "00:00" }
@@ -620,6 +669,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     static let customStatusKey = "kinetiq.discordPresenceLab.customStatus"
     static let registeredPosterKey = "kinetiq.discordPresenceLab.registeredPosterKey"
     static let artworkStyleKey = "kinetiq.discordPresenceLab.artworkStyle"
+    static let browsingEnabledKey = "kinetiq.discordPresenceLab.browsingM05B"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var hasCredential: Bool
@@ -644,6 +694,8 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     @Published private(set) var publicPosterURL: URL?
     @Published private(set) var artworkResolutionStatus = "No poster submitted."
     @Published private(set) var playbackSyncStatus = "Waiting for playback."
+    @Published private(set) var browsingEnabled: Bool
+    @Published private(set) var currentScene: KinetiqPresenceScene = .home
 
     var artworkPreviewURL: URL? { selectedArtworkURL }
 
@@ -699,6 +751,7 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
+        browsingEnabled = UserDefaults.standard.bool(forKey: Self.browsingEnabledKey)
         hasCredential = KinetiqDiscordCredentialStore.exists
         activityType = KinetiqDiscordActivityType.restored(
             from: .standard, key: Self.activityTypeKey
@@ -755,6 +808,26 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             artworkLookupTask = nil
             artworkResolutionStatus = "Presence Lab disabled."
         }
+    }
+
+    func setBrowsingEnabled(_ value: Bool) {
+        guard browsingEnabled != value else { return }
+        browsingEnabled = value
+        UserDefaults.standard.set(value, forKey: Self.browsingEnabledKey)
+        if enabled && connection == .connected {
+            // The existing Gateway rate budget still applies to a mode change.
+            if value { publishIfNeeded(force: true) }
+            else if lastPreview == nil { clearPublishedActivity() }
+        }
+    }
+
+    func recordScene(_ scene: KinetiqPresenceScene) {
+        let changed = scene != currentScene
+        currentScene = scene
+        // Active playback (including PiP) always outranks browsing.
+        guard enabled, browsingEnabled, lastPreview == nil else { return }
+        guard changed || lastSignature == nil else { return }
+        publishIfNeeded(force: false)
     }
 
     func setActivityType(_ type: KinetiqDiscordActivityType) {
@@ -1074,6 +1147,14 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
         artworkLookupTask?.cancel()
         artworkLookupTask = nil
         lastSignature = nil
+        if browsingEnabled {
+            publishIfNeeded(force: true)
+            return
+        }
+        clearPublishedActivity()
+    }
+
+    private func clearPublishedActivity() {
         guard let socket, connection == .connected else { return }
         let sendTask = presenceSendTask
         let connectionGeneration = generation
@@ -1107,12 +1188,17 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     /// A user-initiated refresh still obeys the same rolling update budget.
     /// It is useful after iOS resumes a long PiP or foreground session.
     func resyncCurrentPlayback() {
-        guard enabled, connection == .connected, lastPreview != nil else { return }
+        guard enabled, connection == .connected,
+              lastPreview != nil || browsingEnabled else { return }
         publishIfNeeded(force: true)
     }
 
     private func publishIfNeeded(force: Bool) {
-        guard let socket, connection == .connected, let lastPreview else { return }
+        guard let socket, connection == .connected else { return }
+        guard let lastPreview else {
+            if browsingEnabled { publishSceneIfNeeded(on: socket, force: force) }
+            return
+        }
         if force {
             pendingForcedPublication = true
             forcedPublicationRevision += 1
@@ -1210,6 +1296,48 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
                 self.failedPublicationRetryAt = Date().addingTimeInterval(30)
                 self.playbackSyncStatus = "Submission failed; retry queued."
                 self.message = "Presence update could not be sent. Will retry if connected."
+            }
+            guard let self, self.generation == connectionGeneration else { return }
+            self.presenceSendTask = nil
+            self.publishIfNeeded(force: false)
+        }
+    }
+
+    private func publishSceneIfNeeded(on socket: URLSessionWebSocketTask, force: Bool) {
+        let now = Date()
+        let signature = "scene|\(currentScene.kind.rawValue)|\(currentScene.item ?? "")"
+        if !force, signature == lastSignature { return }
+        guard presenceSendTask == nil else { return }
+        let allowedAt = max(KinetiqPresenceSyncPolicy.nextAllowedDate(
+            after: now, attempts: presenceSendAttempts), failedPublicationRetryAt)
+        if allowedAt > now {
+            schedulePresencePublish(at: allowedAt)
+            playbackSyncStatus = "Activity change queued within Discord's rate limit."
+            return
+        }
+        scheduledPresenceTask?.cancel()
+        scheduledPresenceTask = nil
+        scheduledPresenceAt = nil
+        let payload = KinetiqDiscordActivity.scenePayload(for: currentScene)
+        presenceSendAttempts.removeAll {
+            now.timeIntervalSince($0) >= KinetiqPresenceSyncPolicy.rollingWindow
+        }
+        presenceSendAttempts.append(now)
+        let connectionGeneration = generation
+        playbackSyncStatus = "Submitting browsing activity…"
+        presenceSendTask = Task { @MainActor [weak self] in
+            do {
+                try await Self.send(payload, on: socket)
+                guard let self, self.generation == connectionGeneration else { return }
+                self.lastSignature = signature
+                self.lastPublication = now
+                self.lastSentAt = Date()
+                self.failedPublicationRetryAt = .distantPast
+                self.playbackSyncStatus = "Latest browsing activity submitted."
+            } catch {
+                guard let self, self.generation == connectionGeneration else { return }
+                self.failedPublicationRetryAt = Date().addingTimeInterval(30)
+                self.playbackSyncStatus = "Browsing activity submission failed; retry queued."
             }
             guard let self, self.generation == connectionGeneration else { return }
             self.presenceSendTask = nil
