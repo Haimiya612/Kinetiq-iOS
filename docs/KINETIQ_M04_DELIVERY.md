@@ -1,5 +1,31 @@
 # Kinetiq M04 — SubStudio and Player Comfort (18 November 2026)
 
+## 20 November 2026 — CI compilation hotfix R3
+
+Run [#205](https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44628299808)
+failed with `extra argument 'onLockControls' in call` and the derivative
+`'nil' requires a contextual type` at `LibraryView.swift:1979`.
+
+Root cause: the corrected `KinetiqUnifiedPlayer.swift` from R2 existed in the
+repository but was **not registered in the Kinetiq Xcode app target**. Instead,
+`ModulePlayerView.swift` contained an older embedded definition of
+`KinetiqUnifiedPlayerChrome` without the new parameter. GitHub Actions only
+compiled that outdated definition; the updated Swift file was ignored.
+
+- Register `KinetiqUnifiedPlayer.swift` as a file reference, visible Modules
+  group member, and Kinetiq application Sources build-phase entry.
+- Remove all three obsolete duplicate shared-player view definitions from
+  `ModulePlayerView.swift`, retaining the authoritative standalone file.
+- Add regression tests asserting every application Swift source is registered
+  and the three shared views have just one source definition.
+
+This repair preserves the four tabs, current features, `0.3.0`, iOS 17,
+Discord Rich Presence, player callbacks, and provider identities. The two
+reported compiler errors share one missing-build-input root cause; other
+errors could still emerge once Xcode compiles the newly registered file.
+24 Python source-contract tests and the M03 regression script pass locally.
+Native Xcode validation still requires the next GitHub Actions run.
+
 ## 19 November 2026 — CI compilation hotfix R2
 
 The cumulative source addresses GitHub Actions run

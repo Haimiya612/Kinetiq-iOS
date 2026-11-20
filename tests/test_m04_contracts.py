@@ -1,6 +1,7 @@
 """Static M04 integration checks; native iOS compilation is still required."""
 import unittest
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,31 @@ class M04Contracts(unittest.TestCase):
             "onPanelSelected"
         ):
             self.assertIn(f"self.{name} = {name}", chrome)
+
+    def test_shared_chrome_has_single_compiled_definition(self):
+        # Regression for run #205: the fixed source existed on GitHub, but
+        # Xcode compiled a different, outdated inline copy of the same type.
+        pbx = swift("Kinetiq.xcodeproj/project.pbxproj")
+        chrome = swift("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")
+        player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")
+        for view_name in (
+            "KinetiqUnifiedPlayerChrome",
+            "KinetiqUnifiedPlayerOptionsFrame",
+            "KinetiqUnifiedPlayerFailureOverlay",
+        ):
+            self.assertEqual(len(re.findall(r"struct " + view_name + r"(?:<|:)", chrome)), 1)
+            self.assertNotIn("struct " + view_name, player)
+        self.assertRegex(pbx, r"/\* KinetiqUnifiedPlayer\.swift in Sources \*/ = \{isa = PBXBuildFile")
+        self.assertRegex(pbx, r"/\* KinetiqUnifiedPlayer\.swift \*/ = \{isa = PBXFileReference")
+        build_phase = re.search(r"8682261519D15BD64A9E5D31 /\* Sources \*/ = \{isa = PBXSourcesBuildPhase;.*?files = \((.*?)\);", pbx, re.S)
+        self.assertIsNotNone(build_phase)
+        self.assertEqual(build_phase.group(1).count("A16E06000000000000000002"), 1)
+
+    def test_all_swift_app_sources_are_registered(self):
+        pbx = swift("Kinetiq.xcodeproj/project.pbxproj")
+        missing = [path.name for path in (ROOT / "Kinetiq").rglob("*.swift")
+                   if not re.search(r"/\* " + re.escape(path.name) + r" \*/ = \{isa = PBXFileReference", pbx)]
+        self.assertEqual(missing, [], "Swift source files missing from Xcode project: " + ", ".join(missing))
 
     def test_unchanged_app_version(self):
         pbx = swift("Kinetiq.xcodeproj/project.pbxproj")

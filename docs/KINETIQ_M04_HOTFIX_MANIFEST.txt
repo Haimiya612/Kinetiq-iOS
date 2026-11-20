@@ -1,11 +1,25 @@
-Kinetiq M04 compilation hotfix R2 — 2026-11-19
-Base: Kinetiq-M04-CI-Hotfix-Cumulative-0.3.0.zip
+Kinetiq M04 compilation hotfix R3 — 2026-11-20
+Base: Kinetiq-M04-CI-Hotfix-R2-Cumulative-0.3.0.zip
+Latest diagnosed run: https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44628299808
+Latest diagnosed commit: bc2bdda8b8c816da4cdadf1906cc796e745ce9ee
+Latest root cause: corrected shared-player file was missing from Xcode app
+Sources, while an older inline duplicate was compiled from ModulePlayerView.
+
+R3 repair:
+- Register KinetiqUnifiedPlayer.swift in project.pbxproj (file ref, group,
+  and Kinetiq Sources build phase).
+- Remove obsolete duplicate shared-player Chrome, OptionsFrame, FailureOverlay
+  structs from ModulePlayerView.swift to avoid duplicate declarations.
+- Add build-input coverage regression to tests/test_m04_contracts.py.
+
+Earlier hotfix history:
 GitHub run diagnosed: https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44537064928
 GitHub commit diagnosed: 3472dc0433cec32d013a60e9bd50cce03116d774
 New failed run diagnosed: https://github.com/Haimiya612/Kinetiq-iOS/actions/runs/44593364235
 New failed commit diagnosed: 7574f7bc20cedb29502a8ed910f146180f316aca
 
 Modified paths:
+Kinetiq.xcodeproj/project.pbxproj
 Kinetiq/Features/Modules/ModulePlayerView.swift
 Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift
 Kinetiq/Features/Modules/KinetiqSubStudio.swift
@@ -23,7 +37,7 @@ Unchanged invariants:
 - Existing module loading, player and subtitle source identities
 
 Local validations:
-- 21 Python unittest discovery checks passed
+- 24 Python unittest discovery checks passed
 - tests/test_m03_regressions.py exited 0
 - ZIP CRC/entry integrity checked before delivery
 - Xcode compilation NOT available in this environment
