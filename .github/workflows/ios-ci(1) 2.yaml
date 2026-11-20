@@ -1,0 +1,317 @@
+name: Kinetiq iOS CI
+
+on:
+  push:
+    branches:
+      - main
+    # The ZIP upload is only an intermediate commit. Wait for the importer
+    # to finish replacing the source before using a macOS runner.
+    paths-ignore:
+      - Kinetiq-update.zip
+      - .github/workflows/ios-ci.yaml
+
+  # A GITHUB_TOKEN-created import commit does not trigger a push workflow.
+  # This event runs only after the import workflow itself has completed.
+  workflow_run:
+    workflows:
+      - Import Kinetiq Source ZIP
+    types:
+      - completed
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Choose the macOS runner"
+        required: true
+        type: choice
+        default: macos-26-intel
+        options:
+          - macos-26
+          - macos-26-intel
+          - macos-15
+          - macos-15-intel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kinetiq-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test Kinetiq
+    # Failed/cancelled imports must never build or publish an IPA.
+    if: >-
+      ${{ github.event_name != 'workflow_run' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_repository.full_name == github.repository) }}
+    runs-on: ${{ inputs.runner || 'macos-26-intel' }}
+    timeout-minutes: 40
+
+    env:
+      PROJECT: Kinetiq.xcodeproj
+      SCHEME: Kinetiq
+      DERIVED_DATA: ${{ github.workspace }}/DerivedData
+
+    steps:
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # workflow_run.head_sha identifies the ZIP upload commit, not the
+          # final source commit created by the importer. Read updated main.
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.ref }}
+
+      - name: Confirm build revision
+        shell: bash
+        run: |
+          echo "Trigger: $GITHUB_EVENT_NAME"
+          echo "Building commit: $(git rev-parse HEAD)"
+          git log -1 --format='Commit message: %s'
+
+      # --------------------------------------------------
+      # 2. Select Xcode dynamically
+      # --------------------------------------------------
+
+      - name: Select Xcode installation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PREFERRED="/Applications/Xcode_26.3.app/Contents/Developer"
+
+          if [[ -d "$PREFERRED" ]]; then
+            DEVELOPER="$PREFERRED"
+          elif [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+            DEVELOPER="/Applications/Xcode.app/Contents/Developer"
+          else
+            DEVELOPER="$(find /Applications \
+              -maxdepth 4 \
+              -type d \
+              -path '*/Contents/Developer' \
+              -name Developer \
+              | sort -V \
+              | tail -n 1)"
+
+            if [[ -z "$DEVELOPER" ]]; then
+              echo "No Xcode installation was found."
+              exit 1
+            fi
+          fi
+
+          echo "DEVELOPER_DIR=$DEVELOPER" >> "$GITHUB_ENV"
+
+          echo "Selected Xcode directory:"
+          echo "$DEVELOPER"
+
+          DEVELOPER_DIR="$DEVELOPER" xcodebuild -version
+
+      # --------------------------------------------------
+      # 3. Verify environment
+      # --------------------------------------------------
+
+      - name: Verify build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Runner: $RUNNER_NAME"
+          echo "Operating system: $RUNNER_OS"
+          echo "Architecture: $(uname -m)"
+
+          echo ""
+          echo "Xcode version:"
+          xcodebuild -version
+
+          echo ""
+          echo "Available SDKs:"
+          xcodebuild -showsdks
+
+          echo ""
+          echo "Project schemes:"
+          xcodebuild -list -project "$PROJECT"
+
+      # --------------------------------------------------
+      # 4. Resolve dependencies
+      # --------------------------------------------------
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME"
+
+      # --------------------------------------------------
+      # 5. Detect an available iPhone simulator
+      # --------------------------------------------------
+
+      - name: Detect available iPhone simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import subprocess
+          import os
+
+          result = subprocess.run(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"],
+              capture_output=True,
+              text=True,
+              check=True
+          )
+
+          data = json.loads(result.stdout)
+          devices = []
+
+          for runtime, runtime_devices in data["devices"].items():
+              for device in runtime_devices:
+                  if (
+                      device.get("isAvailable", False)
+                      and device.get("name", "").startswith("iPhone")
+                  ):
+                      devices.append(device)
+
+          selected = next(
+              (d for d in devices if d["name"] == "iPhone 17 Pro"),
+              devices[0] if devices else None
+          )
+
+          if selected:
+              print(f"Selected simulator: {selected['name']}")
+              print(f"Simulator UUID: {selected['udid']}")
+
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write("available=true\n")
+                  output.write(f"udid={selected['udid']}\n")
+          else:
+              print("No available iPhone simulator was found.")
+
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write("available=false\n")
+          PY
+
+      # --------------------------------------------------
+      # 6. Run simulator tests
+      # --------------------------------------------------
+
+      - name: Run iOS simulator tests
+        if: steps.simulator.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESULT_BUNDLE="$RUNNER_TEMP/KinetiqTests.xcresult"
+
+          rm -rf "$RESULT_BUNDLE"
+
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            ARCHS=x86_64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Skip simulator tests
+        if: steps.simulator.outputs.available != 'true'
+        run: |
+          echo "No available iPhone simulator."
+          echo "Continuing with the generic iOS device build."
+
+      # --------------------------------------------------
+      # 7. Build unsigned iOS application
+      # --------------------------------------------------
+
+      - name: Build unsigned iOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      # --------------------------------------------------
+      # 8. Package unsigned IPA
+      # --------------------------------------------------
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$DERIVED_DATA/Build/Products/Release-iphoneos/Kinetiq.app"
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          PAYLOAD_DIR="$IPA_DIR/Payload"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "Kinetiq.app was not found."
+            echo "Expected location: $APP_PATH"
+            exit 1
+          fi
+
+          rm -rf "$IPA_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+
+          cd "$IPA_DIR"
+          zip -r "$GITHUB_WORKSPACE/Kinetiq-unsigned.ipa" Payload
+
+          echo "Unsigned IPA created successfully."
+
+      # --------------------------------------------------
+      # 9. Verify and upload the IPA directly (without nested artifact ZIP)
+      # --------------------------------------------------
+
+      - name: Verify IPA integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="$GITHUB_WORKSPACE/Kinetiq-unsigned.ipa"
+          test -s "$IPA"
+          unzip -t "$IPA" > /dev/null
+          unzip -Z1 "$IPA" | grep -Fx 'Payload/Kinetiq.app/Kinetiq'
+          shasum -a 256 "$IPA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA (direct download)
+        uses: actions/upload-artifact@v7
+        with:
+          path: Kinetiq-unsigned.ipa
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      # --------------------------------------------------
+      # 10. Upload simulator test results
+      # --------------------------------------------------
+
+      - name: Upload simulator test results
+        if: always() && steps.simulator.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kinetiq-iOS-Test-Results
+          path: ${{ runner.temp }}/KinetiqTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
