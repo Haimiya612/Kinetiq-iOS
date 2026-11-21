@@ -52,10 +52,10 @@ final class ModuleDiscoveryContractTests: XCTestCase {
         XCTAssertNil(plain.sourceID)
     }
 
-    func testM05BPlayerAppearancePreservesSignatureAndOffersSixDistinctOptions() {
-        XCTAssertEqual(KinetiqPlayerChromeStyle.allCases.count, 6)
+    func testM05CPlayerAppearancePreservesSignatureAndOffersEightDistinctOptions() {
+        XCTAssertEqual(KinetiqPlayerChromeStyle.allCases.count, 8)
         XCTAssertEqual(KinetiqPlayerChromeStyle.signature.rawValue, "Signature")
-        XCTAssertEqual(Set(KinetiqPlayerChromeStyle.allCases.map(\.rawValue)).count, 6)
+        XCTAssertEqual(Set(KinetiqPlayerChromeStyle.allCases.map(\.rawValue)).count, 8)
         XCTAssertEqual(KinetiqPlayerChromeStyle.storageKey, "kinetiq.player.m05.chromeStyle")
         XCTAssertTrue(KinetiqPlayerChromeStyle.allCases.allSatisfy { !$0.detail.isEmpty })
     }
