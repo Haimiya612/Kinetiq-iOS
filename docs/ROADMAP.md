@@ -93,6 +93,21 @@ SubStudio baseline, PiP, theme integration and fullscreen notifications passed.
 
 See [KINETIQ_M05B_IPHONE_HANDOFF.md](KINETIQ_M05B_IPHONE_HANDOFF.md).
 
+**M05B-R2 corrective source (21 November 2026; CI/iPhone verification pending):**
+Owner provided visual feedback after installing M05B: Cinema/Studio obscured
+too much video; redesigned chrome overlapped the status bar in portrait;
+SubStudio listed a fourth color without explaining Romaji; Brain's "web"
+prefix was only a Wikipedia prefixsearch (unrelated matches such as rose
+species for the anime nickname Roshidere), and strict exact-title TMDB
+matching omitted English aliases; browsing RPC consumed limited update slots,
+and a pause intent could be mistaken for resume during AVPlayer buffering.
+The corrective package addresses these issues with compact player overlays,
+a separate portrait header, three labeled track colors plus optional Romaji,
+Brave Web Search using a user-supplied Keychain key, AniList-assisted TMDB
+title aliases, less verbose sourced research cards, playback-only RPC and a
+12-second coalescing window for repetitive seeking. See
+[KINETIQ_M05B_R2_IPHONE_HANDOFF.md](KINETIQ_M05B_R2_IPHONE_HANDOFF.md).
+
 **M05C and later (not implemented yet):** actual live frame-reactive ambilight
 sampling with a performance/off toggle; browsing inside Kinetiq with an
 app-owned PiP/mini-player; explicit user-confirmed cross-source favorite and

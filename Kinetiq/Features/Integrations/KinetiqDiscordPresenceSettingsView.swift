@@ -19,11 +19,6 @@ struct KinetiqDiscordPresenceSettingsView: View {
         Binding(get: { presence.enabled }, set: { presence.setEnabled($0) })
     }
 
-    private var browsingBinding: Binding<Bool> {
-        Binding(get: { presence.browsingEnabled },
-                set: { presence.setBrowsingEnabled($0) })
-    }
-
     private var activityTypeBinding: Binding<KinetiqDiscordActivityType> {
         Binding(get: { presence.activityType }, set: { presence.setActivityType($0) })
     }
@@ -67,10 +62,10 @@ struct KinetiqDiscordPresenceSettingsView: View {
                 Text("Only enable this if you understand the account risk. A successful Gateway connection does not prove Discord displays the activity.")
             }
 
-            Section("M05B · Context-aware activity") {
-                Toggle("Show what I'm browsing", isOn: browsingBinding)
-                LabeledContent("Local activity", value: presence.currentScene.details)
-                Text("When enabled, Kinetiq can update Discord while you're in Home, Favorites, Downloads, Settings, Brain, a catalogue, or anime details. Playback and PiP always take priority. Navigation labels only—never your search queries or private file names. Off by default.")
+            Section("M05B-R2 · Playback-first presence") {
+                Label("Browsing updates disabled", systemImage: "play.rectangle.on.rectangle")
+                    .foregroundStyle(.secondary)
+                Text("Catalogue, Settings and Brain navigation no longer send activity packets. This reserves the limited update budget for Play, Pause, Resume and Seek, with no fabricated browsing status.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

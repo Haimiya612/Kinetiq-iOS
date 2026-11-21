@@ -17,6 +17,21 @@ docs/KINETIQ_M05B_IPHONE_HANDOFF.md (new)
 docs/KINETIQ_M05B_CHANGED_FILES.txt (new)
 tests/test_m05b_contracts.py (new)
 
+M05B-R2 corrections:
+Kinetiq/Features/Discovery/KinetiqBrain.swift (real web provider option,
+  concise citations, TMDB official-name aliases, Brain web settings)
+Kinetiq/Features/Integrations/KinetiqDiscordPresence.swift (browsing retired,
+  cooldown reduced)
+Kinetiq/Features/Integrations/KinetiqDiscordPresenceSettingsView.swift
+Kinetiq/Features/Modules/KinetiqSubStudio.swift (track labels / optional Romaji)
+Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift (responsive chrome)
+Kinetiq/Features/Modules/ModulePlayerView.swift (authoritative pause intent)
+tests/test_m05_contracts.py
+tests/test_m05b_contracts.py
+tests/test_m05b_r2_contracts.py (new)
+docs/KINETIQ_M05B_R2_IPHONE_HANDOFF.md (new)
+docs/ROADMAP.md
+
 No change to Kinetiq.xcodeproj/project.pbxproj; all modified Swift files
 are existing registered target sources. This distribution is a complete
 repository snapshot, not a patch archive.

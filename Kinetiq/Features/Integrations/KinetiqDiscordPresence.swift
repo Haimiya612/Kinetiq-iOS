@@ -751,7 +751,11 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
 
     private init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
-        browsingEnabled = UserDefaults.standard.bool(forKey: Self.browsingEnabledKey)
+        // M05B-R2: browsing presence consumed too many limited Gateway
+        // updates, delaying real playback/pause changes. Migrate even an
+        // existing enabled preference to playback-only mode.
+        browsingEnabled = false
+        UserDefaults.standard.set(false, forKey: Self.browsingEnabledKey)
         hasCredential = KinetiqDiscordCredentialStore.exists
         activityType = KinetiqDiscordActivityType.restored(
             from: .standard, key: Self.activityTypeKey
@@ -811,14 +815,11 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
     }
 
     func setBrowsingEnabled(_ value: Bool) {
-        guard browsingEnabled != value else { return }
-        browsingEnabled = value
-        UserDefaults.standard.set(value, forKey: Self.browsingEnabledKey)
-        if enabled && connection == .connected {
-            // The existing Gateway rate budget still applies to a mode change.
-            if value { publishIfNeeded(force: true) }
-            else if lastPreview == nil { clearPublishedActivity() }
-        }
+        // Deliberately retired in the corrective build. Keep the method for
+        // call-site compatibility while always reserving presence for video.
+        browsingEnabled = false
+        UserDefaults.standard.set(false, forKey: Self.browsingEnabledKey)
+        if enabled, lastPreview == nil { clearPublishedActivity() }
     }
 
     func recordScene(_ scene: KinetiqPresenceScene) {
@@ -1107,7 +1108,9 @@ final class KinetiqDiscordPresenceManager: ObservableObject {
             // Four seeks inside 12 seconds are one user interaction, not four
             // separate Discord events. Let the desired title/position settle.
             if recentSeekSamples.count >= 4 {
-                rapidSeekCooldownUntil = now.addingTimeInterval(30)
+                // Coalesce a burst without delaying the correction for half a
+                // minute after the viewer stops scrubbing.
+                rapidSeekCooldownUntil = now.addingTimeInterval(12)
             }
         } else if previousPlaybackSample?.key != sampleKey {
             lastSeekObservedAt = nil

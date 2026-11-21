@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Foundation
+import Security
 
 /// Grounded private inventory tools and opt-in, device-gated conversation.
 /// Public catalog matches remain separately attributed to AniList.
@@ -118,6 +119,10 @@ struct KinetiqBrainView: View {
     @State private var showingRenameChat = false
     @State private var renameText = ""
     @State private var didRestore = false
+    @State private var showingResearchSettings = false
+    @State private var webSearchKeyDraft = ""
+    @State private var webSearchKeySaved = false
+    @State private var webSearchNotice = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -163,6 +168,11 @@ struct KinetiqBrainView: View {
                                 }
                                 .font(.caption)
                             }
+                            Button("Web research settings", systemImage: "globe.americas.fill") {
+                                webSearchKeySaved = KinetiqBrainWebSearchCredentials.token() != nil
+                                showingResearchSettings = true
+                            }
+                            .font(.subheadline)
                         }
                         .padding(12)
                         .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
@@ -195,8 +205,12 @@ struct KinetiqBrainView: View {
                                                         }
                                                         VStack(alignment: .leading, spacing: 4) {
                                                             Text(card.title).font(.caption.weight(.semibold))
+                                                                .foregroundStyle(.primary)
+                                                                .multilineTextAlignment(.leading)
                                                             Text(card.detail).font(.caption2)
                                                                 .foregroundStyle(.secondary)
+                                                                .multilineTextAlignment(.leading)
+                                                                .lineLimit(3)
                                                         }
                                                         Spacer(minLength: 0)
                                                         Image(systemName: "arrow.up.right.square")
@@ -269,6 +283,7 @@ struct KinetiqBrainView: View {
         }
         .sheet(isPresented: $showCompass) { KinetiqSmartDiscoveryView() }
         .sheet(isPresented: $showingChatLibrary) { chatLibrary }
+        .sheet(isPresented: $showingResearchSettings) { webResearchSettings }
         .onAppear {
             KinetiqDiscordPresenceManager.shared.recordScene(.brain)
             guard !didRestore else { return }
@@ -364,6 +379,49 @@ struct KinetiqBrainView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { showingChatLibrary = false }
+                }
+            }
+        }
+    }
+
+    private var webResearchSettings: some View {
+        NavigationStack {
+            Form {
+                Section("Search the actual web") {
+                    Text("Brave Web Search searches the open web. Unlike the previous limited Wikipedia lookup, results can come from anime sites, news, guides and other websites. A personal Brave Search API key is required.")
+                        .font(.subheadline)
+                    SecureField("Personal Brave Search API key", text: $webSearchKeyDraft)
+                        .textContentType(.password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .privacySensitive()
+                    Button("Save key on this iPhone") {
+                        let key = webSearchKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        webSearchKeySaved = KinetiqBrainWebSearchCredentials.save(key)
+                        webSearchNotice = webSearchKeySaved ? "Saved securely in iOS Keychain." : "Could not save the key."
+                        if webSearchKeySaved { webSearchKeyDraft = "" }
+                    }
+                    .disabled(webSearchKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Remove saved web search key", role: .destructive) {
+                        webSearchKeySaved = false
+                        _ = KinetiqBrainWebSearchCredentials.save(nil)
+                        webSearchNotice = "Web search key removed."
+                    }
+                    .disabled(!webSearchKeySaved)
+                    LabeledContent("Current key", value: webSearchKeySaved ? "Saved securely" : "Not configured")
+                    if !webSearchNotice.isEmpty { Text(webSearchNotice).font(.caption) }
+                }
+                Section("Privacy and limitations") {
+                    Text("Only the search words you type are sent to Brave Search. Links and snippets display with source names. No personal library or saved chat is uploaded. This is a search tool, not a remotely hosted ChatGPT-level model. Search provider plans and usage may require payment.")
+                        .font(.caption)
+                    Link("Brave Search API documentation", destination:
+                         URL(string: "https://api-dashboard.search.brave.com/api-reference/web/search/get")!)
+                }
+            }
+            .navigationTitle("Brain web research")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingResearchSettings = false }
                 }
             }
         }
@@ -521,6 +579,19 @@ struct KinetiqBrainView: View {
         // this device; library entries, downloads and previous chats never do.
         if let research = KinetiqBrainPublicResearch.parse(question) {
             switch research.source {
+            case .web:
+                guard let key = KinetiqBrainWebSearchCredentials.token() else {
+                    return ("Real web search is available through Brave Search, but needs your own API key. Open Web research settings in Kinetiq Brain to configure it. Wikipedia is a separate encyclopedia source and will not be mislabelled as web search.",
+                            "Brave Web Search · setup required")
+                }
+                let result = await KinetiqBrainPublicResearch.web(research.query, token: key)
+                latestResearchCards = result.cards
+                guard !result.cards.isEmpty else {
+                    return (result.error ?? "The web search returned no results. Try a different query.",
+                            "Brave Web Search · no results")
+                }
+                return ("I found \(result.cards.count) web results for ‘\(research.query)’. Read the source cards below; they contain search snippets and original links, not invented summaries of pages I haven't read.",
+                        "Brave Web Search · independent search index")
             case .wikipedia:
                 let cards = await KinetiqBrainPublicResearch.wikipedia(research.query)
                 latestResearchCards = cards
@@ -528,24 +599,33 @@ struct KinetiqBrainView: View {
                     return ("Wikipedia didn't return a verifiable public article. Try a more specific search phrase.",
                             "Wikipedia public lookup · no results")
                 }
-                let lines = cards.prefix(5).map { "• \($0.title): \($0.detail)" }
-                return ((["Wikipedia public articles for ‘\(research.query)’:"] + lines +
-                         ["Open an article card to verify its original source. This is a limited encyclopedia lookup, not an unrestricted web search."]).joined(separator: "\n"),
+                return ("I found \(cards.count) encyclopedia articles for ‘\(research.query)’. Tap a source card below to read the original. Wikipedia is not general web search.",
                         "Wikipedia public article lookup")
             case .tmdb:
                 guard let token = KinetiqTMDBCredentials.token(), !token.isEmpty else {
                     return ("TMDB research needs your personal API Read Access Token. Add it under Settings → Metadata Enrichment. Kinetiq does not include or upload a shared key.",
                             "TMDB · credential not configured")
                 }
-                let cards = await KinetiqBrainPublicResearch.tmdb(research.query, token: token)
+                // Titles often arrive under their nickname or Japanese name.
+                // AniList supplies alternative titles; TMDB is then queried
+                // with an actual official name instead of only the shorthand.
+                let lookup = KinetiqDiscoveryIntent(
+                    original: "Find \(research.query)", catalogSearch: research.query,
+                    genre: nil, finishedOnly: false, maximumEpisodes: nil, asksForLocal: false)
+                let aliases: [String]
+                if let page = try? await KinetiqPublicAnimeSearch.shared.search(lookup),
+                   let matched = page.titles.first {
+                    aliases = [matched.title.english, matched.title.romaji,
+                               matched.title.userPreferred].compactMap { $0 }
+                } else { aliases = [] }
+                let cards = await KinetiqBrainPublicResearch.tmdb(research.query,
+                                                                   aliases: aliases, token: token)
                 latestResearchCards = cards
                 guard !cards.isEmpty else {
-                    return ("TMDB returned no confidently matching series or movie for ‘\(research.query)’.",
+                    return ("TMDB found no reliable matches for ‘\(research.query)’ or its AniList title aliases. Try the full English series/movie title.",
                             "TMDB public metadata · no verified title")
                 }
-                return ((["TMDB results for ‘\(research.query)’:"] +
-                         cards.map { "• \($0.title): \($0.detail)" } +
-                         ["TMDB user ratings are community averages, not Kinetiq ratings. This product uses the TMDB API but is not endorsed or certified by TMDB."]).joined(separator: "\n"),
+                return ("TMDB found \(cards.count) possible title matches. Open the source cards to check ratings, editions and seasons. Ratings are TMDB user averages; TMDB does not endorse Kinetiq.",
                         "TMDB public metadata · user-authorized lookup")
             case .anilist:
                 let intent = KinetiqDiscoveryIntent(
@@ -554,12 +634,8 @@ struct KinetiqBrainView: View {
                 do {
                     let results = try await KinetiqPublicAnimeSearch.shared.search(intent)
                     lastCatalogTitles = results.titles
-                    let lines = results.titles.prefix(8).map { item in
-                        "• \(item.displayTitle) — \(item.averageScore.map { "\($0)% AniList" } ?? "No AniList score") · \(item.episodes.map(String.init) ?? "?") episodes"
-                    }
-                    return (lines.isEmpty ? "AniList found no matching title." :
-                        (["AniList public title and rating lookup:"] + lines +
-                         ["Ratings are AniList community averages, not Kinetiq reviews."]).joined(separator: "\n"),
+                    return (results.titles.isEmpty ? "AniList found no matching title." :
+                        "AniList found \(results.titles.count) titles. Browse the posters and ratings below. Scores are AniList community averages, not Kinetiq reviews.",
                         "AniList public metadata (live search)")
                 } catch {
                     return ("AniList is temporarily unavailable.", "AniList public lookup failed")
@@ -621,7 +697,7 @@ struct KinetiqBrainView: View {
     /// Explicit, bounded public lookups. No hidden scraping, open-web promises,
     /// local-library uploads, fabricated scores, or inferred media matches.
     private enum KinetiqBrainPublicResearch {
-        enum Source { case wikipedia, tmdb, anilist }
+        enum Source { case web, wikipedia, tmdb, anilist }
         struct Query {
             let source: Source
             let query: String
@@ -630,18 +706,90 @@ struct KinetiqBrainView: View {
         static func parse(_ original: String) -> Query? {
             let value = original.trimmingCharacters(in: .whitespacesAndNewlines)
             let prefixes: [(String, Source)] = [
-                ("search the web for ", .wikipedia), ("web search ", .wikipedia),
-                ("wikipedia ", .wikipedia), ("web ", .wikipedia),
+                ("search the web for ", .web), ("web search ", .web),
+                ("search the web ", .web), ("web ", .web),
+                ("look up online ", .web), ("search online ", .web),
+                ("wikipedia ", .wikipedia),
                 ("tmdb ", .tmdb), ("movie rating ", .tmdb),
                 ("anilist ", .anilist), ("anime rating ", .anilist),
                 ("rating ", .anilist), ("tell me about ", .anilist)
             ]
-            guard let selected = prefixes.first(where: { value.lowercased().hasPrefix($0.0) })
-            else { return nil }
-            let text = String(value.dropFirst(selected.0.count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard (2...120).contains(text.count) else { return nil }
-            return Query(source: selected.1, query: text)
+            if let selected = prefixes.first(where: { value.lowercased().hasPrefix($0.0) }) {
+                let text = String(value.dropFirst(selected.0.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard (2...120).contains(text.count) else { return nil }
+                return Query(source: selected.1, query: text)
+            }
+            // Everyday natural-language research should not require a magic
+            // command prefix. Keep follow-up catalogue filters on their
+            // original local/AniList route.
+            let lower = value.lowercased()
+            let webQuestion = ["who ", "why ", "how ", "when ", "where ",
+                               "what is ", "what are ", "latest ", "news about "]
+                .contains(where: { lower.hasPrefix($0) })
+            guard webQuestion, (4...120).contains(value.count) else { return nil }
+            return Query(source: .web, query: value)
+        }
+
+        private struct BraveEnvelope: Decodable {
+            let web: Web?
+            struct Web: Decodable { let results: [Page]? }
+            struct Page: Decodable {
+                let title: String?
+                let description: String?
+                let url: String?
+                let thumbnail: Thumbnail?
+            }
+            struct Thumbnail: Decodable { let src: String? }
+        }
+
+        struct WebResult {
+            let cards: [ResearchCard]
+            let error: String?
+        }
+
+        static func web(_ text: String, token: String) async -> WebResult {
+            var parts = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")
+            parts?.queryItems = [
+                .init(name: "q", value: text),
+                .init(name: "count", value: "10"),
+                .init(name: "safesearch", value: "moderate")
+            ]
+            guard let url = parts?.url else { return WebResult(cards: [], error: "Invalid search words.") }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(token, forHTTPHeaderField: "X-Subscription-Token")
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    return WebResult(cards: [], error: "The search service did not return an HTTP response.")
+                }
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    return WebResult(cards: [], error: "Brave refused the search key. Check your account plan and key in Web research settings.")
+                }
+                if http.statusCode == 429 {
+                    return WebResult(cards: [], error: "Brave's search quota or rate limit was reached. Please try again later.")
+                }
+                guard http.statusCode == 200, data.count <= 1_000_000,
+                      let decoded = try? JSONDecoder().decode(BraveEnvelope.self, from: data)
+                else { return WebResult(cards: [], error: "Brave search is temporarily unavailable.") }
+                var seen = Set<String>()
+                let cards = (decoded.web?.results ?? []).compactMap { item -> ResearchCard? in
+                    guard let title = item.title, let originalURL = item.url,
+                          let url = URL(string: originalURL), url.scheme == "https",
+                          let host = url.host, !host.isEmpty,
+                          seen.insert(originalURL).inserted else { return nil }
+                    let cover = item.thumbnail?.src.flatMap { URL(string: $0) }
+                    return ResearchCard(title: String(title.prefix(140)),
+                        detail: String((item.description ?? host).prefix(350)),
+                        cover: cover?.scheme == "https" ? cover?.absoluteString : nil,
+                        link: originalURL)
+                }
+                return WebResult(cards: Array(cards.prefix(10)), error: nil)
+            } catch {
+                return WebResult(cards: [], error: "Could not reach Brave Search. Check your connection and try again.")
+            }
         }
 
         private struct WikiEnvelope: Decodable {
@@ -706,14 +854,17 @@ struct KinetiqBrainView: View {
             }
         }
 
-        static func tmdb(_ text: String, token: String) async -> [ResearchCard] {
-            let normalized = KinetiqEpisodeMetadataMatching.normalized(text)
-            guard !normalized.isEmpty else { return [] }
+        static func tmdb(_ text: String, aliases: [String], token: String) async -> [ResearchCard] {
+            let terms = Array(([text] + aliases).filter { !$0.isEmpty }.prefix(4))
+            let normalizedTerms = Set(terms.map(KinetiqEpisodeMetadataMatching.normalized))
+            guard !normalizedTerms.isEmpty else { return [] }
             var matches: [ResearchCard] = []
-            for type in ["tv", "movie"] {
+            var seen = Set<String>()
+            for term in terms.prefix(3) {
+              for type in ["tv", "movie"] {
                 var url = URLComponents(string: "https://api.themoviedb.org/3/search/\(type)")
                 url?.queryItems = [
-                    .init(name: "query", value: text),
+                    .init(name: "query", value: term),
                     .init(name: "language", value: "en-US"),
                     .init(name: "include_adult", value: "false")
                 ]
@@ -727,8 +878,13 @@ struct KinetiqBrainView: View {
                       fetched.0.count <= 600_000,
                       let result = try? JSONDecoder().decode(TMDBEnvelope.self, from: fetched.0)
                 else { continue }
-                for media in result.results.prefix(15)
-                    where KinetiqEpisodeMetadataMatching.normalized(media.displayTitle) == normalized {
+                for media in result.results.prefix(12) {
+                    let titleKey = KinetiqEpisodeMetadataMatching.normalized(media.displayTitle)
+                    let matchesTitle = normalizedTerms.contains(titleKey) ||
+                        normalizedTerms.contains(where: { candidate in
+                            candidate.count >= 6 && titleKey.hasPrefix(candidate + " ")
+                        })
+                    guard matchesTitle, seen.insert("\(type)-\(media.id)").inserted else { continue }
                     let rating = media.vote_average.map { String(format: "%.1f/10", $0) }
                     let votes = media.vote_count.map { "(\($0) votes)" } ?? ""
                     let score = rating.map { "TMDB \($0) \(votes)" } ?? "No TMDB rating"
@@ -738,12 +894,50 @@ struct KinetiqBrainView: View {
                         return "https://image.tmdb.org/t/p/w342\(path)"
                     }
                     matches.append(ResearchCard(title: media.displayTitle,
-                        detail: "\(score) · \(overview)", cover: art,
+                        detail: "\(score) · \(overview) · Verify season/edition", cover: art,
                         link: "https://www.themoviedb.org/\(type)/\(media.id)"))
                     if matches.count >= 6 { return matches }
                 }
+              }
             }
             return matches
         }
+    }
+}
+
+/// A user-supplied search credential is never stored in UserDefaults,
+/// transcripts or the repository. All requests originate from this device.
+private enum KinetiqBrainWebSearchCredentials {
+    private static let service = "com.kinetiq.brain.web-search"
+    private static let account = "personalBraveSearchKey"
+
+    static func token() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func save(_ key: String?) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+        guard let key, !key.isEmpty else { return true }
+        guard let data = key.data(using: .utf8) else { return false }
+        var attributes = query
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        attributes[kSecValueData as String] = data
+        return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
     }
 }

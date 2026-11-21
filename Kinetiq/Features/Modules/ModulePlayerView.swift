@@ -4513,9 +4513,10 @@ private final class ModulePlayerPlaybackController: ObservableObject {
     }
 
     func togglePlayback() {
-        let waitingOrPlaying = player.timeControlStatus == .playing
-            || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-        if wantsToPlay && waitingOrPlaying {
+        // The user's explicit intent is authoritative even while AVPlayer is
+        // buffering or briefly reports .paused after a seek. Previously the
+        // button could incorrectly resume instead of pausing in that state.
+        if wantsToPlay {
             wantsToPlay = false
             startupTask?.cancel()
             startupTask = nil

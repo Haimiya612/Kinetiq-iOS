@@ -14,7 +14,10 @@ class M05BContracts(unittest.TestCase):
         swift = source("Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift")
         for style in ("signature", "cinema", "focus", "studio", "minimal", "classic"):
             self.assertIn(f"case {style} =", swift)
-            self.assertIn(f"private var {style}Chrome: some View", swift)
+            if style == "signature":
+                self.assertIn("private var signatureChrome: some View", swift)
+            else:
+                self.assertIn(f"private func {style}Chrome(isPortrait: Bool) -> some View", swift)
         self.assertIn("if chromeStyle == .signature", swift)
         self.assertIn("signatureChrome", swift)
 
@@ -24,7 +27,7 @@ class M05BContracts(unittest.TestCase):
         for slot in ("secondaryInk", "tertiaryInk", "romajiInk"):
             self.assertIn(f'"kinetiq.substudio.m05b.{slot}"', swift)
         self.assertIn("Restore subtitle layout defaults", swift)
-        self.assertIn("Primary subtitle color", swift)
+        self.assertIn("Track 1 · Primary subtitle", swift)
 
     def test_similar_anime_pages_and_dedupes(self):
         swift = source("Kinetiq/Features/Home/HomeView.swift")

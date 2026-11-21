@@ -226,7 +226,9 @@ struct KinetiqUnifiedPlayerChrome: View {
             if chromeStyle == .signature {
                 signatureChrome
             } else {
-                redesignedChrome
+                GeometryReader { geometry in
+                    redesignedChrome(isPortrait: geometry.size.height > geometry.size.width)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -265,80 +267,117 @@ struct KinetiqUnifiedPlayerChrome: View {
     }
 
     @ViewBuilder
-    private var redesignedChrome: some View {
+    private func redesignedChrome(isPortrait: Bool) -> some View {
         switch chromeStyle {
-        case .cinema: cinemaChrome
-        case .focus: focusChrome
-        case .studio: studioChrome
-        case .minimal: minimalChrome
-        case .classic: classicChrome
+        case .cinema: cinemaChrome(isPortrait: isPortrait)
+        case .focus: focusChrome(isPortrait: isPortrait)
+        case .studio: studioChrome(isPortrait: isPortrait)
+        case .minimal: minimalChrome(isPortrait: isPortrait)
+        case .classic: classicChrome(isPortrait: isPortrait)
         case .signature: signatureChrome
         }
     }
 
-    private var cinemaChrome: some View {
-        ZStack {
-            LinearGradient(colors: [.black.opacity(0.73), .clear, .black.opacity(0.93)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
-            VStack(spacing: 0) {
-                Rectangle().fill(.white.opacity(0.38)).frame(height: 1)
-                header.padding(.top, max(safeAreaInsets.top, 14))
-                Spacer(minLength: 40)
-                VStack(spacing: 18) {
-                    HStack(spacing: 8) {
-                        Rectangle().fill(.orange.opacity(0.8)).frame(width: 4, height: 22)
-                        Text("CINEMA · THEATRE CONTROLS")
-                            .font(.system(size: 10, weight: .heavy, design: .rounded))
-                            .tracking(1.6).foregroundStyle(.white.opacity(0.8))
-                        Spacer()
-                        Text(elapsedLabel).font(.caption.monospacedDigit())
-                            .foregroundStyle(.orange)
-                    }
-                    transport
-                    footer
+    /// Every redesigned appearance uses an independent, portrait-safe header.
+    /// The original Signature header is intentionally left unchanged.
+    @ViewBuilder
+    private func redesignedHeader(isPortrait: Bool) -> some View {
+        if isPortrait {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 10) {
+                    headerButton("chevron.down", label: "Close player", size: 15, action: onClose)
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(18)
-                .background(.black.opacity(0.76),
-                            in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(.orange.opacity(0.26), lineWidth: 1))
-                .padding(.bottom, max(safeAreaInsets.bottom, 15))
+                HStack(spacing: 12) {
+                    Spacer()
+                    if let onLockControls {
+                        headerButton("lock", label: "Lock controls", size: 15, action: onLockControls)
+                    }
+                    airPlayControl.frame(width: 40, height: 40)
+                        .accessibilityLabel("AirPlay")
+                    if pictureInPictureAvailable {
+                        headerButton("pip", label: "Picture in Picture", size: 15,
+                                     action: onStartPictureInPicture)
+                    }
+                    headerButton(aspectFill ? "arrow.down.right.and.arrow.up.left" :
+                                 "arrow.up.left.and.arrow.down.right",
+                                 label: aspectFill ? "Fit video" : "Fill screen",
+                                 size: 14, action: onToggleAspect)
+                }
             }
-            .padding(.horizontal, 18)
+            // The immersive hosting GeometryReader can report top inset 0.
+            // Reserve a real status bar row in portrait rather than drawing
+            // the title and lock/AirPlay/PiP buttons under the clock.
+            .padding(.top, max(safeAreaInsets.top, 62))
+        } else {
+            header.padding(.top, max(safeAreaInsets.top, 12))
         }
     }
 
-    private var focusChrome: some View {
+    private func cinemaChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.39), .clear, .black.opacity(0.63)],
+            LinearGradient(colors: [.black.opacity(0.57), .clear, .black.opacity(0.76)],
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(spacing: 0) {
-                header.opacity(0.83).padding(.top, max(safeAreaInsets.top, 14))
+                redesignedHeader(isPortrait: isPortrait)
+                Spacer(minLength: 10)
+                transport
+                    .padding(.horizontal, isPortrait ? 0 : 55)
+                Spacer(minLength: 10)
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Capsule().fill(.orange).frame(width: 18, height: 3)
+                        Text("CINEMA")
+                            .font(.system(size: 10, weight: .semibold, design: .serif))
+                            .tracking(2).foregroundStyle(.white.opacity(0.86))
+                        Spacer()
+                        Image(systemName: "film.stack").foregroundStyle(.orange)
+                    }
+                    footer
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .background(.black.opacity(0.47), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.bottom, max(safeAreaInsets.bottom, 8))
+            }
+            .padding(.horizontal, isPortrait ? 12 : 20)
+        }
+    }
+
+    private func focusChrome(isPortrait: Bool) -> some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.27), .clear, .black.opacity(0.52)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                redesignedHeader(isPortrait: isPortrait).opacity(0.89)
                 Spacer(minLength: 10)
                 heroPlayButton
                 Spacer(minLength: 10)
-                VStack(spacing: 15) {
-                    secondaryTransport
+                VStack(spacing: 5) {
+                    secondaryTransport.padding(.horizontal, isPortrait ? 0 : 56)
                     footer
                 }
-                .padding(15)
-                .background(.black.opacity(0.38),
-                            in: RoundedRectangle(cornerRadius: 24))
-                .padding(.bottom, max(safeAreaInsets.bottom, 15))
+                .padding(10)
+                .background(.black.opacity(0.27), in: RoundedRectangle(cornerRadius: 18))
+                .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, isPortrait ? 12 : 18)
         }
     }
 
-    private var studioChrome: some View {
+    private func studioChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.88), .cyan.opacity(0.10), .black.opacity(0.86)],
+            LinearGradient(colors: [.black.opacity(0.52), .clear, .black.opacity(0.68)],
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
-            VStack(spacing: 12) {
-                header.padding(.top, max(safeAreaInsets.top, 14))
+            VStack(spacing: 0) {
+                redesignedHeader(isPortrait: isPortrait)
                 HStack(spacing: 10) {
                     Label("STUDIO MONITOR", systemImage: "waveform.path")
                     Spacer()
@@ -346,47 +385,48 @@ struct KinetiqUnifiedPlayerChrome: View {
                 }
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.cyan)
-                .padding(12)
-                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
-                Spacer(minLength: 14)
+                .padding(.vertical, 8)
+                Spacer(minLength: 10)
                 transport
-                    .padding(9)
-                    .background(.black.opacity(0.64), in: RoundedRectangle(cornerRadius: 13))
-                Spacer(minLength: 14)
-                footer.padding(16)
-                    .background(.black.opacity(0.80), in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+                    .padding(.horizontal, isPortrait ? 0 : 65)
+                Spacer(minLength: 10)
+                footer
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(.black.opacity(0.42),
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, isPortrait ? 12 : 18)
         }
     }
 
-    private var minimalChrome: some View {
+    private func minimalChrome(isPortrait: Bool) -> some View {
         ZStack {
             LinearGradient(colors: [.black.opacity(0.23), .clear, .black.opacity(0.45)],
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(spacing: 0) {
-                header.opacity(0.77).padding(.top, max(safeAreaInsets.top, 14))
+                redesignedHeader(isPortrait: isPortrait).opacity(0.82)
                 Spacer(minLength: 10)
                 heroPlayButton.opacity(0.88)
                 Spacer(minLength: 10)
                 secondaryTransport.opacity(0.78)
                 footer.opacity(0.85)
-                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+                    .padding(.bottom, max(safeAreaInsets.bottom, 9))
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, isPortrait ? 12 : 18)
         }
     }
 
-    private var classicChrome: some View {
+    private func classicChrome(isPortrait: Bool) -> some View {
         ZStack {
             LinearGradient(colors: [.black.opacity(0.66), .clear, .black.opacity(0.75)],
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(spacing: 0) {
-                header.padding(.top, max(safeAreaInsets.top, 14))
-                    .padding(12)
+                redesignedHeader(isPortrait: isPortrait)
+                    .padding(10)
                     .background(Color(white: 0.15).opacity(0.75),
                                 in: RoundedRectangle(cornerRadius: 12))
                 Spacer(minLength: 12)
@@ -397,9 +437,9 @@ struct KinetiqUnifiedPlayerChrome: View {
                 footer.padding(15)
                     .background(Color(white: 0.12).opacity(0.88),
                                 in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, max(safeAreaInsets.bottom, 15))
+                    .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, isPortrait ? 12 : 18)
         }
     }
 

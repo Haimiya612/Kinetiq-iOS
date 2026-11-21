@@ -60,7 +60,7 @@ class M05Contracts(unittest.TestCase):
         rpc = swift("Kinetiq/Features/Integrations/KinetiqDiscordPresence.swift")
         player = swift("Kinetiq/Features/Modules/ModulePlayerView.swift")
         self.assertIn('recentSeekSamples.count >= 4', rpc)
-        self.assertIn('now.addingTimeInterval(30)', rpc)
+        self.assertIn('now.addingTimeInterval(12)', rpc)
         self.assertIn('allowedAt = max(allowedAt, rapidSeekCooldownUntil)', rpc)
         self.assertIn('guard playback.hasFinishedPresentingFirstFrame', player)
         self.assertIn('playbackEnded()', player)

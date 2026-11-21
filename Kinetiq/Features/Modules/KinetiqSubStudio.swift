@@ -475,26 +475,37 @@ struct KinetiqSubStudioControls: View {
                 .font(.caption).foregroundStyle(.white)
                 Slider(value: $lineGap, in: 0...26, step: 1)
                     .tint(KinetiqPalette.cyan)
-                Text("Subtitle line spacing")
-                    .font(.caption.weight(.medium)).foregroundStyle(.white)
-                Picker("Primary subtitle color", selection: Binding(
-                    get: { captionSettings.appearance.ink },
-                    set: { ink in
-                        var appearance = captionSettings.appearance
-                        appearance.ink = ink
-                        captionSettings.appearance = appearance
+                Text("Subtitle colors · three selectable tracks")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                HStack(spacing: 10) {
+                    Text("Track 1 · Primary subtitle")
+                        .font(.caption).foregroundStyle(.white)
+                    Spacer(minLength: 8)
+                    Picker("Track 1 · Primary subtitle", selection: Binding(
+                        get: { captionSettings.appearance.ink },
+                        set: { ink in
+                            var appearance = captionSettings.appearance
+                            appearance.ink = ink
+                            captionSettings.appearance = appearance
+                        }
+                    )) {
+                        ForEach(KinetiqSubtitleAppearance.Ink.allCases, id: \.self) { ink in
+                            Text(ink.rawValue).tag(ink)
+                        }
                     }
-                )) {
-                    ForEach(KinetiqSubtitleAppearance.Ink.allCases, id: \.self) { ink in
-                        Text(ink.rawValue).tag(ink)
-                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(.white)
                 }
-                .pickerStyle(.menu)
-                .tint(.white)
-                inkPicker("Second subtitle color", selection: $secondaryInk)
-                inkPicker("Third subtitle color", selection: $tertiaryInk)
-                inkPicker("Romaji subtitle color", selection: $romajiInk)
-                Text("Choosing a supplemental color turns off Soft subtitle colors so your choice is visible. Your preferences are saved automatically on this device.")
+                inkPicker("Track 2 · Secondary subtitle", selection: $secondaryInk)
+                inkPicker("Track 3 · Tertiary subtitle", selection: $tertiaryInk)
+                if showRomaji {
+                    Divider().overlay(.white.opacity(0.18))
+                    Text("Optional fourth line · generated Japanese Romaji")
+                        .font(.caption.weight(.medium)).foregroundStyle(.white)
+                    inkPicker("Romaji reading (not a subtitle track)", selection: $romajiInk)
+                }
+                Text("Only selected tracks appear during playback. Romaji is an optional generated reading, not a fourth selectable subtitle. All colors and spacing save automatically.")
                     .font(.caption2).foregroundStyle(.white.opacity(0.68))
                 Button("Restore subtitle layout defaults") {
                     lineGap = 7
@@ -572,15 +583,20 @@ struct KinetiqSubStudioControls: View {
     }
 
     private func inkPicker(_ title: String, selection: Binding<String>) -> some View {
-        Picker(title, selection: Binding(
-            get: { selection.wrappedValue },
-            set: { value in selection.wrappedValue = value; softColors = false }
-        )) {
-            ForEach(KinetiqSubStudioInk.allCases) { ink in
-                Text(ink.rawValue).tag(ink.rawValue)
+        HStack(spacing: 10) {
+            Text(title).font(.caption).foregroundStyle(.white)
+            Spacer(minLength: 8)
+            Picker(title, selection: Binding(
+                get: { selection.wrappedValue },
+                set: { value in selection.wrappedValue = value; softColors = false }
+            )) {
+                ForEach(KinetiqSubStudioInk.allCases) { ink in
+                    Text(ink.rawValue).tag(ink.rawValue)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(.white)
         }
-        .pickerStyle(.menu)
-        .tint(.white)
     }
 }
