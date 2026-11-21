@@ -14,16 +14,20 @@ enum KinetiqPlayerChromeStyle: String, CaseIterable, Identifiable {
     case studio = "Studio"
     case minimal = "Minimal"
     case classic = "Classic"
+    case immersive = "Immersive"
+    case modern = "Modern"
     var id: String { rawValue }
     static let storageKey = "kinetiq.player.m05.chromeStyle"
     var detail: String {
         switch self {
         case .signature: "The complete M04 player with familiar controls"
-        case .cinema: "Theatre-style bottom console, film frame and deep blacks"
-        case .focus: "One clear central playback action with quiet controls below"
-        case .studio: "Editing-bay layout with transport and playback telemetry"
-        case .minimal: "Weightless video-first controls and a discreet timeline"
-        case .classic: "Traditional framed transport and readable control panels"
+        case .cinema: "Letterbox-inspired controls at the edges, no centre console"
+        case .focus: "A single centre action and an almost invisible bottom scrubber"
+        case .studio: "Compact monitor, timecode and editor-inspired bottom dock"
+        case .minimal: "Gesture-friendly floating play, slim timeline and tools menu"
+        case .classic: "Traditional transport controls with a separate control strip"
+        case .immersive: "Soft glass islands, floating controls and airy spacing"
+        case .modern: "Streaming-style bottom command bar with a clear hierarchy"
         }
     }
 }
@@ -45,47 +49,7 @@ struct KinetiqPlayerAppearancePicker: View {
                     UISelectionFeedbackGenerator().selectionChanged()
                 } label: {
                     HStack(spacing: 14) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: style == .cinema ? 3 : 12)
-                                .fill(LinearGradient(colors: style == .cinema ?
-                                    [.black, .init(red: 0.12, green: 0.08, blue: 0.08)] :
-                                    style == .studio ? [.init(red: 0.04, green: 0.19, blue: 0.23), .black] :
-                                    style == .classic ? [.init(red: 0.19, green: 0.21, blue: 0.27), .black] :
-                                    [.init(red: 0.13, green: 0.2, blue: 0.32),
-                                     .init(red: 0.02, green: 0.035, blue: 0.08)],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing))
-                            VStack(spacing: 8) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "chevron.down")
-                                    Spacer()
-                                    Text("NOW PLAYING")
-                                    Spacer()
-                                    Image(systemName: "pip")
-                                }
-                                .font(.system(size: 7, weight: .bold))
-                                Spacer(minLength: 0)
-                                HStack(spacing: 12) {
-                                    if style != .focus && style != .minimal {
-                                        Image(systemName: "gobackward.10")
-                                    }
-                                    Image(systemName: style == .studio ? "slider.horizontal.3" : "pause.fill")
-                                        .font(.system(size: style == .focus ? 26 : 18))
-                                    if style != .focus && style != .minimal {
-                                        Image(systemName: "goforward.10")
-                                    }
-                                }
-                                .font(.system(size: 10))
-                                Spacer(minLength: 0)
-                                Capsule().fill(.white.opacity(0.35)).frame(height: 3)
-                                    .overlay(alignment: .leading) {
-                                        Capsule().fill(style == .cinema ? .orange : .cyan)
-                                            .frame(width: 34, height: 3)
-                                    }
-                            }
-                            .foregroundStyle(.white.opacity(style == .focus ? 0.7 : 1))
-                            .padding(10)
-                        }
-                        .frame(width: 138, height: 86)
+                        appearancePreview(style)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(style.rawValue).font(.subheadline.weight(.bold))
                             Text(style.detail).font(.caption2).fixedSize(horizontal: false, vertical: true)
@@ -104,6 +68,110 @@ struct KinetiqPlayerAppearancePicker: View {
                 .accessibilityLabel("Use \(style.rawValue) player appearance")
             }
         }
+    }
+
+    private func appearancePreview(_ style: KinetiqPlayerChromeStyle) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(LinearGradient(colors: style == .studio ?
+                    [.init(red: 0.04, green: 0.18, blue: 0.22), .black] :
+                    style == .cinema ? [.black, .init(red: 0.18, green: 0.09, blue: 0.04)] :
+                    [.init(red: 0.14, green: 0.20, blue: 0.28), .black],
+                    startPoint: .topLeading, endPoint: .bottomTrailing))
+            previewContents(style)
+                .foregroundStyle(.white)
+                .padding(9)
+        }
+        .frame(width: 138, height: 86)
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func previewContents(_ style: KinetiqPlayerChromeStyle) -> some View {
+        switch style {
+        case .signature:
+            VStack {
+                Text("NOW PLAYING").font(.system(size: 6, weight: .bold))
+                Spacer()
+                HStack(spacing: 11) {
+                    Image(systemName: "gobackward.10")
+                    Image(systemName: "pause.fill").font(.title3)
+                    Image(systemName: "goforward.10")
+                }
+                Spacer()
+                previewTrack
+            }
+        case .cinema:
+            VStack {
+                HStack { Text("CINEMA"); Spacer(); Image(systemName: "film") }
+                    .font(.system(size: 7, weight: .medium, design: .serif))
+                Spacer()
+                HStack { Image(systemName: "gobackward.10"); Spacer(); Image(systemName: "pause.fill"); Spacer(); Image(systemName: "goforward.10") }
+                previewTrack
+            }
+        case .focus:
+            VStack {
+                HStack { Image(systemName: "chevron.down"); Spacer(); Text("FOCUS").font(.system(size: 7)) }
+                Spacer()
+                Image(systemName: "pause.circle").font(.system(size: 31, weight: .ultraLight))
+                Spacer()
+                previewTrack
+            }
+        case .studio:
+            VStack(alignment: .leading, spacing: 5) {
+                HStack { Image(systemName: "waveform.path"); Text("MONITOR A"); Spacer(); Text("01:23") }
+                    .font(.system(size: 7, design: .monospaced)).foregroundStyle(.cyan)
+                Spacer()
+                Rectangle().fill(.cyan.opacity(0.28)).frame(height: 1)
+                previewTrack
+                HStack { Image(systemName: "backward.end.fill"); Spacer(); Image(systemName: "pause.fill"); Spacer(); Image(systemName: "forward.end.fill"); Spacer(); Image(systemName: "slider.horizontal.3") }
+                    .font(.system(size: 10))
+            }
+        case .minimal:
+            VStack {
+                HStack { Image(systemName: "xmark"); Spacer(); Image(systemName: "ellipsis") }
+                Spacer()
+                Image(systemName: "pause.fill").font(.system(size: 16))
+                Spacer()
+                previewTrack
+            }
+        case .classic:
+            VStack {
+                HStack { Image(systemName: "chevron.down"); Text("CLASSIC"); Spacer() }
+                    .font(.system(size: 8))
+                Spacer()
+                HStack(spacing: 6) { Image(systemName: "backward.end.fill"); Image(systemName: "pause.fill"); Image(systemName: "forward.end.fill") }
+                .padding(5).background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                Spacer()
+                previewTrack
+            }
+        case .immersive:
+            VStack {
+                HStack { Text("IMMERSIVE"); Spacer(); Image(systemName: "pip") }
+                    .font(.system(size: 7))
+                Spacer()
+                Image(systemName: "pause.circle.fill").font(.system(size: 24))
+                Spacer()
+                HStack { Image(systemName: "gobackward.10"); Spacer(); Image(systemName: "ellipsis"); Spacer(); Image(systemName: "goforward.10") }
+                    .padding(3).background(.white.opacity(0.18), in: Capsule())
+                previewTrack
+            }
+        case .modern:
+            VStack(alignment: .leading) {
+                Text("UP NEXT").font(.system(size: 7, weight: .bold))
+                Spacer()
+                previewTrack
+                HStack { Image(systemName: "pause.fill"); Image(systemName: "gobackward.10"); Spacer(); Image(systemName: "forward.end.fill"); Image(systemName: "ellipsis") }
+                    .padding(5).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    private var previewTrack: some View {
+        Capsule().fill(.white.opacity(0.33)).frame(height: 3)
+            .overlay(alignment: .leading) {
+                Capsule().fill(.cyan).frame(width: 36, height: 3)
+            }
     }
 }
 
@@ -274,6 +342,8 @@ struct KinetiqUnifiedPlayerChrome: View {
         case .studio: studioChrome(isPortrait: isPortrait)
         case .minimal: minimalChrome(isPortrait: isPortrait)
         case .classic: classicChrome(isPortrait: isPortrait)
+        case .immersive: immersiveChrome(isPortrait: isPortrait)
+        case .modern: modernChrome(isPortrait: isPortrait)
         case .signature: signatureChrome
         }
     }
@@ -320,66 +390,79 @@ struct KinetiqUnifiedPlayerChrome: View {
 
     private func cinemaChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.57), .clear, .black.opacity(0.76)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.40), .clear, .clear, .black.opacity(0.72)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
             VStack(spacing: 0) {
-                redesignedHeader(isPortrait: isPortrait)
+                floatingTitle(isPortrait: isPortrait, eyebrow: "CINEMA • NOW SHOWING", color: .orange)
                 Spacer(minLength: 10)
-                transport
-                    .padding(.horizontal, isPortrait ? 0 : 55)
-                Spacer(minLength: 10)
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        Capsule().fill(.orange).frame(width: 18, height: 3)
-                        Text("CINEMA")
-                            .font(.system(size: 10, weight: .semibold, design: .serif))
-                            .tracking(2).foregroundStyle(.white.opacity(0.86))
+                HStack(spacing: 15) {
+                    transportButton("gobackward.10", size: 20, width: 42,
+                                    label: "Back 10 seconds", action: onRewind)
+                    Spacer(minLength: 0)
+                    compactPlay(size: 52, circle: true)
+                    Spacer(minLength: 0)
+                    transportButton("goforward.10", size: 20, width: 42,
+                                    label: "Forward 10 seconds", action: onForward)
+                }
+                .frame(maxWidth: 350)
+                VStack(spacing: 6) {
+                    compactTimeline
+                    HStack {
+                        Button("Previous", systemImage: "backward.end.fill", action: onPrevious)
                         Spacer()
                         Image(systemName: "film.stack").foregroundStyle(.orange)
+                        Text("THEATRE").tracking(2)
+                            .font(.system(size: 10, weight: .medium, design: .serif))
+                        Spacer()
+                        Button("Next", systemImage: "forward.end.fill", action: onNext)
                     }
-                    footer
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 15))
+                    HStack {
+                        Spacer()
+                        toolsMenu
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 11)
-                .background(.black.opacity(0.47), in: RoundedRectangle(cornerRadius: 14))
+                .foregroundStyle(.white)
                 .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, isPortrait ? 12 : 20)
+            .padding(.horizontal, isPortrait ? 20 : 35)
         }
     }
 
     private func focusChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.27), .clear, .black.opacity(0.52)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.23), .clear, .black.opacity(0.39)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
             VStack(spacing: 0) {
-                redesignedHeader(isPortrait: isPortrait).opacity(0.89)
+                floatingTitle(isPortrait: isPortrait, eyebrow: "FOCUS", color: .white)
                 Spacer(minLength: 10)
-                heroPlayButton
+                compactPlay(size: 76, circle: true)
                 Spacer(minLength: 10)
-                VStack(spacing: 5) {
-                    secondaryTransport.padding(.horizontal, isPortrait ? 0 : 56)
-                    footer
+                compactTimeline
+                HStack(spacing: 18) {
+                    transportButton("gobackward.10", size: 17, width: 44,
+                                    label: "Back 10 seconds", action: onRewind)
+                    transportButton("goforward.10", size: 17, width: 44,
+                                    label: "Forward 10 seconds", action: onForward)
+                    Spacer()
+                    toolsMenu
                 }
-                .padding(10)
-                .background(.black.opacity(0.27), in: RoundedRectangle(cornerRadius: 18))
+                .foregroundStyle(.white.opacity(0.85))
                 .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, isPortrait ? 12 : 18)
+            .padding(.horizontal, isPortrait ? 20 : 34)
         }
     }
 
     private func studioChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.52), .clear, .black.opacity(0.68)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.42), .clear, .black.opacity(0.58)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
             VStack(spacing: 0) {
-                redesignedHeader(isPortrait: isPortrait)
+                floatingTitle(isPortrait: isPortrait, eyebrow: "STUDIO • MONITOR A", color: .cyan)
                 HStack(spacing: 10) {
-                    Label("STUDIO MONITOR", systemImage: "waveform.path")
+                    Label("LIVE MONITOR", systemImage: "waveform.path")
                     Spacer()
                     Text("\(elapsedLabel) / \(durationLabel)")
                 }
@@ -387,60 +470,282 @@ struct KinetiqUnifiedPlayerChrome: View {
                 .foregroundStyle(.cyan)
                 .padding(.vertical, 8)
                 Spacer(minLength: 10)
-                transport
-                    .padding(.horizontal, isPortrait ? 0 : 65)
-                Spacer(minLength: 10)
-                footer
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(.black.opacity(0.42),
-                                in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.bottom, max(safeAreaInsets.bottom, 8))
+                VStack(spacing: 4) {
+                    HStack(spacing: 5) {
+                        Label("PLAYBACK TIMELINE", systemImage: "film.stack")
+                        Spacer()
+                        Text(playing ? "PLAY" : "PAUSED")
+                    }
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.cyan)
+                    compactTimeline
+                    HStack(spacing: 5) {
+                        transportButton("backward.end.fill", size: 16, width: 38,
+                                        label: "Previous", action: onPrevious)
+                        transportButton("gobackward.10", size: 18, width: 42,
+                                        label: "Back 10 seconds", action: onRewind)
+                        compactPlay(size: 47, circle: false)
+                        transportButton("goforward.10", size: 18, width: 42,
+                                        label: "Forward 10 seconds", action: onForward)
+                        transportButton("forward.end.fill", size: 16, width: 38,
+                                        label: "Next", action: onNext)
+                        Spacer(minLength: 2)
+                        toolsMenu
+                    }
+                    .foregroundStyle(.white)
+                    compactPanelRail
+                }
+                .padding(10)
+                .background(Color.black.opacity(0.60),
+                            in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.cyan.opacity(0.26)))
+                .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
-            .padding(.horizontal, isPortrait ? 12 : 18)
+            .padding(.horizontal, isPortrait ? 12 : 20)
         }
     }
 
     private func minimalChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.23), .clear, .black.opacity(0.45)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.16), .clear, .black.opacity(0.34)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
             VStack(spacing: 0) {
-                redesignedHeader(isPortrait: isPortrait).opacity(0.82)
+                HStack {
+                    headerButton("xmark", label: "Close player", size: 12, action: onClose)
+                    Spacer()
+                    toolsMenu
+                }
+                .padding(.top, max(safeAreaInsets.top, isPortrait ? 62 : 12))
                 Spacer(minLength: 10)
-                heroPlayButton.opacity(0.88)
+                compactPlay(size: 58, circle: true)
                 Spacer(minLength: 10)
-                secondaryTransport.opacity(0.78)
-                footer.opacity(0.85)
-                    .padding(.bottom, max(safeAreaInsets.bottom, 9))
+                HStack {
+                    Text(title).lineLimit(1).font(.caption.weight(.medium))
+                    Spacer()
+                    Text(elapsedLabel).font(.caption.monospacedDigit())
+                }
+                .foregroundStyle(.white.opacity(0.85))
+                compactTimeline
+                .padding(.bottom, max(safeAreaInsets.bottom, 9))
             }
-            .padding(.horizontal, isPortrait ? 12 : 18)
+            .padding(.horizontal, isPortrait ? 18 : 26)
         }
     }
 
     private func classicChrome(isPortrait: Bool) -> some View {
         ZStack {
-            LinearGradient(colors: [.black.opacity(0.66), .clear, .black.opacity(0.75)],
-                           startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
+            LinearGradient(colors: [.black.opacity(0.48), .clear, .black.opacity(0.68)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
             VStack(spacing: 0) {
                 redesignedHeader(isPortrait: isPortrait)
-                    .padding(10)
-                    .background(Color(white: 0.15).opacity(0.75),
-                                in: RoundedRectangle(cornerRadius: 12))
+                Spacer(minLength: 10)
+                Text(playing ? "Playing" : "Paused")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+                transport
+                    .scaleEffect(0.92)
                 Spacer(minLength: 12)
-                transport.padding(.horizontal, 12)
-                    .background(Color(white: 0.18).opacity(0.82),
-                                in: RoundedRectangle(cornerRadius: 16))
-                Spacer(minLength: 12)
-                footer.padding(15)
-                    .background(Color(white: 0.12).opacity(0.88),
-                                in: RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, max(safeAreaInsets.bottom, 8))
+                VStack(spacing: 7) {
+                    compactTimeline
+                    compactPanelRail
+                }
+                .padding(10)
+                .background(Color(white: 0.12).opacity(0.79))
+                .padding(.bottom, max(safeAreaInsets.bottom, 8))
             }
             .padding(.horizontal, isPortrait ? 12 : 18)
         }
+    }
+
+    private func immersiveChrome(isPortrait: Bool) -> some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.24), .clear, .black.opacity(0.49)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
+            VStack(spacing: 0) {
+                floatingTitle(isPortrait: isPortrait, eyebrow: "IMMERSIVE", color: .mint)
+                Spacer(minLength: 8)
+                compactPlay(size: 64, circle: true)
+                    .background(.ultraThinMaterial, in: Circle())
+                Spacer(minLength: 8)
+                HStack(spacing: 12) {
+                    transportButton("gobackward.10", size: 18, width: 42,
+                                    label: "Back 10 seconds", action: onRewind)
+                    Spacer(minLength: 0)
+                    toolsMenu
+                    Spacer(minLength: 0)
+                    transportButton("goforward.10", size: 18, width: 42,
+                                    label: "Forward 10 seconds", action: onForward)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .background(.ultraThinMaterial, in: Capsule())
+                compactTimeline
+                    .padding(.top, 8)
+                    .padding(.bottom, max(safeAreaInsets.bottom, 8))
+            }
+            .padding(.horizontal, isPortrait ? 20 : 32)
+        }
+    }
+
+    private func modernChrome(isPortrait: Bool) -> some View {
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.26), .clear, .black.opacity(0.65)],
+                           startPoint: .top, endPoint: .bottom).allowsHitTesting(false)
+            VStack(spacing: 0) {
+                floatingTitle(isPortrait: isPortrait, eyebrow: "UP NEXT • KINETIQ", color: playerAccent)
+                Spacer(minLength: 8)
+                VStack(spacing: 8) {
+                    compactTimeline
+                    HStack(spacing: 8) {
+                        compactPlay(size: 52, circle: false)
+                        transportButton("gobackward.10", size: 19, width: 42,
+                                        label: "Back 10 seconds", action: onRewind)
+                        transportButton("goforward.10", size: 19, width: 42,
+                                        label: "Forward 10 seconds", action: onForward)
+                        Spacer(minLength: 0)
+                        Button("Next", systemImage: "forward.end.fill", action: onNext)
+                            .labelStyle(.iconOnly)
+                        toolsMenu
+                    }
+                    .foregroundStyle(.white)
+                }
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .padding(.bottom, max(safeAreaInsets.bottom, 8))
+            }
+            .padding(.horizontal, isPortrait ? 12 : 24)
+        }
+    }
+
+    private func floatingTitle(isPortrait: Bool, eyebrow: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                headerButton("chevron.down", label: "Close player", size: 15, action: onClose)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(eyebrow).font(.system(size: 9, weight: .semibold))
+                        .tracking(1.5).foregroundStyle(color)
+                    Text(title).font(.subheadline.weight(.medium))
+                        .lineLimit(1).foregroundStyle(.white)
+                }
+                Spacer(minLength: 0)
+                if !isPortrait { quickActions }
+            }
+            if isPortrait {
+                HStack {
+                    Spacer()
+                    quickActions
+                }
+            }
+        }
+        .padding(.top, max(safeAreaInsets.top, isPortrait ? 62 : 12))
+    }
+
+    private var quickActions: some View {
+        HStack(spacing: 6) {
+            if let onLockControls {
+                headerButton("lock", label: "Lock controls", size: 14, action: onLockControls)
+            }
+            airPlayControl.frame(width: 40, height: 40).accessibilityLabel("AirPlay")
+            if pictureInPictureAvailable {
+                headerButton("pip", label: "Picture in Picture", size: 14,
+                             action: onStartPictureInPicture)
+            }
+            headerButton(aspectFill ? "arrow.down.right.and.arrow.up.left" :
+                         "arrow.up.left.and.arrow.down.right",
+                         label: aspectFill ? "Fit video" : "Fill screen", size: 14,
+                         action: onToggleAspect)
+        }
+    }
+
+    private func compactPlay(size: CGFloat, circle: Bool) -> some View {
+        Button(action: onTogglePlay) {
+            Image(systemName: playing ? "pause.fill" : "play.fill")
+                .font(.system(size: size * 0.39, weight: .semibold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: size, height: size)
+                .background(.black.opacity(0.49),
+                            in: RoundedRectangle(cornerRadius: circle ? size / 2 : 13))
+                .overlay(RoundedRectangle(cornerRadius: circle ? size / 2 : 13)
+                    .strokeBorder(.white.opacity(0.24), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel(playing ? "Pause" : "Play")
+    }
+
+    private var compactTimeline: some View {
+        VStack(spacing: 2) {
+            Slider(
+                value: Binding(
+                    get: { min(max(displayedTime.isFinite ? displayedTime : 0, 0),
+                               max(duration.isFinite ? duration : 1, 1)) },
+                    set: { onSeekChanged($0) }
+                ),
+                in: 0...max(duration.isFinite ? duration : 1, 1),
+                onEditingChanged: onSeekEditingChanged
+            )
+            .tint(playerAccent)
+            .accessibilityLabel("Playback position")
+            HStack {
+                Text(elapsedLabel)
+                Spacer()
+                Text(durationLabel)
+            }
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.85))
+        }
+    }
+
+    private var compactPanelRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 9) {
+                ForEach(panels) { panel in
+                    Button {
+                        onPanelSelected(panel.id)
+                    } label: {
+                        Label(panel.id, systemImage: panel.symbol)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(panel.selected ? playerAccent : .white)
+                            .padding(.horizontal, 9).padding(.vertical, 7)
+                            .background(.white.opacity(0.09), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .accessibilityLabel("Player tools")
+    }
+
+    private var toolsMenu: some View {
+        Menu {
+            Section("Transport") {
+                Button("Previous episode", systemImage: "backward.end.fill", action: onPrevious)
+                Button("Next episode", systemImage: "forward.end.fill", action: onNext)
+                Button("Back 10 seconds", systemImage: "gobackward.10", action: onRewind)
+                Button("Forward 10 seconds", systemImage: "goforward.10", action: onForward)
+            }
+            Section("Player options") {
+                ForEach(panels) { panel in
+                    Button(panel.id, systemImage: panel.symbol) { onPanelSelected(panel.id) }
+                }
+            }
+            if let onLockControls {
+                Button("Lock controls", systemImage: "lock", action: onLockControls)
+            }
+            if pictureInPictureAvailable {
+                Button("Picture in Picture", systemImage: "pip", action: onStartPictureInPicture)
+            }
+            Button(aspectFill ? "Fit video" : "Fill screen",
+                   systemImage: "arrow.up.left.and.arrow.down.right", action: onToggleAspect)
+        } label: {
+            Image(systemName: "ellipsis.circle.fill")
+                .font(.system(size: 23))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Player tools and settings")
     }
 
     private var heroPlayButton: some View {

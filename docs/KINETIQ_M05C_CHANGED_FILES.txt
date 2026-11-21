@@ -1,0 +1,13 @@
+Kinetiq M05C — additive changes relative to the prior M05B-R2 source package
+
+Kinetiq/Features/Modules/KinetiqUnifiedPlayer.swift
+Kinetiq/Features/Discovery/KinetiqBrain.swift
+Kinetiq/Features/Discovery/KinetiqNativeBrain.swift
+docs/ROADMAP.md
+docs/KINETIQ_M05C_IPHONE_HANDOFF.md
+docs/KINETIQ_M05C_CHANGED_FILES.txt
+tests/test_m05b_r2_contracts.py
+tests/test_m05c_contracts.py
+
+The deliverable is the COMPLETE Kinetiq-iOS-main tree for the existing ZIP
+import workflow, not a set of isolated overlays or patches.

@@ -23,11 +23,12 @@ class M05BR2Contracts(unittest.TestCase):
             self.assertIn(text, code)
         self.assertIn("if showRomaji {", code)
 
-    def test_web_search_uses_real_provider_and_keychain(self):
+    def test_web_search_remains_a_real_website_or_public_api_without_paid_keys(self):
         code = swift("Kinetiq/Features/Discovery/KinetiqBrain.swift")
-        self.assertIn("https://api.search.brave.com/res/v1/web/search", code)
-        self.assertIn("X-Subscription-Token", code)
-        self.assertIn("kSecClassGenericPassword", code)
+        self.assertNotIn("api.search.brave.com", code)
+        self.assertNotIn("X-Subscription-Token", code)
+        self.assertIn("https://www.google.com/search", code)
+        self.assertIn("https://en.wikipedia.org/w/api.php", code)
         self.assertIn('("web search ", .web)', code)
         self.assertIn('("wikipedia ", .wikipedia)', code)
         self.assertIn("let aliases: [String]", code)

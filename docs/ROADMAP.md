@@ -108,7 +108,31 @@ title aliases, less verbose sourced research cards, playback-only RPC and a
 12-second coalescing window for repetitive seeking. See
 [KINETIQ_M05B_R2_IPHONE_HANDOFF.md](KINETIQ_M05B_R2_IPHONE_HANDOFF.md).
 
-**M05C and later (not implemented yet):** actual live frame-reactive ambilight
+**M05C — Player Experience / Free Brain source prepared (21 November 2026;
+Xcode and iPhone verification still required):**
+
+- Signature/Default keeps its original player body; no visual or playback
+  callback changes in that branch. Existing selections survive the update.
+- Cinema, Focus, Studio, Minimal and Classic use significantly different
+  layouts and control hierarchies; additional Immersive and Modern choices.
+  All styles provide primary playback, scrubbing, close, panels and the
+  available PiP/lock/aspect/AirPlay controls, with tools accessible by menu
+  where the appearance deliberately hides a traditional toolbar.
+- Appearance picker now previews each distinct layout, rather than one
+  generic mockup with different colors. The portrait safe-area offset is
+  preserved in the non-Signature player.
+- Brain no longer uses Brave, search credits or a payment card. Its public
+  results combine AniList and Wikipedia, with an in-app Safari browser
+  option to run a broader search. The browser page is **not** scraped or
+  falsely described as verified full-web research. Search cards identify
+  sources. On supported Apple Intelligence devices, an opt-in ephemeral
+  local session can summarize the public snippets only.
+- Protected on-device Brain chat library and existing Discord playback-only
+  presence are preserved. The title label now includes the actual first
+  question instead of collapsing unrelated sessions into one generic label.
+- See [KINETIQ_M05C_IPHONE_HANDOFF.md](KINETIQ_M05C_IPHONE_HANDOFF.md).
+
+**M05D and later (not implemented yet):** actual live frame-reactive ambilight
 sampling with a performance/off toggle; browsing inside Kinetiq with an
 app-owned PiP/mini-player; explicit user-confirmed cross-source favorite and
 playback-progress transfer after exact title/season/episode matching; granular
